@@ -1,0 +1,454 @@
+import os
+import json
+import time
+import itertools
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+from tqdm import tqdm
+from sklearn.utils import shuffle as sklearn_shuffle
+from sklearn.model_selection import train_test_split as sklearn_train_test_split
+
+from utils.generic_utils import time_to_string
+from utils.pandas_utils import filter_df
+
+AUTOTUNE = tf.data.experimental.AUTOTUNE
+
+_accepted_datasets_types = {
+    'tuple' : '(x, y)',
+    'np.ndarray'    : 'tableau numpy',
+    'pd.Dataframe'  : 'tableau pandas',
+    'str'   : {
+        'direcotry' : 'répertoire de sous-dossiers contenant les fichiers',
+        'file'      : 'file with extension .txt or .csv'
+    },
+    'tf.data.Dataset'   : 'tensorflow dataset'
+}
+
+def _get_infos(tensor, level = 0):
+    indent = ' ' * level
+    if isinstance(tensor, (list, tuple)):
+        return ''.join(['\n{}Element {} : {}'.format(indent, i, _get_infos(t, level+1)) 
+                        for i, t in enumerate(tensor)])
+        return ''.join(['\n{}Element {} : {}'.format(indent, k, _get_infos(t, level+1)) 
+                        for k, t in tensor.items()])
+    return 'shape : {} - type : {} - min : {:.3f} - max : {:.3f}'.format(
+        tensor.shape,
+        tensor.dtype,
+        np.min(tensor),
+        np.max(tensor)
+    )
+
+def filter_dataset(dataset, on_unique = [], ** kwargs):
+    return filter_df(dataset, on_unique = on_unique, ** kwargs)
+
+def test_dataset_time(dataset, steps = 100, batch_size = 0, verbose = 2):
+    """
+        Generate `steps` batchs of `dataset` and compute its average time
+        If verbose == 2, shows information on the last generated batch
+    """
+    start = time.time()
+    i = 0
+    batch = None
+    for batch in tqdm(dataset.take(steps)):
+        i += 1
+        if i >= steps: break
+    print()
+    temps = time.time() - start
+    if verbose:
+        print("{} batchs in {} sec ({:.3f} batch / sec)".format(
+            i, time_to_string(temps), i / temps
+        ), end ='')
+        if batch_size > 0:
+            print(" ({:.3f} samples / sec)".format(batch_size * i / temps))
+        else:
+            print()
+        size = tf.data.experimental.cardinality(dataset).numpy()
+        if size > 0:
+            print("Time estimated for all dataset ({} batch) : {}".format(
+                size, time_to_string(size * (i / temps))
+            ))
+        
+        if verbose == 2:
+            print("Batch infos : {}".format(_get_infos(batch)))
+            
+    return temps
+
+def build_tf_dataset(data, as_dict = True, siamese = False, ** kwargs):
+    """
+        Build a tf.data.Dataset based on multiple types of `data`
+        
+        Arguments : 
+            - data  : the dataset to transform to tf.data.Dataset
+                - tf.data.Dataset   : return itself
+                - list / tuple      : tf.data.Dataset.from_tensor_slices
+                - tf.keras.utils.Sequence   : tf.data.Dataset.from_generator
+                - pd.DataFrame      : tf.data.Dataset.from_tensor_slices
+                    if as_dict  : datas are dict where keys are col names
+                    else : treat it as a np.ndarray (data.values)
+                - str   : either a directory, .csv file, .txt file
+    """
+    if data is None:
+        return None
+    elif isinstance(data, tf.data.Dataset): 
+        dataset = data
+    elif isinstance(data, (list, tuple, np.ndarray)):
+        dataset = tf.data.Dataset.from_tensor_slices(data, **kwargs)
+    elif isinstance(data, tf.keras.utils.Sequence):
+        if hasattr(data, 'output_types'): kwargs['output_types'] = data.output_types
+        if hasattr(data, 'output_shapes'): kwargs['output_shapes'] = data.output_shapes
+        if not callable(data): data = default_generator_fn(data)
+        dataset = tf.data.Dataset.from_generator(data, **kwargs)
+    elif callable(data):
+        dataset = tf.data.Dataset.from_generator(data, **kwargs)
+    elif isinstance(data, np.ndarray):
+        dataset = tf.data.Dataset.from_tensor_slices(data, **kwargs)
+    elif isinstance(data, pd.DataFrame):
+        if siamese:
+            dataset = build_siamese_dataset(data, **kwargs)
+        elif as_dict:
+            dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'), **kwargs)
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices(data.values, **kwargs)
+    elif isinstance(data, str):
+        if os.path.isdir(data):
+            path = pathlib.Path(main_directory_path)
+            dataset = tf.data.Dataset.list_files(str(path/'*/*'))
+        elif '.csv' in data:
+            dataset = tf.data.experimental.make_csv_dataset(data, **kwargs)
+        elif '.txt' in data:
+            dataset = tf.data.TextLineDataset(data)
+        else:
+            raise ValueError("data de type str non géré !\nReçu : {}\nAcceptés : {}".format(data, json.dumps(_accepted_datasets_types, indent=2)))
+    else:
+        raise ValueError("Dataset de type inconnu !\nReçu : {} (type : {})\nAcceptés :{}".format(data, type(data), json.dumps(_accepted_datasets_types, indent=2)))
+        
+    return dataset
+
+def build_siamese_dataset(dataset,
+                          
+                          column    = 'id',
+                          suffixes  = ('_x', '_y'), 
+                          
+                          nb_unique = 1000,
+                          max_by_id = 100,
+                          strict_equality  = True,
+                          
+                          as_tf_dataset     = True,
+                          
+                          shuffle       = True, 
+                          random_state  = 10,
+                          tqdm          = lambda x: x,
+                          
+                          ** kwargs
+                         ):
+    """
+        Build siamese dataset : a dataset with only valid pairs and one with invalid pairs (pairs from 2 different speakers). 
+        Arguments :
+            - data  : the pd.DataFrame audio datasets
+            - nb_unique : the number of speakers to use
+            - max_by_id : maximum instances for 'same-pairs' dataset (by id)
+            - strict_equality   : whether the same and not same must be of same length
+            - shuffle   : whether to shuffle or not
+            - random_state  : state to use for reproducibility
+    """
+    assert isinstance(dataset, pd.DataFrame)
+    # Get unique IDs
+    uniques = dataset[column].value_counts()
+    if nb_unique is not None and len(uniques) > nb_unique:
+        uniques = uniques[:nb_unique]
+    uniques = uniques.index
+    
+    rng = np.random.default_rng(seed = random_state)
+    
+    dataset = dataset.to_dict('records')
+    
+    liste_same, liste_not_same = [], []
+    for unique in tqdm(uniques):
+        # Get dataset rows with only `unique` (sames) or not (not_sames)
+        sames = [row for row in dataset if row[column] == unique]
+        not_sames = [row for row in dataset if row[column] != unique]
+        
+        sames_idx = list(range(len(sames)))
+        not_sames_idx = list(range(len(not_sames)))
+        
+        # Build combinations for `sames` part
+        same_combinations   = list(itertools.combinations(sames_idx, 2))
+        n = len(same_combinations) if not max_by_id else min(max_by_id, len(same_combinations))
+        
+        indexes = rng.choice(len(same_combinations), size = n, replace = False)
+        
+        merged_same = []
+        for idx1, idx2 in [same_combinations[idx] for idx in indexes]:
+            s1, s2 = sames[idx1], sames[idx2]
+            
+            s = {column : s1[column]}
+            s.update({k + suffixes[0] : v for k, v in s1.items() if k != column})
+            s.update({k + suffixes[1] : v for k, v in s2.items() if k != column})
+
+            merged_same.append(s)
+
+        merged_same = pd.DataFrame(merged_same)
+        if max_by_id and len(merged_same) > max_by_id: 
+            merged_same = merged_same.sample(max_by_id, random_state = random_state)
+        
+        # Build combinations for `not_sames` part
+        nb = min(max(len(merged_same) // len(sames_idx), 10), len(not_sames_idx))
+        not_same_combinations   = []
+        for idx1 in sames_idx:
+            not_same_combinations += [
+                (idx1, idx2) for idx2 in rng.choice(
+                    len(not_sames_idx), size = nb
+                )
+            ]
+        n = len(not_same_combinations) if not max_by_id else min(max_by_id, len(not_same_combinations))
+        
+        indexes = rng.choice(len(not_same_combinations), size = n, replace = False)
+        
+        
+        merged_not_same = []
+        for idx1, idx2 in [not_same_combinations[idx] for idx in indexes]:
+            s1, s2 = sames[idx1], not_sames[idx2]
+            
+            s = {k + suffixes[0] : v for k, v in s1.items()}
+            s.update({k + suffixes[1] : v for k, v in s2.items()})
+
+            merged_not_same.append(s)
+
+        merged_not_same = pd.DataFrame(merged_not_same)
+        # Sample a subset (if required)
+        if strict_equality and len(merged_same) != len(merged_not_same):
+            if len(merged_not_same) > len(merged_same): 
+                merged_not_same = merged_not_same.sample(
+                    len(merged_same), random_state = random_state
+                )
+            else:
+                merged_same = merged_same.sample(
+                    len(merged_not_same), random_state = random_state
+                )
+        elif max_by_id and len(merged_not_same) > max_by_id:
+            merged_not_same = merged_not_same.sample(
+                max_by_id, random_state = random_state
+            )
+
+        # Append final result to global lists
+        liste_same.append(merged_same)
+        liste_not_same.append(merged_not_same)
+
+    same_ds = pd.concat(liste_same, ignore_index = True)
+    not_same_ds = pd.concat(liste_not_same, ignore_index = True)
+
+    if shuffle:
+        same_ds = sklearn_shuffle(same_ds, random_state = random_state)
+        not_same_ds = sklearn_shuffle(not_same_ds, random_state = random_state)
+        
+    if not as_tf_dataset: return same_ds.reset_index(), not_same_ds.reset_index()
+    
+    same_ds = build_tf_dataset(same_ds)
+    not_same_ds = build_tf_dataset(not_same_ds)
+    
+    return tf.data.Dataset.zip((same_ds, not_same_ds))
+
+def train_test_split(dataset, 
+                     train_size     = None,
+                     valid_size     = None,
+                     random_state   = 10,
+                     shuffle        = False,
+                     labels         = None,
+                     split_by_unique    = False,
+                     split_column   = 'id',
+                     min_occurence  = 5
+                    ):
+    """
+        Split dataset in training and validation sets for various dataset type
+        
+        Procedure for each format :
+        - dataset   : the dataset to split
+            - tf.data.Dataset / callable / tf.keras.utils.Sequence : 
+                1) Convert it to a tf.data.Dataset (if necessary)
+                2) Call `.take(train_size)` to create the training set
+                3) Call `.skip(train_size).take(valid_size)` to create the valid set
+                It means that both train_size and valid_size must be specified and in absolute values
+            - list / tuple of length 2  : calls train_test_split() from sklearn
+            - not split_by_unique       : calls train_test_split() from sklearn
+            - pd.DataFrame and split_by_unique  : 
+                1) Get uniques values in `dataset[split_column]`
+                2) Get only values which have at least `min_occurence` occurences
+                3) Call train_test_split from sklearn on unique values
+                4) Build train / valid sets based on the unique-value split
+    """
+    if isinstance(dataset, (tf.data.Dataset, tf.keras.utils.Sequence)) or callable(dataset):
+        if not train_size and not valid_size:
+            raise ValueError("Il faut spécifier au moins train_size ou valid_size pour pouvoir diviser le dataset !")
+        
+        if isinstance(dataset, tf.keras.utils.Sequence): length = len(dataset)
+        elif isinstance(dataset, tf.data.Dataset): 
+            length = tf.data.experimental.cardinality(dataset)
+        else: length = -1
+        
+        if length < 0 and (train_size is None or valid_size is None or isinstance(train_size, float) or isinstance(valid_size, float)):
+            raise ValueError("Le dataset n'a pas une longueur connue ! il faut donc spécifier train_size et valid_size pour le diviser")
+        
+        if isinstance(train_size, float): train_size = int(train_size * length)
+        if isinstance(valid_size, float): valid_size = int(valid_size * length)
+        
+        if train_size is None: train_size = length - valid_size
+        if valid_size is None: valid_size = length - train_size
+        
+        assert valid_size > 0 and train_size > 0 and (length < 0 or (train_size + valid_size <= length)), "Length : {}\nTrain size : {}\nValid size : {}".format(length, train_size, valid_size)
+        
+        dataset = build_tf_dataset(dataset)
+        
+        train = dataset.take(train_size)
+        valid = dataset.skip(train_size).take(valid_size)
+        
+    elif isinstance(dataset, (list, tuple)) and len(dataset) == 2:
+        x_train, x_valid, y_train, y_valid = sklearn_train_test_split(
+            dataset, 
+            train_size      = train_size, 
+            test_size       = valid_size, 
+            random_state    = random_state, 
+            shuffle         = shuffle, 
+            stratify        = labels
+        )
+        train, valid = (x_train, y_train), (x_valid, y_valid)
+    elif isinstance(dataset, pd.DataFrame) and split_by_unique:
+        uniques = dataset[split_column].value_counts()
+        if min_occurence is not None and min_occurence > 0:
+            uniques = uniques[uniques > min_occurence]
+        uniques = uniques.index
+
+        train_uniques, valid_uniques = sklearn_train_test_split(
+            uniques,
+            train_size      = train_size, 
+            test_size       = valid_size, 
+            random_state    = random_state, 
+            shuffle         = shuffle
+        )
+        
+        train = dataset[dataset[split_column].isin(train_uniques)]
+        valid = dataset[dataset[split_column].isin(valid_uniques)]
+    else:
+        train, valid = sklearn_train_test_split(
+            dataset, 
+            train_size      = train_size, 
+            test_size       = valid_size, 
+            random_state    = random_state, 
+            shuffle         = shuffle, 
+            stratify        = labels
+        )
+    
+    return train, valid
+
+def prepare_dataset(data, 
+                    batch_size             = 1,
+                    shuffle_size           = -1,
+                     
+                    encode_fn              = None,
+                    filter_fn              = None,
+                    augment_fn             = None,
+                    map_fn                 = None,
+                    memory_consuming_fn    = None,
+                     
+                    prefetch               = True,
+                    cache                  = True,
+                    batch_before_map       = False,
+                    padded_batch           = False,
+                    pad_kwargs             = {},
+                     
+                    prefetch_size          = AUTOTUNE,
+                    num_parallel_calls     = AUTOTUNE,
+                    
+                    debug = False,
+                    ** kwargs):
+    """
+        Prepare the dataset for training with all configuration given
+        
+        Preparation procedure : 
+            1) Convert it to a tf.data.Dataset with `build_tf_dataset` function
+            2) If provided : map dataset with `encode_fn`
+            3) If provided : filter dataset with `filter_fn`
+            4) If batch_before_map  : batch + cache
+            5) If provided : map dataset with `map_fn`
+            6) Cache dataset
+            7) If provided : map dataset with `memory_consuming_fn`
+            8) If not already done : batch dataset
+            9) Prefetch dataset
+        
+        The cache procedure is : 
+            1) cache
+            2) shuffle
+        The batch procedure is :
+            1) If provided : map dataset with `augment_fn`
+            2) batch dataset (with padded batch if required)
+        
+        Note that caching is always done before batching because we do not want to cache augmented data
+    """
+    def cache_dataset(dataset):
+        if cache:
+            dataset = dataset.cache()
+        
+        if shuffle_size > 0:
+            dataset = dataset.shuffle(shuffle_size)
+            
+        return dataset
+        
+    def batch_dataset(dataset):
+        if augment_fn is not None: 
+            dataset = dataset.map(augment_fn, num_parallel_calls = num_parallel_calls)
+            if debug: print("- Dataset after augmentation : {}".format(dataset))
+        
+        if batch_size > 0:
+            if not padded_batch:
+                dataset = dataset.batch(batch_size)
+            else:
+                dataset = dataset.padded_batch(batch_size, **pad_kwargs)
+            if debug: print("- Dataset after batch : {}".format(dataset))
+            
+        return dataset 
+    
+    dataset = build_tf_dataset(data, ** kwargs)
+    if dataset is None: return None
+    
+    if debug: print("Original dataset : {}".format(dataset))
+    
+    if encode_fn is not None:
+        dataset = dataset.map(encode_fn, num_parallel_calls = num_parallel_calls)
+        if debug: print("- Dataset after encoding : {}".format(dataset))
+    
+    if filter_fn is not None:
+        dataset = dataset.filter(filter_fn)
+        if debug: print("- Dataset after filtering : {}".format(dataset))
+    
+    if batch_before_map:
+        dataset = cache_dataset(dataset)
+        dataset = batch_dataset(dataset)
+        
+    if map_fn is not None:
+        dataset = dataset.map(map_fn, num_parallel_calls = num_parallel_calls)
+        if debug: print("- Dataset after mapping : {}".format(dataset))
+    
+    dataset = cache_dataset(dataset)
+    
+    if memory_consuming_fn is not None:
+        dataset = dataset.map(memory_consuming_fn, 
+                              num_parallel_calls = num_parallel_calls)
+        if debug: print("- Dataset after memory mapping : {}".format(dataset))
+    
+    if not batch_before_map:        
+        dataset = batch_dataset(dataset)
+    
+    if prefetch:
+        dataset = dataset.prefetch(prefetch_size)
+    
+    return dataset
+    
+def default_generator_fn(generator):
+    def generator_fn():
+        i = 0
+        while i < len(generator):
+            yield generator[i]
+            i += 1
+    return generator_fn
+

@@ -139,6 +139,7 @@ def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, ** kwarg
     if noise is None: noise = audio[: noise_length]
     return nr.reduce_noise(audio_clip = audio, noise_clip = noise)
     
+
 def tf_normalize_audio(audio, max_val = 1., dtype = tf.float32):
     return tf.cast((audio / tf.reduce_max(tf.abs(audio))) * max_val, dtype)
 

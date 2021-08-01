@@ -1,3 +1,7 @@
+import os
+
+from models.base_model import infer_model_class
+
 from models.tts.waveglow import WaveGlow, PtWaveGlow
 from models.tts.tacotron2 import Tacotron2
 from models.tts.sv2tts_tacotron2 import SV2TTSTacotron2
@@ -5,11 +9,13 @@ from models.tts.vocoder import Vocoder
 
 _vocoder = None
 
-def get_tts_model(lang = None, model = None, model_class = None,
-                  vocoder = None, vocoder_class = None, ** kwargs):
-    global _vocoder
+_default_vocoer = {'name' : 'WaveGlow', 'model_class' : WaveGlow} if os.path.exists(os.path.join('pretrained_models', 'WaveGlow')) else None
 
+def get_tts_model(lang = None, model = None, vocoder = _default_vocoer, vocoder_class = None,
+                  ** kwargs):
     assert lang is not None or model is not None, "You must specify either the name of the model or the language of the model !"
+
+    global _vocoder, _models
     
     # Get pretrained information from '_pretrained'
     if model is None:
@@ -17,10 +23,11 @@ def get_tts_model(lang = None, model = None, model_class = None,
             raise ValueError("No pretrained model for this language !!\n  Supported : {}\n   Got : {}".format(lang, list(_pretrained.keys())))
         model = _pretrained[lang]
     # Convert 'model' to a dict
-    if isinstance(model, str): model = {'nom' : model}
-    if model_class is not None and 'model_class' not in model:
-        model['model_class'] = model_class
+    if not isinstance(model, dict): model = {'nom' : model}
+    model.setdefault('model_class', infer_model_class(model['nom'], _models))
     
+    if isinstance(vocoder, dict):
+        vocoder, vocoder_class = vocoder['name'], vocoder['model_class']
     # Create Vocoder class (if necessary)
     if _vocoder is None:
         _vocoder = Vocoder()
@@ -31,16 +38,15 @@ def get_tts_model(lang = None, model = None, model_class = None,
     
     return _vocoder
 
-def tts_stream(lang = None, model = None, model_class = None,
-               vocoder = None, vocoder_class = None, ** kwargs):
+def tts_stream(lang = None, model = None, vocoder = _default_vocoer, vocoder_class = None,
+               ** kwargs):
     model = get_tts_model(
-        lang = lang, model = model, model_class = model_class, vocoder = vocoder, 
-        vocoder_class = vocoder_class
+        lang = lang, model = model, vocoder = vocoder, vocoder_class = vocoder_class
     )
     model.stream(** kwargs)
 
-def tts(sentences, lang = None, model = None, model_class = None,
-        vocoder = None, vocoder_class = None, ** kwargs):
+def tts(sentences, lang = None, model = None, vocoder = _default_vocoer, vocoder_class = None,
+        ** kwargs):
     """
         Perform tts and return result of Waveglow.predict(...)
         Return : list of tuple (phrase, infos) whe infos is a dict
@@ -50,8 +56,7 @@ def tts(sentences, lang = None, model = None, model_class = None,
             - audio : raw audio (if directory is None) or filename of the full audio
     """
     model = get_tts_model(
-        lang = lang, model = model, model_class = model_class, vocoder = vocoder, 
-        vocoder_class = vocoder_class
+        lang = lang, model = model, vocoder = vocoder, vocoder_class = vocoder_class
     )
     return model.predict(sentences, ** kwargs)
 

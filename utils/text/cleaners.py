@@ -20,6 +20,10 @@ from utils.text.numbers import normalize_numbers
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
 
+_punctuation    = '_!?.,’“”‚‘—()[]{}:;\'"`+-*/^=\\<>&#$%@¿'
+_left_punctuation   = '([{'
+_right_punctuation  = ')]},.'
+
 # List of (regular expression, replacement) pairs for abbreviations:
 _english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1])
     for x in [
@@ -47,6 +51,18 @@ _english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1
 def expand_abbreviations(text, abreviations = _english_abreviations):
     for regex, replacement in abreviations:
         text = re.sub(regex, replacement, text)
+    return text
+
+def detach_punctuation(text, punctuation = _punctuation):
+    for punct in punctuation:
+        text = text.replace(punct, ' {} '.format(punct))
+    return text.strip()
+
+def attach_punctuation(text):
+    for punct in _left_punctuation:
+        text = text.replace('{} '.format(punct), punct)
+    for punct in _right_punctuation:
+        text = text.replace(' {}'.format(punct), punct)
     return text
 
 def expand_numbers(text, langue = 'en'):
@@ -87,19 +103,19 @@ def transliteration_cleaners(text):
     text = collapse_whitespace(text)
     return text
 
-def english_cleaners(text):
+def english_cleaners(text, to_lowercase = True, to_expand = True):
     '''Pipeline for English text, including number and abbreviation expansion.'''
     text = convert_to_ascii(text)
-    text = lowercase(text)
-    text = expand_numbers(text, langue='en')
+    if to_lowercase: text = lowercase(text)
+    if to_expand: text = expand_numbers(text, langue='en')
     text = expand_abbreviations(text)
     text = collapse_whitespace(text)
     return text
 
-def french_cleaners(text):
+def french_cleaners(text, to_lowercase = True, to_expand = True):
     '''Pipeline for French text, including number expansion.'''
     text = fr_convert_to_ascii(text)
-    text = lowercase(text)
-    text = expand_numbers(text, langue='fr')
+    if to_lowercase: text = lowercase(text)
+    if to_expand: text = expand_numbers(text, langue='fr')
     text = collapse_whitespace(text)
     return text

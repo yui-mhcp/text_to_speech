@@ -1,6 +1,5 @@
 import os
 import time
-import random
 import numpy as np
 import tensorflow as tf
 
@@ -102,12 +101,10 @@ class WaveGlow(BaseModel):
         return config
 
     @classmethod
-    def build_from_nvidia_pretrained(cls, nom = 'waveglow', ** kwargs):            
-        config = {** kwargs, 'nom' : nom}
-        
+    def build_from_nvidia_pretrained(cls, nom = None, ** kwargs):            
         nvidia_model = get_nvidia_waveglow()
         
-        instance = cls(** config)
+        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_waveglow', ** kwargs)
         
         pt_convert_model_weights(nvidia_model, instance.vocoder)
         

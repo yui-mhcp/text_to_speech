@@ -154,6 +154,23 @@ def build_siamese_dataset(dataset,
             - random_state  : state to use for reproducibility
     """
     assert isinstance(dataset, pd.DataFrame)
+    # Useful for some datasets where pairs are not based on ID's (such as SNLI)
+    if 'same' in dataset.columns:
+        same_ds = dataset[dataset['same']]
+        not_same_ds = dataset[~dataset['same']]
+
+        if shuffle:
+            same_ds = sklearn_shuffle(same_ds, random_state = random_state)
+            not_same_ds = sklearn_shuffle(not_same_ds, random_state = random_state)
+        
+        if not as_tf_dataset: return same_ds.reset_index(), not_same_ds.reset_index()
+    
+        same_ds = build_tf_dataset(same_ds)
+        not_same_ds = build_tf_dataset(not_same_ds)
+    
+        return tf.data.Dataset.zip((same_ds, not_same_ds))
+    
+    
     # Get unique IDs
     uniques = dataset[column].value_counts()
     if nb_unique is not None and len(uniques) > nb_unique:

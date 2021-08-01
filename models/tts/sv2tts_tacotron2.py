@@ -254,7 +254,7 @@ class SV2TTSTacotron2(Tacotron2):
     def predict(self,
                 * args,
                 embeddings  = None,
-                embedding_selector  = {},
+                embedding_mode  = {},
                 overwrite   = True,
                 ** kwargs
                ):
@@ -263,7 +263,7 @@ class SV2TTSTacotron2(Tacotron2):
             Arguments :
                 - args / kwargs : args passed to super().predict()
                 - embeddings    : the embeddings to use as input (only 1 is selected from this set and effectively used)
-                - embedding_selector    : kwargs passed to `select_embedding()`
+                - embedding_mode    : kwargs passed to `select_embedding()`
             Return : result of super().predict()
             
             Note : currently we just save the resulting audio for a given sentence but not the speaker / embedding used to generate it. 
@@ -276,9 +276,9 @@ class SV2TTSTacotron2(Tacotron2):
             self.load_embeddings()
         
         if not self.use_utterance_embedding:
-            embedding_selector.setdefault('mode', 'mean')
+            embedding_mode.setdefault('mode', 'mean')
         
-        selected_embedding = select_embedding(self.embeddings, ** embedding_selector)
+        selected_embedding = select_embedding(self.embeddings, ** embedding_mode)
         selected_embedding = tf.expand_dims(
             tf.cast(selected_embedding, tf.float32), axis = 0
         )
@@ -306,13 +306,13 @@ class SV2TTSTacotron2(Tacotron2):
         
         kwargs.setdefault('lang', pretrained_model.lang)
         kwargs.setdefault('text_encoder', pretrained_model.text_encoder)
-        kwargs.setdefault('speaker_embedding_dim', pretrained_model.speaker_embedding_dim)
         kwargs.setdefault('speaker_encoder_name', pretrained_model.speaker_encoder_name)
+        kwargs.setdefault('speaker_embedding_dim', pretrained_model.speaker_embedding_dim)
         
-        instance = cls(nom = nom, ** kwargs)
+        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = pretrained_name, ** kwargs)
 
         partial_transfer_learning(instance.tts_model, pretrained_model.tts_model)
-                
+        
         instance.save()
         
         return instance

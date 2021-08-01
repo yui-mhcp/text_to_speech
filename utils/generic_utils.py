@@ -204,7 +204,7 @@ def map_output_names(values, names):
         raise ValueError("Try to associate {} values with {} names !\n  Values : {}\n  Names : {}".format(len(flattened_values), len(flattened_names), flattened_values, flattened_names))
     return {n : v for n, v in zip(flattened_names, flattened_values)}
 
-def pad_batch(batch, pad_value = 0, max_length = None, dtype = np.float32):
+def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     """
         Create a padded version of batch in a single np.ndarray
         Note that this function allows to have different shapes on different dimensions and will pad all of them. 
@@ -218,6 +218,12 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = np.float32):
         Return : 
             - padded_batch : np.ndarray of same rank as data
     """
+    if not hasattr(batch[0], 'shape'): return np.array(batch)
+    
+    if dtype is None:
+        b0 = batch[0] if not hasattr(batch[0], 'numpy') else batch[0].numpy()
+        dtype = b0.dtype
+    
     max_shape = batch[0].shape
     for b in batch:
         max_shape = [max(max_s, s) for max_s, s in zip(max_shape, b.shape)]

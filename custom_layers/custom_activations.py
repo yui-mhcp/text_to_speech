@@ -37,7 +37,7 @@ _activations = {
 }
 
 def get_activation(activation, ** kwargs):
-    if isinstance(activation, tf.keras.layers.Layer): return activation
+    if activation is None or isinstance(activation, tf.keras.layers.Layer): return activation
     elif isinstance(activation, str):
         if activation == 'leaky': return tf.keras.layers.LeakyReLU(** kwargs)
         return tf.keras.layers.Activation(_activations.get(activation, activation))

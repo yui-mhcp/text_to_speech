@@ -1,25 +1,109 @@
+# /!\ COPYRIGHT FOR FUNCTIONS `bpe` and `bytes_to_unicode` only /!\
+# Copyright 2018 The Open AI Team Authors and The HuggingFace Inc. team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import tensorflow as tf
 
 _max_length = 150
 
 _end_sentence = ('...', '.', ' ?', ' !', '?', '!')
 
-def create_padding_mask(seq, pad_value = 0, dtype = tf.float32):
+def bytes_to_unicode():
+    """
+    Returns list of utf-8 byte and a mapping to unicode strings. We specifically avoids mapping to whitespace/control
+    characters the bpe code barfs on.
+    The reversible bpe codes work on unicode strings. This means you need a large # of unicode characters in your vocab
+    if you want to avoid UNKs. When you're at something like a 10B token dataset you end up needing around 5K for
+    decent coverage. This is a significant percentage of your normal, say, 32K bpe vocab. To avoid that, we want lookup
+    tables between utf-8 bytes and unicode strings.
+    """
+    bs = (
+        list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(2 ** 8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2 ** 8 + n)
+            n += 1
+    cs = [chr(n) for n in cs]
+    return dict(zip(bs, cs))
+
+def get_pairs(text):
+    return list([(text[i], text[i+1]) for i in range(0, len(text) - 1)])
+
+def bpe(token, bpe_ranks):
+    word = tuple(token)
+    pairs = get_pairs(word)
+    
+    if not pairs: return token
+    
+    while True:
+        bigram = min(pairs, key = lambda pair: bpe_ranks.get(pair, float('inf')))
+        
+        if bigram not in bpe_ranks: break
+        
+        first, second = bigram
+        new_word = []
+        i = 0
+        while i < len(word):
+            try:
+                j = word.index(first, i)
+            except ValueError:
+                new_word.extend(word[i:])
+                break
+            else:
+                new_word.extend(word[i:j])
+                i = j
+            
+            if word[i] == first and i < len(word) - 1 and word[i + 1] == second:
+                new_word.append(first + second)
+                i += 2
+            else:
+                new_word.append(word[i])
+                i += 1
+        new_word = tuple(new_word)
+        word = new_word
+        if len(word) == 1: break
+        else: pairs = get_pairs(word)
+    return word
+
+def create_padding_mask(seq, seq_len = None, pad_value = 0, dtype = tf.float32):
     """
         Return padding mask matching attention shape [batch_size, 1, 1, seq_len]
     """
-    mask = tf.cast(tf.math.equal(seq, pad_value), dtype = dtype)
+    if seq_len is None:
+        mask = tf.cast(tf.math.equal(seq, pad_value), dtype = dtype)
+    else:
+        mask = tf.sequence_mask(
+            seq_len, maxvalue = tf.shape(seq)[1], dtype = dtype
+        )
     return mask[:, tf.newaxis, tf.newaxis, :]
 
 def create_look_ahead_mask(batch_size, size, dtype = tf.float32):
     mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-    mask = tf.tile(tf.expand_dims(mask, axis = 0), [batch_size, 1, 1])
+    mask = tf.tile(tf.reshape(mask, [1, 1, size, size]), [batch_size, 1, 1, 1])
     
     return tf.cast(mask, dtype = dtype)
 
-def create_combined_mask(target, pad_value = 0):
+def create_combined_mask(target, seq_len, pad_value = 0):
     look_ahead_mask = create_look_ahead_mask(tf.shape(target)[0], tf.shape(target)[1])
-    padding_mask    = create_padding_mask(target, pad_value = pad_value)
+    padding_mask    = create_padding_mask(
+        target, seq_len = seq_len, pad_value = pad_value, dtype = look_ahead_mask.dtype
+    )
+    
     return tf.maximum(look_ahead_mask, padding_mask)
 
 def create_transformer_masks(inp, target, input_pad_value = 0, target_pad_value = 0):

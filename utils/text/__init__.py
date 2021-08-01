@@ -1,6 +1,6 @@
 from utils.text import cmudict
 
-from utils.text.text_encoder import TextEncoder
+from utils.text.text_encoder import TextEncoder, CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL
 from utils.text.text_processing import *
 
 _pad            = '_'
@@ -30,32 +30,41 @@ accent_replacement_matrix = {
     'i' : {'î' : 0}, 'î' : {'i' : 0}
 }
 
-def get_symbols(langue, ponctuation = True, maj = True, arpabet = True, 
-                accents = True, numbers = False):
+def get_symbols(lang,
+                punctuation = 1,
+                maj     = True,
+                arpabet = True, 
+                accents = True,
+                numbers = False
+               ):
     symbols = [_pad] + list(_special)
-    if ponctuation: 
-        symbols += list(_punctuation) if ponctuation == 1 else list(_mini_punctuation)
+    
+    if punctuation: 
+        symbols += list(_punctuation) if punctuation == 1 else list(_mini_punctuation)
     else: symbols += [' ']
+    
     symbols += list(_letters) if maj else list(_min_letters)
-    if langue == 'en' and arpabet: symbols += _arpabet
-    if langue == 'fr' and accents: 
-        symbols += list(_accents) if accents == 1 else list(_mini_accents)
+    
+    if lang == 'en' and arpabet: symbols += _arpabet
+    if lang == 'fr' and accents: symbols += list(_accents)
+    
     if numbers: symbols += _numbers
+    
     return symbols
 
-def default_encoder(langue, ** kwargs):
-    langue = langue.lower()
-    if langue in ('fr', 'francais', 'français', 'frensch'):
+def default_encoder(lang, ** kwargs):
+    lang = lang.lower()
+    if lang in ('fr', 'francais', 'français', 'french'):
         return default_french_encoder(** kwargs)
-    elif langue in ('en', 'english', 'anglais'):
+    elif lang in ('en', 'english', 'anglais'):
         return default_english_encoder(** kwargs)
     else:
-        print("Langue d'encoder inconnue : {} - renvoi de l'encoder par défaut".format(langue))
-        return TextEncoder(get_symbols(langue), word_level = False, **kwargs)
+        print("Unknown language : {} - return char-level encoder with default symbols".format(lang))
+        return TextEncoder(get_symbols(lang), level = 'char', ** kwargs)
 
-def default_english_encoder(cleaners = ['english_cleaners'], word_level = False, **kwargs):
-    return TextEncoder(en_symbols, word_level = word_level, cleaners = cleaners, **kwargs)
+def default_english_encoder(cleaners = ['english_cleaners'], level = 'char', ** kwargs):
+    return TextEncoder(en_symbols, level = level, cleaners = cleaners, ** kwargs)
 
-def default_french_encoder(cleaners = ['french_cleaners'], word_level = False, **kwargs):
-    return TextEncoder(fr_symbols, word_level = word_level, cleaners = cleaners, **kwargs)
+def default_french_encoder(cleaners = ['french_cleaners'], level = 'char', ** kwargs):
+    return TextEncoder(fr_symbols, level = level, cleaners = cleaners, ** kwargs)
 

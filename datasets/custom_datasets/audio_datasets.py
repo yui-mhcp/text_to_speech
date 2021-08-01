@@ -123,23 +123,23 @@ def preprocess_CommonVoice_annots(directory, file = 'validated.tsv',
     }
     
     dataset = pd.read_csv(os.path.join(directory, file), sep = '\t')
+    dataset['path'] = dataset['path'].apply(lambda f: os.path.join(directory, 'clips', f))
     
     for sub_dir in os.listdir(directory):
         if not sub_dir.startswith('wavs_'): continue
         dataset[sub_dir] = dataset['path'].apply(
             lambda f: f.replace('clips', sub_dir).replace('.mp3', '.wav')
         )
-    
+
     if dropna: dataset.dropna(inplace = True)
-    
+
     if pop_down:
         dataset = dataset[dataset['down_votes'] == 0]
         
     if pop_votes:
         dataset.pop('up_votes')
         dataset.pop('down_votes')
-        
-    dataset['path'] = dataset['path'].apply(lambda f: os.path.join(directory, 'clips', f))
+
     dataset['gender'] = dataset['gender'].apply(
         lambda s: s[0].upper() if isinstance(s, str) else s
     )
@@ -147,10 +147,11 @@ def preprocess_CommonVoice_annots(directory, file = 'validated.tsv',
     for col in dataset.columns: new_columns.setdefault(col, col)
     dataset.columns = [new_columns[c] for c in dataset.columns]
     
-    dataset = filter_col(dataset, 'sex', sexe)
-    dataset = filter_col(dataset, 'age', age)
-    dataset = filter_col(dataset, 'accent', accent)
-        
+    if sexe: dataset = filter_col(dataset, 'sex', sexe)
+    if age: dataset = filter_col(dataset, 'age', age)
+    if accent: dataset = filter_col(dataset, 'accent', accent)
+
+    dataset = dataset.reset_index()
     dataset['time'] = -1
     dataset = add_default_rate(dataset)
     

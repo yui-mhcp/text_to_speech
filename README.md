@@ -51,16 +51,15 @@ Available architectures :
 
 | Language  | Dataset   | Synthesizer   | Vocoder   | Speaker Encoder   | Trainer   | Weights   |
 | :-------: | :-------: | :-----------: | :-------: | :---------------: | :-------: | :-------: |
-| `en`      | [LJSpeech](https://keithito.com/LJ-Speech-Dataset/)   | `Tacotron2`   | `WaveGlow`    | / | [NVIDIA](https://github.com/NVIDIA)   | [Google Drive](https://drive.google.com/drive/folders/1n-PMDR5VVv2fmflt4W7ziP-E2XIKwZJk?usp=sharing)  |
-| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `Tacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/drive/folders/1Il3p8ujhyVbDFUrUpolxRcqwOicb8nni?usp=sharing)  |
-| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/drive/folders/1r3KHaYTtlxm4rio7qsgwEC8Dy9YVYhfG?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/drive/folders/1vnGZcRUjuXAMgzLz1Y1Y7Prvz7AlTIQs?usp=sharing)  |
+| `en`      | [LJSpeech](https://keithito.com/LJ-Speech-Dataset/)   | `Tacotron2`   | `WaveGlow`    | / | [NVIDIA](https://github.com/NVIDIA)   | [Google Drive](https://drive.google.com/file/d/1mnhPgOE8IrQ3cTtfwOScZEn3aFZvaZG7/view?usp=sharing)  |
+| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `Tacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/file/d/1BC0-2T_EAFKB9lhuaJLsiYSbEFeJxxz7/view?usp=sharing)  |
+| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1at9bYsAoazqMccDBXW089DjivMS1Nb2x/view?usp=sharing)  |
 
+You can download the `tensorflow` version of `WaveGlow` at [this link](https://drive.google.com/file/d/1Lx-MiiRuxWmBX4_ZORD9YT4LfgHb0Tfk/view?usp=sharing)
 
 Models must be unzipped in the `pretrained_models/` directory !
 
-**Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. In order to allow you to use it without GPU, I also releases the `nvidia pretrained_tacotron2` model converted to `tensorflow`. However, the `WaveGlow` vocoder still needs a GPU and I do not post weights for the `tensorflow` as it is not relevant to use it on CPU. 
-
-You can easily convert `WaveGlow` to use it with `tensorflow` but it seems a bit slower than the `pytorch` version. 
+**Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :)
 
 
 ## Usage and demonstration
@@ -86,7 +85,7 @@ You can also find some audio generated in `example_outputs/` or directly in the 
 - [x] Make a `Google Colab` demonstration
 - [x] Implement WaveGlow in `tensorflow 2.x`
 - [x] Add `batch_size` support for `vocoder inference`
-- [ ] Add pretrained `SV2TTS` weights
+- [x] Add pretrained `SV2TTS` weights
 - [ ] Add document parsing to perform `TTS` on document
 - [ ] Add new languages support
 - [ ] Add new TTS architectures / models

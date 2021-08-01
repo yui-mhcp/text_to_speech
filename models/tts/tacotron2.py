@@ -51,9 +51,9 @@ class Tacotron2(BaseModel):
             text_encoder['use_sos_and_eos'] = False
             if 'vocab' not in text_encoder:
                 text_encoder['vocab'] = get_symbols(lang, arpabet = False)
-                text_encoder['word_level'] = False
+                text_encoder['level'] = 'char'
             else:
-                text_encoder.setdefault('word_level', False)
+                text_encoder.setdefault('level', 'char')
             text_encoder.setdefault('cleaners', ['french_cleaners'] if lang == 'fr' else ['english_cleaners'])
             self.text_encoder = TextEncoder(** text_encoder)
         
@@ -250,17 +250,8 @@ class Tacotron2(BaseModel):
     def compile(self, loss = 'tacotronloss', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
-    def encode_text(self, phrase):
-        if isinstance(phrase, tf.Tensor):
-            phrase = phrase.numpy()
-            if isinstance(phrase, (list, np.ndarray)):
-                phrase = [p.decode('utf-8') for p in phrase]
-            else:
-                phrase = phrase.decode('utf-8')
-        elif isinstance(phrase, bytes):
-            phrase = phrase.decode('utf-8')
-            
-        return self.text_encoder.encode(phrase)
+    def encode_text(self, text):
+        return self.text_encoder.encode(text)
     
     def decode_text(self, encoded):
         if isinstance(encoded, tf.Tensor): encoded = encoded.numpy()
@@ -477,7 +468,7 @@ class Tacotron2(BaseModel):
         if not isinstance(sentences, (list, tuple)): sentences = [sentences]
         # get unique sentences to read
         sentences_to_read = list(set([
-            p for p in sentences if overwrite or p not in infos_pred
+            p for p in sentences if overwrite or infos_pred.get(p, {}).get('mels', None) is None
         ]))
         # split them according to the 'max_text_length' argument
         splitted = split_text(sentences_to_read, max_text_length)
@@ -526,10 +517,10 @@ class Tacotron2(BaseModel):
                 text = sentences_to_read[index[num]]
                 
                 if index_part[num] == 0:
-                    infos_pred.setdefault(text, {
-                        'splitted' : [], 'mels' : [], 'plots' : []
-                    })
+                    infos_pred.setdefault(text, {})
                     infos_pred[text]['splitted'] = []
+                    infos_pred[text].setdefault('mels', [])
+                    infos_pred[text].setdefault('plots', [])
 
                 infos_pred[text]['splitted'].append(flattened[num])
                 
@@ -581,10 +572,10 @@ class Tacotron2(BaseModel):
                 time_to_string(t_save)
             ))
         
-        return [(p, infos_pred[p]) for p in sentences]
+        return [(p, infos_pred[p]) for p in sentences if len(p) > 0]
                                     
-    def get_config(self, *args, **kwargs):
-        config = super().get_config(*args, **kwargs)
+    def get_config(self, * args, ** kwargs):
+        config = super().get_config(* args, ** kwargs)
         config['lang']      = self.lang
         
         config['max_input_length']  = self.max_input_length
@@ -596,47 +587,30 @@ class Tacotron2(BaseModel):
         return config
     
     @classmethod
-    def build_from_pretrained(cls, 
-                              nom,
-                              pretrained_name,
-                              new_lang      = None,
-                              new_encoder   = None,
-                              ** kwargs
-                             ):
+    def build_from_pretrained(cls, nom, pretrained_name, ** kwargs):
         with tf.device('cpu') as device:        
             pretrained_model = Tacotron2(nom = pretrained_name)
         
-        config = {
-            'nom'   : nom,
-            'lang'  : pretrained_model.lang if new_lang is None else new_lang,
-            'text_encoder'  : pretrained_model.text_encoder if new_encoder is None else new_encoder
-        }
-        config = {** kwargs, ** config}
+        kwargs.setdefault('lang', pretrained_model.lang)
+        kwargs.setdefault('text_encoder', pretrained_model.text_encoder)
         
-        instance = cls(** config)
+        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = pretrained_name, ** kwargs)
 
         partial_transfer_learning(instance.tts_model, pretrained_model.tts_model)
-                
+        
         instance.save()
         
         return instance
 
     @classmethod
-    def build_from_nvidia_pretrained(cls, 
-                                     nom    = 'pretrained_tacotron2', 
-                                     new_lang      = None,
-                                     new_encoder   = None,
-                                     ** kwargs
-                                    ):            
-        config = {
-            'nom'   : nom,
-            'lang'  : 'en' if new_lang is None else new_lang,
-            'text_encoder'  : default_english_encoder() if new_encoder is None else new_encoder
-        }
-        config = {** kwargs, ** config}
+    def build_from_nvidia_pretrained(cls, nom = 'pretrained_tacotron2', ** kwargs):
+        kwargs.setdefault('lang', 'en')
+        kwargs.setdefault('text_encoder', default_english_encoder())
         
         with tf.device('cpu') as device:
-            instance = cls(** config)
+            instance = cls(
+                nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_tacotron2', ** kwargs
+            )
         
         nvidia_model = get_architecture('nvidia_tacotron', to_gpu = False)
         

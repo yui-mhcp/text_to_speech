@@ -5,9 +5,9 @@ import tensorflow as tf
 from utils import get_object, print_objects
 
 def __load():
-    for module_name in glob.glob('custom_architectures/*.py'):
-        if os.path.basename(module_name) in ['__init__.py', 'current_blocks.py']: continue
-        module_name = module_name.replace(os.path.sep, '.')[:-3]
+    for module_name in os.listdir('custom_architectures'):
+        if module_name in ['__init__.py', '__pytache__']: continue
+        module_name = 'custom_architectures.' + module_name.replace('.py', '')
 
         module = __import__(
             module_name, fromlist = ['custom_objects', 'custom_functions']

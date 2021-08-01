@@ -12,33 +12,35 @@ from utils.audio.audio_annotation import AudioAnnotation
 _zero_time = datetime.datetime(2000, 1, 1)
 
 class AudioSearch(AudioAnnotation):
-    def __init__(self, keyword, * args, distance_fn = None, threshold = 0.8,
-                 ** kwargs):
+    def __init__(self, keyword, * args, distance_fn = None, threshold = 0.8, ** kwargs):
         super().__init__(* args, ** kwargs)
         
-        self.distance_fn    = distance_fn
         self.keyword        = keyword
         self.threshold      = threshold
-        self.probabilities  = np.zeros((len(self._alignment),))
-        self.errors         = []
-        self.scores         = []
+        self.distance_fn    = distance_fn
+        
+        self.probabilities  = None
+        self.errors         = None
+        self.scores         = None
         
         self.__search()
     
     def __search(self):
         self.probabilities  = np.zeros((len(self._alignment),))
-        self.errors         = []
-        self.scores         = []
+        self.errors     = []
+        self.scores     = []
+        
         for i, info in enumerate(self._alignment):
-            if 'text' not in info: continue
+            if 'text' not in info or len(info['text']) == 0:
+                self.errors.append([])
+                self.scores.append([])
+                continue
 
             dist, matrix = self.distance(info['text'])
 
             self.probabilities[i] = 1. - dist
             self.errors.append(matrix[-1, 1:])
-            self.scores.append(
-                1. - matrix[-1, 1:] / len(self.keyword)
-            )
+            self.scores.append(1. - matrix[-1, 1:] / len(self.keyword))
     
     @property
     def index(self):
@@ -103,7 +105,12 @@ class AudioSearch(AudioAnnotation):
     def __lt__(self, value):
         return len(self) < len(value) or self.filename < value.filename
     
-    def search(self, keyword):
+    def set_threshold(self, threshold):
+        self.threshold = threshold
+        self.__search()
+    
+    def search(self, keyword, threshold = None):
+        if threshold is not None: self.threshold = threshold
         self.keyword = keyword
         self.__search()
     
@@ -125,14 +132,14 @@ class AudioSearch(AudioAnnotation):
     def contains(self):
         return len(self.index) > 0
     
-    def plot(self, ** kwargs):
+    def plot(self, by_alignment = True, ** kwargs):
         plot(
-            self.probabilities, ylim = (0, 1),
-            title = "Probability of {} for each alignment".format(self.keyword),
+            self.probabilities if by_alignment else np.concatenate(self.scores),
+            ylim = (0, 1), title = "Probability of {} for each alignment".format(self.keyword),
             xlabel = 'Alignment index', ylabel = "Probability (%)", ** kwargs
         )
     
-    def display(self, before = 2., display_time = 10, max_display = None, verbose = 2):
+    def display(self, before = 2.5, display_time = 10, max_display = None, verbose = 2):
         rate, audio = self.load()
         
         nb_display = 0
@@ -144,9 +151,6 @@ class AudioSearch(AudioAnnotation):
                 temps   = display_time
             )
             nb_display += 1
-
-
-
 
 
 
@@ -199,10 +203,13 @@ class SearchResult(object):
         self.results = [result for result in self if result.contains()]
         return removed
     
-    def search(self, keyword):
-        for res in self: res.search(keyword)
+    def set_threshold(self, * args, ** kwargs):
+        for res in self: res.set_threshold(* args, ** kwargs)
+
+    def search(self, * args, ** kwargs):
+        for res in self: res.search(* args, ** kwargs)
     
-    def plot(self, *args, ** kwargs):
+    def plot(self, * args, ** kwargs):
         for res in self: res.plot(*args, **kwargs)
 
     def display(self, * args, ** kwargs):

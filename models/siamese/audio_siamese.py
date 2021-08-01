@@ -74,10 +74,11 @@ class AudioSiamese(SiameseNetwork):
         os.makedirs(self.identification_dir, exist_ok = True)
 
     def build_encoder(self, 
-                      depth          = 128,
-                      flatten_type   = 'max',
-                      embedding_dim  = 128, 
-                      flatten_kwargs = {},
+                      depth             = 128,
+                      flatten_type      = 'max',
+                      embedding_dim     = 128, 
+                      flatten_kwargs    = {},
+                      normalize         = None,
                       **kwargs
                      ):
         flatten_kwargs.setdefault('units', embedding_dim)

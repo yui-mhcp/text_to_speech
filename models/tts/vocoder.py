@@ -65,6 +65,7 @@ class Vocoder(object):
                 sentences,
                 directory       = None,
                 silence_time    = 0.15,
+                save_mel        = True,
                 
                 batch_size  = 16,
                 vocoder_batch_size  = 1,
@@ -73,7 +74,8 @@ class Vocoder(object):
                 display = False,
                 play    = False,
                 debug   = False, 
-                ** kwargs):
+                ** kwargs
+               ):
         """
             Perform Text-To-Speech synthesis on `sentences` and return result as a list of information
             
@@ -106,7 +108,7 @@ class Vocoder(object):
             batch_size  = batch_size,
             directory   = directory,
             overwrite   = overwrite,
-            save        = directory is not None,
+            save        = directory is not None and save_mel,
             debug       = debug,
             ** kwargs
         )
@@ -119,7 +121,7 @@ class Vocoder(object):
             overwrite   = overwrite,
             directory   = directory,
             silence_time    = silence_time,
-            display     = display,
+            display     = display or directory is None,
             play    = play,
             ** kwargs
         )
@@ -159,9 +161,10 @@ def vocoder_inference(vocoder,
                       batch_size   = 1,
                        
                       ext      = 'mp3',
-                      concat       = False,
+                      concat       = True,
                       overwrite    = False,
                       directory    = None,
+                      filename      = 'audio_{}.{}',
                       concat_filename  = 'concat_audios_{}.{}',
                        
                       silence_time = 0.15,
@@ -185,6 +188,7 @@ def vocoder_inference(vocoder,
             - concat    : whether to concat all predictions in a big audio
             - overwrite : whether to regenerate audio if it exists (or reuse it)
             - directory : where to save data (if not provided, do not save)
+            - filename  : filename format for audio file for single text
             - concat_filename   : filename format of the full concatenation
             
             - silence_time  : the time of silence between each text part (of a single sentence)
@@ -219,13 +223,14 @@ def vocoder_inference(vocoder,
     uniques = {}
     texts, mels, is_last = [], [], []
     for text, infos in mels_predictions:
+        # Store processed text to not re-process them
         if text in uniques: continue
         uniques[text] = True
         
+        # Skip this text if audio already exists
         infos_pred.setdefault(text, {})
-        infos_pred[text].update(infos)
         if 'audio' in infos_pred[text] and not overwrite: continue
-        
+        # Add information to process
         texts   += [text] * len(infos['mels'])
         mels    += infos['mels']
         is_last += [0] * (len(infos['mels']) - 1) + [1]
@@ -264,7 +269,7 @@ def vocoder_inference(vocoder,
                     # This trick allows to really overwrite the audio if it already exists
                     audio_filename = infos_pred[text].get(
                         'audio', 
-                        os.path.join(audio_dir, 'audio_{}.{}'.format(num_pred, ext))
+                        os.path.join(audio_dir, filename.format(num_pred, ext))
                     )
                     # Save audio to filename
                     write_audio(audio, audio_filename, rate)

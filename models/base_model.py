@@ -33,7 +33,8 @@ class ModelInstances(type):
     _instances = {}
     _is_restoring   = False
     def __call__(cls, *args, **kwargs):
-        nom = kwargs.get('nom', cls.__name__)
+        nom = kwargs.get('nom', None)
+        if nom is None: nom = cls.__name__
         if nom in cls._instances:
             pass
         elif not cls._is_restoring and kwargs.get('restore', True) and os.path.exists(os.path.join(_pretrained_models_folder, nom, 'config.json')):
@@ -50,6 +51,7 @@ class BaseModel(metaclass = ModelInstances):
                  nom    = None,
                  restore    = True,
                  max_to_keep    = 3,
+                 pretrained_name    = None,
                  
                  **kwargs
                 ):
@@ -57,7 +59,8 @@ class BaseModel(metaclass = ModelInstances):
         Constructor that initialize the model's configuration, architecture, folders, ... 
         """
         self.nom    = nom if nom is not None else self.__class__.__name__
-
+        self.pretrained_name    = pretrained_name
+        
         self.__history  = History.load(self.history_file)
         
         self.__models        = {}
@@ -549,6 +552,8 @@ class BaseModel(metaclass = ModelInstances):
             des += "Total number of layers : {}\n".format(self.count_layers())
             des += "Total number of parameters : {:.3f} Millions\n".format(self.count_params() / 1000000)
             
+        if self.pretrained_name is not None:
+            des += "Transfer-learning from : {}\n".format(self.pretrained_name)
         des += "Already trained on {} epochs ({} steps)\n\n".format(self.epochs, self.steps)
             
         if len(free_optimizer) > 0:
@@ -1293,6 +1298,7 @@ class BaseModel(metaclass = ModelInstances):
     def get_config(self, with_trackable_variables = False):
         config = {
             "nom" : self.nom,
+            'pretrained_name'   : self.pretrained_name,
             ** self.backend_kwargs
         }
         
@@ -1416,7 +1422,7 @@ class BaseModel(metaclass = ModelInstances):
             del self
     
     @classmethod
-    def clone(cls, pretrained, nom = None, compile = True):
+    def clone(cls, pretrained, nom = None, compile = False):
         pretrained_dir = os.path.join(_pretrained_models_folder, pretrained)
         if not os.path.exists(pretrained_dir):
             raise ValueError("Pretrained model {} does not exist !".format(pretrained))
@@ -1434,11 +1440,13 @@ class BaseModel(metaclass = ModelInstances):
             raise ValueError("Le modèle {} existe déjà mais n'est pas de la bonne classe !\n  Classe atendue : {}\n  Classe obtenue : {}".format(nom, config['class_name'], cls.__name__))
         
         config = config['config']
-        config['nom'] = nom
         
-        return cls(
-            ** config, restore = {'directory' : os.path.join(pretrained_dir, 'saving'), 'compile' : compile}
+        instance = cls(
+            nom = nom, max_to_keep = 1, ** config,
+            restore = {'directory' : os.path.join(pretrained_dir, 'saving'), 'compile' : compile}
         )
+        instance.save()
+        return instance
     
     @classmethod
     def restore(cls, nom):
@@ -1451,6 +1459,13 @@ class BaseModel(metaclass = ModelInstances):
             raise ValueError("Le modèle {} existe déjà mais n'est pas de la bonne classe !\n  Classe atendue : {}\n  Classe obtenue : {}".format(nom, config['class_name'], cls.__name__))
         
         return cls(** config['config'])
+    
+def infer_model_class(nom, possible_class):
+    if nom is None or not isinstance(nom, str): return None
+        
+    config = load_json(os.path.join(_pretrained_models_folder, nom, 'config.json'), default = {})
+        
+    return possible_class.get(config.get('class_name', ''), None)
 
 def _can_restore(restore, config_file):
     if restore is True: return os.path.exists(config_file)

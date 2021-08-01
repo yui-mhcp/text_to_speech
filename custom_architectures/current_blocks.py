@@ -6,6 +6,12 @@ from custom_layers import get_activation
 _flatten_type   = (None, 'max', 'mean', 'avg', 'average', 'lstm', 'gru', 'bi_lstm', 'bilstm', 'bi_gru', 'bigru')
 _pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampling')
 
+_str_layers     = {
+    'dense' : Dense, 'conv1d' : Conv1D, 'conv2d' : Conv2D, 'lstm' : LSTM, 'gru' : GRU,
+    'bi_lstm' : lambda * args, ** kwargs: Bidirectional(LSTM(* args, ** kwargs)),
+    'bi_gru'  : lambda * args, ** kwargs: Bidirectional(GRU(* args, ** kwargs))
+}
+
 def _get_var(_vars, i):
     if callable(_vars) and _vars.__class__.__name__ == 'function': return _vars(i)
     elif isinstance(_vars, list): return _vars[i]
@@ -47,21 +53,46 @@ def _get_flatten_layer(flatten_type, dim, ** kwargs):
         
         return layer
 
-def _get_pooling_layer(pool_type, dim, * args, ** kwargs):
+def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, ** kwargs):
+    if isinstance(pool_type, (list, tuple)):
+        return [
+            _get_pooling_layer(pool, dim, * args, global_pooling = global_pooling, ** kwargs)
+            for pool in pool_type
+        ]
+    
     dim = dim.lower()
     assert pool_type in _pool_type, "Pool type {} not a valid type {}".format(pool_type, _pool_type)
     assert dim in ('1d', '2d')
     
     if pool_type == 'max':
-        pool_class = MaxPooling1D if dim == '1d' else MaxPooling2D
+        if global_pooling:
+            pool_class = GlobalMaxPooling1D if dim == '1d' else GlobalMaxPooling2D
+        else:
+            pool_class = MaxPooling1D if dim == '1d' else MaxPooling2D
     elif pool_type in ('avg', 'average'):
-        pool_class = AveragePooling1D if dim == '1d' else AveragePooling2D
+        if global_pooling:
+            pool_class = GlobalAveragePooling1D if dim == '1d' else GlobalAveragePooling2D
+        else:
+            pool_class = AveragePooling1D if dim == '1d' else AveragePooling2D
     elif pool_type in ('up', 'upsampling'):
+        if global_pooling:
+            raise ValueError("Upsampling does not exist in global pooling mode !")
         pool_class = UpSampling1D if dim == '1d' else UpSampling2D
     else:
         return None
     
     return pool_class(* args, ** kwargs)
+
+def _get_layer(layer_name, * args, ** kwargs):
+    if isinstance(layer_name, (list, tuple)):
+        return [_get_layer(layer, dim, * args, ** kwargs)for layer in layer_name]
+    
+    layer_name = layer_name.lower()
+    if layer_name not in _str_layers:
+        raise ValueError("Unknown layer type !\n  Accepted : {}\n  Got : {}".format(
+            tuple(_str_layers.keys()), layer_name))
+    
+    return _str_layers[layer_name](* args, ** kwargs)
 
 def _layer_bn(model, layer_type, n, * args, 
               

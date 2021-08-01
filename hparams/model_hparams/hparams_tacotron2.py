@@ -72,7 +72,7 @@ HParamsTacotron2Sampler = HParams(
     add_go_frame       = False,
     remove_last_frame  = False,
     
-    teacher_forcing_mode    = 'linear',
+    teacher_forcing_mode    = 'constant',
     init_ratio      = 1.0,
     final_ratio     = 0.75,
     init_decrease_step  = 50000,

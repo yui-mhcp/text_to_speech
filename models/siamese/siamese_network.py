@@ -68,7 +68,7 @@ class SiameseNetwork(BaseModel):
         
         super(SiameseNetwork, self).__init__(**kwargs)
     
-    def build_encoder(self, ** kwargs):
+    def build_encoder(self, normalize = True, ** kwargs):
         """
             Return a `tf.keras.Sequential` model which is the encoder of the siamese network 
         """
@@ -98,19 +98,24 @@ class SiameseNetwork(BaseModel):
         
     def _build_model(self, normalize = True, ** kwargs):
         """ Build the `siamese` architecture with self.build_encoder() as encoder part """
-        encoder = self.build_encoder(** kwargs)
+        encoder = self.build_encoder(normalize = normalize, ** kwargs)
         
-        if normalize:
-            encoder.add(tf.keras.layers.Lambda(
-                l2_normalize,
-                name = 'normalization_layer'
-            ))
+        if isinstance(encoder, tf.keras.Sequential):
+            if normalize:
+                encoder.add(tf.keras.layers.Lambda(
+                    l2_normalize, name = 'normalization_layer'
+                ))
+            input_kwargs = {'input_shape' : encoder.input_shape[1:]}
+        else:
+            if normalize:
+                print("[WARNING]\tEncoder is not a `tf.keras.Sequential` so you have to handle `normalize` internally !")
+            input_kwargs = {'input_signature' : self.encoder_input_signature}
         
         siamese_config = {
             'architecture_name' : 'siamese',
             'model'             : encoder,
-            'input_shape'       : encoder.input_shape[1:],
-            'distance_metric'   : self.distance_metric
+            'distance_metric'   : self.distance_metric,
+            ** input_kwargs
         }
                 
         super()._build_model(siamese = siamese_config)
@@ -131,16 +136,16 @@ class SiameseNetwork(BaseModel):
         return self.encoder.input_shape
     
     @property
+    def encoder_input_signature(self):
+        return tf.TensorSpec(shape = self.encoder_input_shape, dtype = tf.float32)
+    
+    @property
     def embedding_dim(self):
         return self.encoder.output_shape[-1]
     
     @property
     def input_signature(self):
-        input_shape = self.encoder_input_shape
-        return (
-            tf.TensorSpec(shape = input_shape, dtype = tf.float32),
-            tf.TensorSpec(shape = input_shape, dtype = tf.float32),
-        )
+        return (self.encoder_input_signature, self.encoder_input_signature)
     
     @property
     def output_signature(self):
@@ -148,16 +153,21 @@ class SiameseNetwork(BaseModel):
     
     @property
     def encoder(self):
-        return self.siamese.layers[2]
+        signature = self.encoder_input_signature
+        n = 1 if not isinstance(signature, (list, tuple)) else len(signature)
+        return self.siamese.layers[n * 2]
     
     @property
     def decoder(self):
+        signature = self.encoder_input_signature
+        n = 1 if not isinstance(signature, (list, tuple)) else len(signature)
+        
         inputs = [
             tf.keras.layers.Input(shape = (None, self.embedding_dim)),
             tf.keras.layers.Input(shape = (None, self.embedding_dim))
         ]
         out = inputs
-        for l in self.siamese.layers[3:]:
+        for l in self.siamese.layers[n * 2 + 1:]:
             out = l(out)
         return tf.keras.Model(inputs, out, name = 'siamese_decoder')
     
@@ -199,8 +209,10 @@ class SiameseNetwork(BaseModel):
         """
         inp_x = self.get_input({k[:-2] : v for k, v in data.items() if '_x' in k})
         inp_y = self.get_input({k[:-2] : v for k, v in data.items() if '_y' in k})
-                
-        same = 1 if 'id' in data or data['id_x'] == data['id_y'] else 0
+        
+        if 'same' in data: same = int(data['same'])
+        elif 'id' in data: same = 1
+        else: same = int(data['id_x'] == data['id_y'])
         
         return (inp_x, inp_y), same
     
@@ -367,16 +379,16 @@ class SiameseNetwork(BaseModel):
         """
         inputs = self.get_input(data)
         
-        if not isinstance(inputs, (list, tuple)): inputs = [inputs]
+        if not isinstance(inputs, list): inputs = [inputs]
         
         encoder = self.encoder
         
         embedded = []
         for idx in tqdm(range(0, len(inputs), batch_size)):
             batch = inputs[idx : idx + batch_size]
-            batch = pad_batch(batch)
+            batch = pad_batch(batch) if not isinstance(batch[0], (list, tuple)) else [pad_batch(b) for b in zip(* batch)]
             batch = self.preprocess_input(batch)
-            
+
             embedded_batch = encoder(batch)
             embedded.append(embedded_batch)
         

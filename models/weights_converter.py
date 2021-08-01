@@ -18,7 +18,8 @@ def get_pt_layers(pt_model):
     for k, v in state_dict.items():
         layer_name = '.'.join(k.split('.')[:-1])
         if layer_name not in layers: layers[layer_name] = []
-        layers[layer_name].append(v.cpu().numpy())
+        if hasattr(v, 'cpu'): v = v.cpu()
+        layers[layer_name].append(v.numpy())
     return layers
 
 def pt_convert_layer_weights(layer_weights):
@@ -171,16 +172,23 @@ def partial_transfer_learning(target_model,
     
     new_weights = []
     idx_a, idx_b = 0, 0
-    while idx_a < len(target_variables) and idx_b < len(pretrained_variables):
-        v, pretrained_v = target_variables[idx_a], pretrained_variables[idx_b]
-        v = v.numpy()
-        if not isinstance(pretrained_v, np.ndarray) : pretrained_v = pretrained_v.numpy()
+    while idx_a < len(target_variables):
+        v = target_variables[idx_a]
+        if hasattr(v, 'numpy'): v = v.numpy()
+        if idx_b == len(pretrained_variables):
+            if not skip_layer or not skip_from_a: break
+            idx_a += 1
+            new_weights.append(v)
+            continue
+        else:
+            pretrained_v = pretrained_variables[idx_b]
+            if not isinstance(pretrained_v, np.ndarray): pretrained_v = pretrained_v.numpy()
 
         if verbose:
             print("Target[{}] shape     : {}".format(idx_a, v.shape))
             print("Pretrained[{}] shape : {}".format(idx_b,pretrained_v.shape))
             
-        if v.shape != pretrained_v.shape and skip_layer:            
+        if v.shape != pretrained_v.shape and skip_layer:
             if skip_from_a: 
                 idx_a += 1
                 new_weights.append(v)
@@ -188,7 +196,7 @@ def partial_transfer_learning(target_model,
             continue
         
         if len(v.shape) != len(pretrained_v.shape):
-            raise ValueError("Le nombre de dimension des variables {} est différent !\n  Target shape : {}\n  Pretrained shape : {}".format(idx_a, v.shape, pretrained_v.shape))
+            raise ValueError("Number of dimension for variables {} differs !\n  Target shape : {}\n  Pretrained shape : {}".format(idx_a, v.shape, pretrained_v.shape))
                         
         new_v = None
         if v.shape == pretrained_v.shape:
@@ -207,6 +215,7 @@ def partial_transfer_learning(target_model,
     
     if idx_a != len(target_variables) or idx_b != len(pretrained_variables):
         raise ValueError("All variables of a model have not been consummed\n  Model A : length : {} - variables consummed : {}\n  Model B (pretrained) : length : {} - variables consummed : {}".format(len(target_variables), idx_a, len(pretrained_variables), idx_b))
+            
     
     target_model.set_weights(new_weights)
     print("Weights transfered successfully !")

@@ -948,4 +948,3 @@ custom_objects  = {
     'Tacotron2DecoderCell'  : Tacotron2DecoderCell,
     'Tacotron2' : Tacotron2
 }
-    

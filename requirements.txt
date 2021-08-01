@@ -6,7 +6,7 @@ tensorflow_datasets
 librosa
 pandas
 pytube3
-tensorflow==2.3.2
+tensorflow
 tqdm
 Unidecode
 matplotlib

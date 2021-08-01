@@ -215,21 +215,47 @@ def simple_cnn(input_shape, output_shape, **kwargs):
         return tf.keras.Model(inputs = inputs, outputs = outputs, name = hparams.name)
 
 
-def siamese(model, input_shape = None,
-            distance_metric = 'euclidian', activation = 'sigmoid', 
-            final_name = 'decision_layer', name = 'SiameseNet'):
+def siamese(model,
+            input_shape     = None,
+            input_signature = None,
+            input_type      = tf.float32,
+            distance_metric = 'euclidian',
+            activation      = 'sigmoid', 
+            final_name      = 'decision_layer',
+            name            = 'SiameseNet'
+           ):
     assert distance_metric in _distance_fn
     assert isinstance(model, tf.keras.Model)
     
-    if input_shape is None: input_shape = model.input_shape
+    if input_shape is None and input_signature is None: input_shape = model.input_shape
+    elif input_signature is not None:
+        if isinstance(input_signature, (list, tuple)):
+            input_shape = [inp.shape[1:] for inp in input_signature]
+            input_type  = [inp.dtype for inp in input_signature]
+        else:
+            input_shape, input_type = input_signature.shape[1:], input_signature.dtype
     
-    input1 = Input(input_shape, name = 'input_1')
-    input2 = Input(input_shape, name = 'input_2')
+    if isinstance(input_shape, list):
+        if not isinstance(input_type, (list, tuple)): input_type = [input_type] * len(input_shape)
+        input1 = [
+            Input(inp_shape, dtype = inp_type, name = 'input_1_{}'.format(i+1))
+            for i, (inp_shape, inp_type) in enumerate(zip(input_shape, input_type))
+        ]
+        input2 = [
+            Input(inp_shape, dtype = inp_type, name = 'input_2_{}'.format(i+1))
+            for i, (inp_shape, inp_type) in enumerate(zip(input_shape, input_type))
+        ]
+    else:
+        input1 = Input(input_shape, dtype = input_type, name = 'input_1')
+        input2 = Input(input_shape, dtype = input_type, name = 'input_2')
     inputs = [input1, input2]
     
     embedded_1 = model(input1)
     embedded_2 = model(input2)
     
+    if isinstance(embedded_1, (list, tuple)): embedded_1 = embedded_1[0]
+    if isinstance(embedded_2, (list, tuple)): embedded_2 = embedded_2[0]
+
     embedded_distance = Subtract()([embedded_1, embedded_2])
     embedded_distance = Lambda(
         _distance_fn[distance_metric], name = distance_metric

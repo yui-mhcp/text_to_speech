@@ -85,7 +85,7 @@ def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, ** kwargs
 
 def _get_layer(layer_name, * args, ** kwargs):
     if isinstance(layer_name, (list, tuple)):
-        return [_get_layer(layer, dim, * args, ** kwargs)for layer in layer_name]
+        return [_get_layer(layer, * args, ** kwargs)for layer in layer_name]
     
     layer_name = layer_name.lower()
     if layer_name not in _str_layers:

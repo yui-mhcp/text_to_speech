@@ -13,6 +13,8 @@ hyperparameter. Some cleaners are English-specific. You'll typically want to use
 '''
 
 import re
+import unicodedata
+
 from unidecode import unidecode
 from utils.text.numbers import normalize_numbers
 
@@ -20,9 +22,10 @@ from utils.text.numbers import normalize_numbers
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
 
-_punctuation    = '_!?.,’“”‚‘—()[]{}:;\'"`+-*/^=\\<>&#$%@¿'
+_punctuation    = '_!?.,’“”‚‘—–()[]{}:;\'"`+-*/^=\\<>&#$%@¿′″·§~'
 _left_punctuation   = '([{'
 _right_punctuation  = ')]},.'
+_accents    = "âàéèêîùç"
 
 # List of (regular expression, replacement) pairs for abbreviations:
 _english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1])
@@ -48,6 +51,18 @@ _english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1
     ]
 ]
 
+def strip(text, lstrip = True, rstrip = True):
+    if lstrip and rstrip: return text.strip()
+    elif lstrip: return text.lstrip()
+    elif rstrip: return text.rstrip()
+    return text
+
+def lstrip(text):
+    return text.lstrip()
+
+def rstrip(text):
+    return text.rstrip()
+
 def expand_abbreviations(text, abreviations = _english_abreviations):
     for regex, replacement in abreviations:
         text = re.sub(regex, replacement, text)
@@ -57,6 +72,15 @@ def detach_punctuation(text, punctuation = _punctuation):
     for punct in punctuation:
         text = text.replace(punct, ' {} '.format(punct))
     return text.strip()
+
+def remove_punctuation(text, punctuation = _punctuation):
+    return ''.join(c for c in text if c not in punctuation)
+
+def remove_tokens(text, tokens = None):
+    if not tokens: return text
+    regex = re.compile(r'\b({})\b'.format('|'.join(tokens)))
+    text = re.sub(regex, ' ', text)
+    return text
 
 def attach_punctuation(text):
     for punct in _left_punctuation:
@@ -73,11 +97,21 @@ def lowercase(text):
 
 def collapse_whitespace(text):
     return re.sub(_whitespace_re, ' ', text)
+    
+def remove_control(text):
+    return "".join([
+        c for c in text if c in ('\t', '\n', '\r', ' ') or c.isalnum()
+        or not unicodedata.category(c).startswith('C')
+    ])
+
+def remove_accents(text):
+    text = unicodedata.normalize("NFD", text)
+    return ''.join([c for c in text if unicodedata.category(c) != "Mn"])
 
 def convert_to_ascii(text):
     return unidecode(text)
 
-def fr_convert_to_ascii(text, accents_to_keep = 'éèêç'):
+def fr_convert_to_ascii(text, accents_to_keep = _accents):
     converted = []
     for c in text:
         converted.append(unidecode(c) if c not in accents_to_keep else c)

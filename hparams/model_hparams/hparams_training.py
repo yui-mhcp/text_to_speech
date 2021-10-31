@@ -1,10 +1,16 @@
 from hparams.hparams import HParams
 
-HParamsTraining = HParams(    
+_dataset_config = {
+    'batch_size'    : 64,
+    'train_batch_size'  : None,
+    'valid_batch_size'  : None,
+    'test_batch_size'   : 1,
+    'shuffle_size'      : 1024
+}
+
+HParamsTraining = HParams(   
+    ** _dataset_config,
     epochs      = 10,
-    batch_size  = 32,
-    valid_batch_size    = 32,
-    test_batch_size     = 1,
     
     verbose     = 1,
     
@@ -14,16 +20,10 @@ HParamsTraining = HParams(
     train_size  = None,
     valid_size  = None,
     test_size   = 4,
-    pred_step   = -1,
-    
-    shuffle_size    = 1024
-)
-
-HParamsPrediction   = HParams(
-    
+    pred_step   = -1
 )
 
 HParamsTesting  = HParams(
-
+    ** _dataset_config
 )
 

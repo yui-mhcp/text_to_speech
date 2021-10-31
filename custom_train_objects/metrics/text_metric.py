@@ -1,8 +1,8 @@
 import tensorflow as tf
 
 class TextMetric(tf.keras.metrics.Metric):
-    def __init__(self, pad_value = 0, name = 'TextMetrics', ** kwargs):
-        super(TextMetric, self).__init__(name = name, ** kwargs)
+    def __init__(self, pad_value = 0, name = 'edit_distance', ** kwargs):
+        super().__init__(name = name, ** kwargs)
         self.pad_value = pad_value
         
         self.samples    = self.add_weight("num_samples", initializer = "zeros", dtype = tf.int32)
@@ -40,6 +40,6 @@ class TextMetric(tf.keras.metrics.Metric):
         return mean_dist
 
     def get_config(self):
-        config = super(TextMetric, self).get_config()
+        config = super().get_config()
         config['pad_value'] = self.pad_value
         return config

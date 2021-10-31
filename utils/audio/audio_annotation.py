@@ -8,10 +8,13 @@ import pandas as pd
 from utils.plot_utils import plot, plot_embedding
 from utils.generic_utils import dump_json, load_json, var_from_str, time_to_string
 from utils.audio.audio_io import display_audio, read_audio, write_audio
+from utils.audio.mkv_utils import extract_audio, extract_subtitles, parse_subtitles
 
-_min_time       = 0.001
+_min_time       = 0.05
 _timing_keys    = ('start', 'end', 'time')
 _needed_keys    = ('id', 'start', 'end')
+
+MAX_MODIFY_TIME = 2
 
 ANNOT_RULES     = """
 Start add / modification of information. 
@@ -19,12 +22,16 @@ Start add / modification of information.
 Here are the following option / notation to modify / add data :
 - To quit : 'q'
 - To go to the next part            : press Enter
-- To go back to the previous part   : '!prec'
 - To modify the default field       : simply enter the new value
 - To modify other fields : 
-    1) JSON format : '{"field1" : val1, "field2" : val2}'
-    2) With ':' separator : field1:val1, field2:val2
-    3) with ' = ' separator : field1 = val1, field2 = val2
+    1) JSON format : `'{"field1" : val1, "field2" : val2}'`
+    2) With ':' separator : `field1:val1, field2:val2`
+    3) with ' = ' separator : `field1 = val1, field2 = val2`
+
+Special commands :
+    - !prec     : go back to previous part
+    - !split    : split current part in 2
+    - !remove   : remove the current part
 
 Note : commas are used to separate fields. If you want to put a comma inside a value, do not put space after it, it will be automatically added (for instance 'names = a,b' becomes 'names = a, b')
 """
@@ -58,7 +65,7 @@ class AudioAnnotation(object):
                 - filename  : str (filename of the audio file) or ndarray (raw audio)
                 - rate      : rate of the audio (only relevant if filename is raw audio)
                 - infos     : list of dict with informations about each part
-                    Must contains (at least) keys : {debut, fin, id}
+                    Must contains (at least) keys : {start, end, id}
                 - directory : where to save results / config
                 - text_based_alignment  : bool, whether to make alignment based on text or not.
                     If True, will combine parts if text are a continuous sentence. 
@@ -80,11 +87,29 @@ class AudioAnnotation(object):
             self.build_cluster(** kwargs)
         elif alignment is None:
             self._alignment = self.build_alignment()
-            
+        else:
+            self._check_validity()
+    
+    def _check_validity(self):
+        _should_update = False
+        for data in [self.infos, self._alignment]:
+            for info in data:
+                # This is for retro-compatibility where keys were in french
+                # Furthermore, it checks that all required new keys are in given information / alignment
+                for old, new in [('debut', 'start'), ('fin', 'end'), ('duree', 'time'), ('id', 'id')]:
+                    if old in info:
+                        _should_update = True
+                        info[new] = info.pop(old)
+                    if new not in info:
+                        raise ValueError("Annotation is bad configured ! Missing required key {}\n{}".format(
+                            new, info))
+        if _should_update:
+            self.save()
+    
     def _assert_valid_infos(self):
         for i, info in enumerate(self.infos):
             if not all([k in info for k in _needed_keys]):
-                raise ValueError("L'information {} ne contient pas les informations nécessaires !\n  Reçu : {}".format(i, info))
+                raise ValueError("Information {} does not contain required information !\n  Required keys : {}\n  Got : {}".format(i, _needed_keys, info))
     
     def _normalize_infos(self, timestep = 2.):
         if self.infos is None:
@@ -105,7 +130,33 @@ class AudioAnnotation(object):
             info['time'] = info['end'] - info['start']
             self._ids[i] = info['id']
     
+    def load_subtitles(self, filename, stream = -1, ** kwargs):
+        sub_filenames = filename
+        if filename.endswith('.mkv'):
+            sub_filenames = extract_subtitles(
+                filename,
+                stream      = stream,
+                output_dir  = '',
+                output_file = 'tmp_subtitle',
+                verbose     = True
+            )
+
+        alignment = parse_subtitles(sub_filenames, ** kwargs)
+        for i, info in enumerate(alignment):
+            info['id'] = i
+        
+        if filename.endswith('.mkv'):
+            for f in sub_filenames: os.remove(f)
+        
+        self.infos  = alignment
+        self._ids   = [info['id'] for info in alignment]
+        self._alignment = self.build_alignment()
+        
     def build_cluster(self, ** kwargs):
+        if isinstance(self.infos, str) or self.filename.endswith('.mkv'):
+            self.load_subtitles(self.infos if isinstance(self.infos, str) else self.filename)
+            return self._ids, self._alignment
+        
         if self.infos is None:
             self._normalize_infos(** kwargs)
         else:
@@ -208,7 +259,7 @@ class AudioAnnotation(object):
         des += "- Number of alignments : {} ({} sub-parts)\n".format(
             len(self._alignment), len(self.infos)
         )
-        des += "- Speakers (n = {}) : {}\n".format(len(self.speakers), self.speakers)
+        des += "- Speakers (n = {}) : {}\n".format(len(self.speakers), self.speakers[:25])
         return des
     
     def __getitem__(self, idx):
@@ -228,10 +279,39 @@ class AudioAnnotation(object):
                 audio = resample(audio, int(len(audio) * ratio))
             if self.rate is None: self.rate = rate
             return rate, audio
-        return read_audio(self.filename, target_rate = rate)
+        
+        if self.filename.endswith('.mkv'):
+            if self.directory: os.makedirs(self.directory, exist_ok = True)
+            filename = extract_audio(self.filename, output_dir = self.directory)
+        
+            if filename: self.filename = filename
+        
+        rate, audio = read_audio(self.filename, target_rate = rate)
+        if self.rate is None: self.rate = rate
+        return rate, audio
     
     def describe(self):
         return self.alignment.describe()
+    
+    def pop(self, index, rebuild = True):
+        if not isinstance(index, (list, tuple, np.ndarray)): index = [index]
+        self._ids = [id_i for i, id_i in enumerate(self._ids) if i not in index]
+        self.infos = [info for i, info in enumerate(self.infos) if i not in index]
+        if rebuild: self._alignment = self.build_alignment()
+    
+    def split(self, idx, rebuild = True):
+        start_time, end_time = self.infos[idx]['start'], self.infos[idx]['end']
+        half_time = (end_time - start_time) / 2
+        
+        self.infos.insert(idx + 1, self.infos[idx].copy())
+        self.infos[idx].update({
+            'start' : start_time, 'end' : end_time - half_time, 'time' : half_time
+        })
+        self.infos[idx + 1].update({
+            'start' : start_time + half_time, 'end' : end_time, 'time' : half_time
+        })
+        self._ids.insert(idx + 1, self._ids[idx])
+        if rebuild: self._alignment = self.build_alignment()
     
     def _update_infos(self, idx, ** kwargs):
         """
@@ -243,20 +323,20 @@ class AudioAnnotation(object):
         
         time_modified = 'end' in kwargs or 'start' in kwargs
         
-        if 'start' in kwargs and isinstance(kwargs['start'], int):
+        if 'start' in kwargs and isinstance(kwargs['start'], int) and kwargs['start'] > 2 and self.rate:
             kwargs['start'] /= self.rate
             
-        if 'end' in kwargs and isinstance(kwargs['end'], int):
+        if 'end' in kwargs and isinstance(kwargs['end'], int) and kwargs['end'] > 2 and self.rate:
             kwargs['end'] /= self.rate
         
-        if kwargs.get('end', 0) > 1:
-            print("As a security, we disallow to modify time for more than 1sec")
-            kwargs['end'] = 1.
+        if abs(kwargs.get('end', 0)) > MAX_MODIFY_TIME:
+            print("As a security, we disallow to modify start / end for more than {}sec".format(MAX_MODIFY_TIME))
+            kwargs['end'] = MAX_MODIFY_TIME if kwargs['end'] > 0 else -MAX_MODIFY_TIME
         
-        if kwargs.get('start', 0) > 1:
-            print("As a security, we disallow to modify time for more than 1sec")
-            kwargs['start'] = 1.
-        
+        if abs(kwargs.get('start', 0)) > MAX_MODIFY_TIME:
+            print("As a security, we disallow to modify start / end for more than {}sec".format(MAX_MODIFY_TIME))
+            kwargs['start'] = MAX_MODIFY_TIME if kwargs['end'] > 0 else -MAX_MODIFY_TIME
+
         self._ids[idx]  = kwargs.get('id', self._ids[idx])
         kwargs['start'] = self.infos[idx]['start'] + kwargs.get('start', 0.)
         kwargs['end']   = self.infos[idx]['end'] + kwargs.get('end', 0.)
@@ -265,7 +345,6 @@ class AudioAnnotation(object):
         if kwargs['time'] <= 0.:
             kwargs['end'] = kwargs['start'] + _min_time
             kwargs['time'] = _min_time
-        
         #if idx > 0 and kwargs['start'] < self.infos[idx-1]['end']:
         #    self._update_infos(idx-1, fin = kwargs['start'])
         
@@ -332,17 +411,14 @@ class AudioAnnotation(object):
         i, prec = start_idx, []
         
         while i < len(data):
-            if ids is not None and data[i]['id'] not in ids:
+            if (ids is not None and data[i]['id'] not in ids) or (filter_fn and not filter_fn(data[i])):
                 i += 1
                 continue
-            debut, fin = data[i]['start'], data[i]['end']
             
-            if filter_fn and not filter_fn(data[i]):
-                i += 1
-                continue
+            start_time, end_time = data[i]['start'], data[i]['end']
             
             print('\n\nPart {} / {} :\n'.format(i, len(data)))
-            start, end = int(debut * rate), int(fin * rate)
+            start, end = int(start_time * rate), int(end_time * rate)
             
             audio_i = audio[start : end]
             
@@ -350,16 +426,16 @@ class AudioAnnotation(object):
                 display_audio(audio_i, rate = rate, temps = play_time, play = False)
                 
             if transform_fn: audio_i = transform_fn(audio_i, rate)
-            
+            # Display and print information about current data
             display_audio(audio_i, rate = rate, temps = play_time, play = play)
             
             if display:
                 plot(audio_i, ** kwargs)
             
-            print("\n    id : {} - debut : {} - fin : {} - infos :".format(
+            print("\n\nid : {} - start : {} - end : {} - infos :".format(
                 data[i]['id'], 
-                time_to_string(debut), 
-                time_to_string(fin)
+                time_to_string(start_time), 
+                time_to_string(end_time)
             ))
             for k, v in data[i].items():
                 if k == 'indexes' or k in _needed_keys: continue
@@ -369,15 +445,51 @@ class AudioAnnotation(object):
             if default in data[i]:
                 print("Current value : {}".format(data[i][default]))
             
+            # Get new infos
             new_infos = input("\n\nEnter new value :")
-            if len(new_infos) == 0 and default is not None and default not in data[i]:
-                new_infos = str(default_value)
             if len(new_infos) == 0:
-                prec.append(i)
-                i += 1
-                continue
+                if default_value is not None and default not in data[i]:
+                    new_infos = str(default_value)
+                else:
+                    prec.append(i)
+                    i += 1
+                    continue
             elif new_infos == '!prec':
-                i = prec.pop()
+                if len(prec) > 0: i = prec.pop()
+                continue
+            elif new_infos == '!split':
+                if by_part:
+                    self.split(i, False)
+                elif len(data[i]['indexes']) == 1:
+                    info_idx = data[i]['indexes'][0]
+                    
+                    self.split(info_idx, False)
+                    
+                    data[i] = {** self.infos[info_idx], 'indexes' : [info_idx]}
+                    data.insert(i + 1, {** self.infos[info_idx + 1], 'indexes' : [info_idx]})
+                    # Update next alignment indexes to take into account the new inserted information
+                    for j in range(i, len(data)):
+                        data[j]['indexes'] = [idx + 1 for idx in data[j]['indexes']]
+                else:
+                    sub_time = (end_time - start_time) / len(data[i]['indexes'])
+                    new_data = [{
+                        ** data[i],
+                        'indexes'   : [info_idx], 
+                        'start'     : start_time + idx * sub_time, 
+                        'end'       : start_time + idx * sub_time + sub_time,
+                        'time'      : sub_time
+                    } for idx, info_idx in enumerate(data[i]['indexes'])]
+                    
+                    data[i] = new_data[0]
+                    for j, d in enumerate(new_data[1:]):
+                        if j == 0: continue
+                        data.insert(i + j, d)
+                continue
+            elif new_infos == '!remove':
+                index = i if not by_part else data[i]['indexes']
+                self.pop(index, False)
+                # if by part, self.pop() will pop the data in `self.infos` and `data is self.infos`
+                if not by_part: data.pop(i)
                 continue
             elif new_infos == 'q': break
                         
@@ -407,13 +519,14 @@ class AudioAnnotation(object):
                 # modified end timing only for the last information
                 if infos.get('end', None):
                     last_idx = data[i]['indexes'][-1]
-                    data[i]['end'] += infos['end']
-                    self._update_infos(last_idx, fin = infos.pop('end'))
+                    self._update_infos(last_idx, end = infos.pop('end'))
+                    data[i]['end'] = self.infos[last_idx]['end']
                     
                 if infos.get('start', None):
                     first_idx = data[i]['indexes'][0]
-                    data[i]['start'] += infos['start']
-                    self._update_infos(first_idx, debut = infos.pop('start'))
+                    self._update_infos(first_idx, start = infos.pop('start'))
+                    data[i]['start'] = self.infos[first_idx]['start']
+                
                 infos.pop('time', None)
                 
                 for idx in data[i]['indexes']:
@@ -481,9 +594,7 @@ class AudioAnnotation(object):
     
     def remove_speaker(self, name):
         """ Remove all parts of a given speaker """
-        self._ids = [i for i in self._ids if i != name]
-        self.infos = [info for info in self.infos if info['id'] != name]
-        self._alignment = self.build_alignment()
+        self.pop([i for i, id_i in enumerate(self._ids) if id_i == name])
         
     def get_speaker_alignment(self, name):
         """
@@ -538,10 +649,10 @@ class AudioAnnotation(object):
             if idx is not None and i not in idx: continue
             
             if verbose:
-                print("\n\nID : {} - début : {} - fin : {}{}\n".format(
+                print("\n\nID : {} - start : {} - end : {}{}\n".format(
+                    infos['id'],
                     time_to_string(infos['start']), 
                     time_to_string(infos['end']), 
-                    infos['id'], 
                     ' - bonus infos : {}'.format({k : v for k, v in infos.items() if k not in _needed_keys}) if verbose == 2 else ''
                 ))
             display_audio(
@@ -696,7 +807,7 @@ class AudioAnnotation(object):
         
         if directory.endswith('.json'):
             config_file = directory
-            directory = directory[:-5]
+            directory = os.path.dirname(directory)
         else:
             config_file = os.path.join(directory, 'config.json')
         
@@ -708,7 +819,8 @@ def load_annotation_dir(directory):
     """ Load a list of AudioAnnotation from a given directory """
     results = []
     files = [
-        os.path.join(directory, f) for f in os.listdir(directory) if os.path.isdir(os.path.join(directory, f)) or f.endswith('.json')
+        os.path.join(directory, f) for f in os.listdir(directory)
+        if os.path.isdir(os.path.join(directory, f)) or f.endswith('.json')
     ]
     for file in files:
         try:

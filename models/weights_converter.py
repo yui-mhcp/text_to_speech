@@ -1,5 +1,12 @@
 import numpy as np
 
+def print_vars(model):
+    variables = model.variables if not isinstance(model, list) else model
+    print("# variables : {}".format(len(variables)))
+    for v in variables:
+        print("Name : {}\t- Shape : {}".format(v.name, v.shape))
+    print('\n\n')
+
 def transpose_weights(weights):
     if len(weights.shape) <= 1:
         return weights

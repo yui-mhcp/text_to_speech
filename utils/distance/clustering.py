@@ -73,10 +73,10 @@ class Clustering:
             cluster_indexes = tf.reshape(tf.where(cluster == cluster_id), [-1])
             if len(cluster_indexes) >= self.min_cluster_size: continue
             
-            print("Clean cluster {}".format(cluster_id))
+            if kwargs.get('debug', False): print("Clean cluster {}".format(cluster_id))
             other_ids = [id_i for id_i in ids if id_i != cluster_id]
             for idx in cluster_indexes:
-                new_id = knn.predict(points[i], possible_ids = other_ids)
+                new_id = tf.squeeze(knn.predict(points[i], possible_ids = other_ids))
                 if new_id == -2:
                     new_id = knn.predict(
                         points[i], possible_ids = other_ids, use_mean = True

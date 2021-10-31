@@ -65,7 +65,8 @@ def trim_silence_window(audio, rate = 22050, mode = 'start_end', threshold = 0.1
             np.linspace(1, 0, window_length // 2)
         ]) / (window_length // 2)
 
-    conv = np.convolve(np.square(audio), mask, mode = 'valid')
+    squared = np.square(audio)
+    conv    = np.convolve(np.square(audio), mask, mode = 'valid')
 
     trimmed = audio
     if 'end' in mode:
@@ -82,11 +83,15 @@ def trim_silence_window(audio, rate = 22050, mode = 'start_end', threshold = 0.1
     
     if debug:
         from utils.plot_utils import plot_multiple
+        plot_kwargs.setdefault('color', 'red')
+        plot_kwargs.setdefault('ncols', 1)
+        plot_kwargs.setdefault('x_size', 10)
+        plot_kwargs.setdefault('vlines_kwargs', {'colors' : 'w'})
         plot_multiple(
-            squared_audio = np.square(audio),
-            convolved = conv, ylim = (0, 0.1),
+            squared_audio = squared,
+            convolved = conv, ylim = (0, threshold),
             vlines = (idx_start[0], idx_end[-1]),
-            use_subplots = True, color = 'red', ** plot_kwargs
+            use_subplots = True, ** plot_kwargs
         )
     
     return trimmed if len(trimmed) > len(audio) // 4 else audio

@@ -127,6 +127,7 @@ class HParams:
     def parse_args(self, * args, ** kwargs):
         args_config = parse_args(* args, ** {** self.get_config(), ** kwargs})
         self.update(args_config)
+        return self
     
     def save(self, filename):
         config = self.get_config(with_prefix = True)

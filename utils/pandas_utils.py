@@ -9,7 +9,7 @@ _base_aggregation = {
     'total' : np.sum
 }
 
-def set_display_options(columns = 25, rows = 100, width = 100, colwidth = 50):
+def set_display_options(columns = 25, rows = 25, width = 125, colwidth = 50):
     pd.set_option('display.max_columns', columns)
     pd.set_option('display.max_row', rows)
 

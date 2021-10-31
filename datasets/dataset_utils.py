@@ -106,11 +106,11 @@ def build_tf_dataset(data, as_dict = True, siamese = False, ** kwargs):
         dataset = tf.data.Dataset.from_tensor_slices(data, **kwargs)
     elif isinstance(data, pd.DataFrame):
         if siamese:
-            dataset = build_siamese_dataset(data, **kwargs)
+            dataset = build_siamese_dataset(data, ** kwargs)
         elif as_dict:
-            dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'), **kwargs)
+            dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'), ** kwargs)
         else:
-            dataset = tf.data.Dataset.from_tensor_slices(data.values, **kwargs)
+            dataset = tf.data.Dataset.from_tensor_slices(data.values, ** kwargs)
     elif isinstance(data, str):
         if os.path.isdir(data):
             path = pathlib.Path(main_directory_path)

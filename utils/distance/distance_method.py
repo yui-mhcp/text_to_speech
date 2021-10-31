@@ -1,12 +1,77 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-            
-def distance(hypothesis, truth, * args, method = 'edit', ** kwargs):
-    if method not in _distance_methods:
-        raise ValueError("Méthode de calcul de distance non disponible !\n  Reçu : {}\n  Disponibles : {}".format(method, list(_distance_methods.keys())))
+
+def distance(x, y, method, as_matrix = False, max_matrix_size = -1, ** kwargs):
+    """
+        Compute distance between `x` and `y` with `method` function
         
-    return _distance_methods[method](hypothesis, truth, *args, **kwargs)
+        Arguments : 
+            - x : 1D vector or 2D matrix
+            - y : 2D matrix of points
+            - method : string (the name of the method)
+            - as_matrix : whether to compute matrix or point-wise distance (see notes)
+            - max_matrix_size : maximum number of values in the matrix distance computation
+            - kwargs : kwargs to pass to the distance function
+        Return : 
+            - `method` function applied to `x` and `y`
+        
+        Note : 
+        If `as_matrix is True` : return a matrix such that `matrix[i, j]` is the distance between `x[i]` and `y[j]`
+        Else : `matrix[i]` is the distance between `x[i]` and `y[i]`
+        
+        This distance can be a scalar (euclidian, manhattan, dot-product) or a vector of element-wise distance (l1, l2)
+        
+        Important note : this function returns a **distance** score it means that the lower the score, the more similar they are ! If the method is a similarity metric (such as dot-product), the function returns the inverse (- distances) to keep this property
+    """
+    distance_fn = method if callable(method) else _distance_methods.get(method, None)
+    if distance_fn is None:
+        raise ValueError("Distance method is not callable or does not exist !\n  Accepted : {}\n  Got : {}".format(
+            list(_distance_methods.keys()), method
+        ))
+    
+    if method in _str_distance_method:
+        return _str_distance_method[method](x, y, ** kwargs)
+
+    if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
+    if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
+    
+    if as_matrix:
+        if len(tf.shape(x)) == 2: x = tf.expand_dims(x, axis = 1)
+        if len(tf.shape(y)) == 2: y = tf.expand_dims(y, 0)
+    elif len(tf.shape(x)) == 2 and len(tf.shape(y)) == 3:
+        x = tf.expand_dims(x, axis = 1)
+
+    if max_matrix_size > 0:
+        max_y = max_matrix_size // tf.shape(x)[-1] + 1
+        max_x = max_matrix_size // (max_y * tf.shape(x)[-1]) + 1
+        
+        distances = []
+        for i in range(0, tf.shape(x)[0], max_x):
+            distances.append(tf.concat([
+                distance_fn(x[i : i + max_x], y[:, j : j + max_y], ** kwargs)
+                for j in range(0, tf.shape(y)[1], max_y)
+            ], axis = -1))
+        distances = tf.concat(distances, axis = 0)
+    else:
+        distances = distance_fn(x, y, ** kwargs)
+        
+    return distances if method != 'dp' else -distances # dot_product is a similarity metric
+
+def dot_product(x, y, ** kwargs):
+    return tf.squeeze(tf.matmul(x, y, transpose_b = True), axis = 1)
+
+def l1_distance(x, y, ** kwargs):
+    return tf.abs(x - y)
+
+def l2_distance(x, y, ** kwargs):
+    return tf.square(x, y)
+
+def manhattan_distance(x, y, ** kwargs):
+    return tf.reduce_sum(tf.abs(x - y), axis = -1)
+
+def euclidian_distance(x, y, ** kwargs):
+    return tf.math.sqrt(tf.reduce_sum(tf.square(x - y), axis = -1))
 
 def edit_distance(hypothesis,
                   truth,
@@ -92,19 +157,17 @@ def hamming_distance(hypothesis, truth, replacement_matrix = {}, normalize = Tru
     if normalize: distance = distance / len(truth)
     return distance
 
-def euclidian_distance(x, y, ** kwargs):
-    return tf.math.sqrt(tf.reduce_sum(tf.square(x - y), axis = -1))
 
-def manhattan_distance(x, y, ** kwargs):
-    return tf.reduce_sum(tf.abs(x - y), axis = -1)
-
-def l1_distance(x, y, ** kwargs):
-    return tf.abs(x - y)
+_str_distance_method    = {
+    'hamming'   : hamming_distance,
+    'edit'      : edit_distance
+}
 
 _distance_methods = {
+    ** _str_distance_method,
+    'dp'        : dot_product,
     'l1'        : l1_distance,
-    'euclidian' : euclidian_distance,
+    'l2'        : l2_distance,
     'manhattan' : manhattan_distance,
-    'edit'      : edit_distance,
-    'hamming'   : hamming_distance
+    'euclidian' : euclidian_distance
 }

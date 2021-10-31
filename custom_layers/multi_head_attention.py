@@ -13,7 +13,8 @@ HParamsMHA = HParams(
     residual    = True,
     drop_rate   = 0.1,
     normalize   = True,
-    epsilon     = 1e-6
+    epsilon     = 1e-6,
+    norm_training   = True
 )
 
 class MultiHeadAttention(tf.keras.layers.Layer):
@@ -102,12 +103,11 @@ class MultiHeadAttention(tf.keras.layers.Layer):
             
             if self.dropout is not None:    output = self.dropout(output, training = training)
             if self.hparams.residual:       output = output + query
-            if self.norm_layer is not None: output = self.norm_layer(output)
+            if self.norm_layer is not None:
+                output = self.norm_layer(output, training = training and self.hparams.norm_training)
         
         return output, attention_weights if return_attention else output
     
     def get_config(self):
         config = super().get_config()
         return self.hparams + config
-        
-       

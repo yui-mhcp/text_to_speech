@@ -11,7 +11,7 @@ from custom_architectures import get_architecture
 from models.weights_converter import partial_transfer_learning, pt_convert_model_weights
 from utils import load_json, dump_json, time_to_string, plot_spectrogram, pad_batch
 from utils.audio import MelSTFT, load_audio, load_mel
-from utils.text import TextEncoder, split_text, default_english_encoder, get_symbols
+from utils.text import get_encoder, default_english_encoder, split_text
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 DEFAULT_MAX_TEXT_LENGTH = 150
@@ -46,23 +46,7 @@ class Tacotron2(BaseModel):
         self.max_output_length  = max_output_length
         
         # Initialization of Text Encoder
-        if text_encoder is None: text_encoder = {}
-        if isinstance(text_encoder, dict):
-            text_encoder['use_sos_and_eos'] = False
-            if 'vocab' not in text_encoder:
-                text_encoder['vocab'] = get_symbols(lang, arpabet = False)
-                text_encoder['level'] = 'char'
-            else:
-                text_encoder.setdefault('level', 'char')
-            text_encoder.setdefault('cleaners', ['french_cleaners'] if lang == 'fr' else ['english_cleaners'])
-            self.text_encoder = TextEncoder(** text_encoder)
-        
-        elif isinstance(text_encoder, str):
-            self.text_encoder = TextEncoder.load_from_file(text_encoder)
-        elif isinstance(text_encoder, TextEncoder):
-            self.text_encoder = text_encoder
-        else:
-            raise ValueError("input encoder de type inconnu : {}".format(text_encoder))
+        self.text_encoder = get_encoder(text_encoder = text_encoder, lang = lang)
         
         
         # Initialization of mel fn
@@ -326,24 +310,6 @@ class Tacotron2(BaseModel):
         kwargs['padded_batch']      = True
         
         return super().get_dataset_config(**kwargs)
-        
-    def train_step(self, batch):
-        inputs, target = batch
-
-        loss_fn     = self.tts_model_loss
-        optimizer   = self.tts_model_optimizer
-        variables   = self.tts_model.trainable_variables
-        
-        with tf.GradientTape() as tape:
-            pred = self(inputs, training = True)
-            losses = loss_fn(target, pred)
-            loss = losses[0]
-
-        gradients = tape.gradient(loss, variables)
-                
-        optimizer.apply_gradients(zip(gradients, variables))
-        
-        return self.update_metrics(target, pred)
     
     def predict_with_target(self, batch, step, prefix, directory = None, 
                             max_pred = 4, **kwargs):
@@ -572,7 +538,7 @@ class Tacotron2(BaseModel):
                 time_to_string(t_save)
             ))
         
-        return [(p, infos_pred[p]) for p in sentences if len(p) > 0]
+        return [(p, infos_pred[p]) for p in sentences if p in infos_pred]
                                     
     def get_config(self, * args, ** kwargs):
         config = super().get_config(* args, ** kwargs)

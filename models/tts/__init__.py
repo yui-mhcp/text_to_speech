@@ -1,6 +1,6 @@
 import os
 
-from models.base_model import infer_model_class
+from models.model_utils import infer_model_class
 
 from models.tts.waveglow import WaveGlow, PtWaveGlow
 from models.tts.tacotron2 import Tacotron2

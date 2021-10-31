@@ -1,7 +1,11 @@
 from utils.text import cmudict
 
 from utils.text.text_encoder import TextEncoder, CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL
+from utils.text.text_decoder import decode
 from utils.text.text_processing import *
+from utils.text.text_augmentation import random_mask
+
+from utils.text.html_parser import parse_html
 
 _pad            = '_'
 _punctuation    = '!\'(),.:;? '
@@ -29,6 +33,30 @@ accent_replacement_matrix = {
     'o' : {'ô' : 0}, 'ô' : {'o' : 0},
     'i' : {'î' : 0}, 'î' : {'i' : 0}
 }
+
+def get_encoder(lang, text_encoder = None, ** kwargs):
+    if text_encoder is None: text_encoder = kwargs.copy()
+    
+    if isinstance(text_encoder, dict):
+        if 'vocab' not in text_encoder:
+            text_encoder['vocab'] = get_symbols(lang, arpabet = False)
+            text_encoder['level'] = 'char'
+        else:
+            text_encoder.setdefault('level', 'char')
+        
+        text_encoder.setdefault('use_sos_and_eos', False)
+        text_encoder.setdefault('cleaners', ['french_cleaners'] if lang == 'fr' else ['english_cleaners'])
+        
+        encoder = TextEncoder(** text_encoder)
+        
+    elif isinstance(text_encoder, str):
+        encoder = TextEncoder.load_from_file(text_encoder)
+    elif isinstance(text_encoder, TextEncoder):
+        encoder = text_encoder
+    else:
+        raise ValueError("input encoder de type inconnu : {}".format(text_encoder))
+    
+    return encoder
 
 def get_symbols(lang,
                 punctuation = 1,

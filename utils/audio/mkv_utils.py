@@ -4,7 +4,7 @@ import subprocess
 
 from utils.generic_utils import load_json, dump_json
 
-def process_mkv(path, audio_stream = 1, subs_stream = 1, 
+def process_mkv(path, audio_stream = 1, subs_stream = -1, 
                 output_dir = None, audio_filename = None, subs_filename = None, 
                 map_file = None, verbose = True, ** kwargs):
     """
@@ -97,6 +97,8 @@ def extract_subtitles(path, output_dir = None, output_file = None, ** kwargs):
         output_file = os.path.join(
             output_dir, basename.replace('.mkv', '_subs.srt')
         )
+    elif not output_file.endswith('.srt'):
+        output_file += '.srt'
     
     return _extract(path, output_file, mode = 's', ** kwargs)
 
@@ -122,7 +124,14 @@ def parse_subtitles(path, join_threshold = 0., add_time = 0.5):
     def get_time(str_time):
         h, m, s = [float(t.replace(',', '.')) for t in str_time.split(':')]
         return h * 3600 + m * 60 + s
-
+    
+    if isinstance(path, (list, tuple)):
+        alignments = []
+        for p in path:
+            parsed = parse_subtitles(p, join_threshold, add_time)
+            alignments.extend([part for part in parsed if part not in alignments])
+        return sorted(alignments, key = lambda t: t['start'])
+    
     if not os.path.exists(path): return None
     
     with open(path, 'r', encoding = 'utf-8') as file:
@@ -154,6 +163,20 @@ def parse_subtitles(path, join_threshold = 0., add_time = 0.5):
     return infos
 
 def _extract(path, output_file, mode, stream = 1, verbose = True, overwrite = False):
+    if stream == -1:
+        if '{}' not in output_file:
+            output_file, ext = os.path.splitext(output_file)
+            output_file = output_file + '_{}' + ext
+
+        result = []
+        stream = 0
+        while stream < 5:
+            output_i = _extract(path, output_file.format(stream), mode, stream, verbose, overwrite)
+            if output_i is None: break
+            result.append(output_i)
+            stream += 1
+        return result
+    
     assert mode in ('a', 's')
     long_mode = 'audio' if mode == 'a' else 'subtitles'
     
@@ -163,7 +186,7 @@ def _extract(path, output_file, mode, stream = 1, verbose = True, overwrite = Fa
             return output_file
         
         os.remove(output_file)
-            
+    
     if verbose:
         print("Extraction of {} (stream #{})...".format(long_mode, stream))
         

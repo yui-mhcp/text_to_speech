@@ -1,11 +1,12 @@
 import tensorflow as tf
 
-from tensorflow.keras.layers import Input, Subtract, Flatten, Dense
+from tensorflow.keras.layers import Input, Flatten, Dense
 
 from custom_architectures.current_blocks import *
 from custom_architectures.current_blocks import _get_var, _add_layer, _get_flatten_layer
 
 from hparams import HParams
+from custom_layers import SimilarityLayer
 
 HParamsDenseBN  = HParams(
     units       = [32, 32], 
@@ -215,62 +216,66 @@ def simple_cnn(input_shape, output_shape, **kwargs):
         return tf.keras.Model(inputs = inputs, outputs = outputs, name = hparams.name)
 
 
-def siamese(model,
-            input_shape     = None,
-            input_signature = None,
-            input_type      = tf.float32,
-            distance_metric = 'euclidian',
-            activation      = 'sigmoid', 
-            final_name      = 'decision_layer',
-            name            = 'SiameseNet'
-           ):
-    assert distance_metric in _distance_fn
-    assert isinstance(model, tf.keras.Model)
-    
-    if input_shape is None and input_signature is None: input_shape = model.input_shape
-    elif input_signature is not None:
-        if isinstance(input_signature, (list, tuple)):
-            input_shape = [inp.shape[1:] for inp in input_signature]
-            input_type  = [inp.dtype for inp in input_signature]
+def comparator(encoder_a,
+               encoder_b,
+               input_signature_a    = None,
+               input_signature_b    = None,
+               distance_metric      = 'euclidian',
+               pred_probability     = True,
+               final_name   = 'decision_layer',
+               name     = 'Comparator',
+               ** kwargs
+              ):
+    def get_input(model, signature, name):
+        if signature is None:
+            input_shape, input_type = model.input_shape[1:], tf.float32
         else:
-            input_shape, input_type = input_signature.shape[1:], input_signature.dtype
+            if isinstance(signature, (list, tuple)):
+                input_shape = [inp.shape[1:] for inp in signature]
+                input_type  = [inp.dtype for inp in signature]
+            else:
+                input_shape, input_type = signature.shape[1:], signature.dtype
+        
+        if isinstance(input_shape, (list, tuple)):
+            if not isinstance(input_type, (list, tuple)): input_type = [input_type] * len(input_shape)
+            return [
+                Input(shape, dtype = dtype, name = name + '_{}'.format(i))
+                for i, (shape, dtype) in enumerate(zip(input_shape, input_type))
+            ]
+        return Input(input_shape, dtype = input_type, name = name)
     
-    if isinstance(input_shape, list):
-        if not isinstance(input_type, (list, tuple)): input_type = [input_type] * len(input_shape)
-        input1 = [
-            Input(inp_shape, dtype = inp_type, name = 'input_1_{}'.format(i+1))
-            for i, (inp_shape, inp_type) in enumerate(zip(input_shape, input_type))
-        ]
-        input2 = [
-            Input(inp_shape, dtype = inp_type, name = 'input_2_{}'.format(i+1))
-            for i, (inp_shape, inp_type) in enumerate(zip(input_shape, input_type))
-        ]
-    else:
-        input1 = Input(input_shape, dtype = input_type, name = 'input_1')
-        input2 = Input(input_shape, dtype = input_type, name = 'input_2')
-    inputs = [input1, input2]
+    assert isinstance(encoder_a, tf.keras.Model) and isinstance(encoder_b, tf.keras.Model)
     
-    embedded_1 = model(input1)
-    embedded_2 = model(input2)
+    input_a = get_input(encoder_a, input_signature_a, 'input_a')
+    input_b = get_input(encoder_b, input_signature_b, 'input_b')
+    inputs  = [input_a, input_b]
     
-    if isinstance(embedded_1, (list, tuple)): embedded_1 = embedded_1[0]
-    if isinstance(embedded_2, (list, tuple)): embedded_2 = embedded_2[0]
-
-    embedded_distance = Subtract()([embedded_1, embedded_2])
-    embedded_distance = Lambda(
-        _distance_fn[distance_metric], name = distance_metric
-    )(embedded_distance)
+    embedded_a = encoder_a(input_a)
+    embedded_b = encoder_b(input_b)
     
-    if len(embedded_distance.shape) > 1:
-        embedded_distance = Flatten()(embedded_distance)
+    if isinstance(embedded_a, (list, tuple)): embedded_a = embedded_a[0]
+    if isinstance(embedded_b, (list, tuple)): embedded_b = embedded_b[0]
     
-    output = Dense(1, activation = activation, name = final_name)(embedded_distance)
+    output = SimilarityLayer(
+        distance_metric = distance_metric, pred_probability = pred_probability, name = final_name
+    )([embedded_a, embedded_b])
     
     return tf.keras.Model(inputs = inputs, outputs = output, name = name)
+
+def siamese(model, input_signature = None, activation = 'sigmoid', name = 'SiameseNetwork', ** kwargs):
+    """ Special case of `Comparator` where both `encoder_a` and `encoder_b` are the same model """
+    kwargs.update({'input_signature_a' : input_signature, 'input_signature_b' : input_signature})
     
+    return comparator(encoder_a = model, encoder_b = model, activation = activation, name = name, ** kwargs)
+
 _distance_fn = {
-    'l1'        : lambda x: tf.abs(x),
-    'euclidian' : lambda x: tf.sqrt(tf.reduce_sum(tf.square(x), axis = -1, keepdims = True))
+    'dp'        : lambda inputs: tf.matmul(inputs[0], inputs[1]),
+    'l1'        : lambda inputs: tf.abs(inputs[0] - inputs[1]),
+    'l2'        : lambda inputs: tf.square(inputs[0] - inputs[1]),
+    'l1_cat'    : lambda inputs: tf.concat([tf.abs(inputs[0] - inputs[1]), x, y], axis = -1),
+    'l2_cat'    : lambda inputs: tf.concat([tf.square(inputs[0] - inputs[1]), x, y], axis = -1),
+    'manhattan' : lambda inputs: tf.reduce_sum(tf.abs(inputs[0] - inputs[1]), axis = -1, keepdims = True),
+    'euclidian' : lambda inputs: tf.sqrt(tf.reduce_sum(tf.square(inputs[0] - inputs[1]), axis = -1, keepdims = True))
 }
 
 _conv_layer_fn = {
@@ -285,5 +290,10 @@ _conv_layer_fn = {
 custom_functions   = {
     'perceptron'    : perceptron,
     'simple_cnn'    : simple_cnn,
+    'comparator'    : comparator,
     'siamese'       : siamese
+}
+
+custom_objects  = {
+    'SimilarityLayer'   : SimilarityLayer
 }

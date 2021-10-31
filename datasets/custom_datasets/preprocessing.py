@@ -3,7 +3,8 @@ import os
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
-from utils import ThreadPool
+from utils import load_json, dump_json, ThreadPool
+from utils.text import parse_html
 from utils.audio import resample_file
 from datasets.custom_datasets.audio_datasets import *
 
@@ -137,4 +138,92 @@ def resample_librispeech(directory, new_rate,
 
         dataset = _resample_dataset(dataset, new_rate, ** kwargs)
         
+    return dataset
+def parse_nq_annots(path, subset = 'train', file_no = 0, overwrite = False, tqdm = lambda x: x, ** kwargs):
+    def file_generator(file):
+        line = file.readline()
+        while line:
+            yield line
+            line = file.readline()
+
+    def get_answer_html(encoded_html, answer):
+        if answer['start_token'] == -1 or answer['end_token'] == -1: return ''
+        return encoded_html[answer['start_byte'] : answer['end_byte']]
+    
+    def get_valid(encoded_html, containings, answer):
+        if len(containings) == 0: return None
+        if len(containings) == 1: return containings[0]
+        p_idx = encoded_html[: answer['end_byte']].decode('utf-8').lower().count('<p>') - 1
+        valid = None
+        if p_idx >= 0:
+            for p in containings:
+                if p_idx in range(p['start_p_idx'], p['end_p_idx']):
+                    valid = p
+                    break
+        
+        return containings[0] if valid is None else valid
+    
+    def extract_answer(document_html, encoded, paragraphs, answer, candidates = None):
+        answer_html = get_answer_html(encoded, answer)
+        if not answer_html: return None, None, None
+        answer_text = parse_html(answer_html)
+        if not answer_text: return None, None, None
+        answer_text = answer_text[0]['text']
+        
+        if paragraphs is None: paragraphs = parse_html(document_html)
+
+        containing = [p for p in paragraphs if answer_text in p['text']]
+        valid = get_valid(encoded, containing, answer)
+        
+        if valid is None and candidates is not None and answer.get('candidate_index', -1) != -1:
+            candidate = parse_html(get_answer_html(encoded, candidates[answer['candidate_index']]))
+            if candidate: valid = candidate[0]
+        
+        return paragraphs, valid, answer_text
+    
+    filename = os.path.join('v1.0', subset, 'nq-{}-{:02d}.jsonl'.format(subset, file_no))
+    filename = os.path.join(path, filename)
+    
+    simplified_filename = filename.replace('.jsonl', '-parsed.json')
+    
+    if os.path.exists(simplified_filename) and not overwrite: return load_json(simplified_filename)
+    if not os.path.exists(filename): return []
+    
+    print("Processing file {}...".format(filename))
+    dataset = []
+    with open(filename, 'r', encoding = 'utf-8') as file:
+        for i, line in enumerate(tqdm(file_generator(file))):
+            try:
+                parsed = json.loads(line)
+            except:
+                print("Error at index {} with line : {}".format(i, line))
+                continue
+            
+            paragraphs = None
+            encoded    = parsed['document_html'].encode('utf-8')
+            
+            infos = {'question' : parsed['question_text'], 'long_answer' : '', 'short_answers' : []}
+            for annot in parsed['annotations']:
+                la = annot['long_answer']
+                
+                paragraphs, p, la_text = extract_answer(
+                    parsed['document_html'], encoded, paragraphs, la, candidates = parsed['long_answer_candidates']
+                )
+                if la_text:
+                    infos.update({'long_answer' : la_text, 'paragraphs' : paragraphs})
+                    if p is not None:
+                        infos.update({'title' : p['title'], 'context' : p['text']})
+                
+                for sa in annot['short_answers']:
+                    paragraphs, p, sa_text = extract_answer(parsed['document_html'], encoded, paragraphs, sa)
+                    if sa_text:
+                        if 'title' not in infos and p is not None:
+                            infos.update({'title' : p['title'], 'context' : p['text'], 'paragraphs' : paragraphs})
+                        infos.setdefault('short_answers', []).append(sa_text)
+            
+            if 'paragraphs' in infos:
+                dataset.append(infos)
+        
+    dump_json(simplified_filename, dataset)
+    
     return dataset

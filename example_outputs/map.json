@@ -75,7 +75,7 @@
             "example_outputs/plots/plot_5.png"
         ],
         "audio": "example_outputs/audios/audio_5.mp3",
-        "duree": 5.374467120181406
+        "duree": 5.1538775510204085
     },
     "Bonjour \u00e0 tous ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes d'audios !Je ne partagerai pas cemod\u00e8le mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
         "splitted": [
@@ -89,5 +89,18 @@
         ],
         "audio": "example_outputs/audios/audio_6.mp3",
         "duree": 9.948798185941044
+    },
+    "Bonjour a tous ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !": {
+        "splitted": [
+            "Bonjour a tous ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
+        ],
+        "mels": [
+            "example_outputs/mels/mel_7.npy"
+        ],
+        "plots": [
+            "example_outputs/plots/plot_7.png"
+        ],
+        "audio": "example_outputs/audios/audio_7.mp3",
+        "duree": 4.689478458049886
     }
 }

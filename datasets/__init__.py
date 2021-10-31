@@ -2,6 +2,7 @@ from utils.generic_utils import print_objects
 
 from datasets.dataset_utils import *
 from datasets.custom_datasets import load_dataset, _custom_datasets
+from datasets.sqlite_dataset import SQLiteDataset
 
 _keras_datasets = {
     'cifar10'       : tf.keras.datasets.cifar10.load_data,
@@ -12,7 +13,7 @@ _keras_datasets = {
     'reuters'       : tf.keras.datasets.reuters.load_data
 }
 
-def get_dataset(ds_name, ds_type = 'tf', **kwargs):
+def get_dataset(ds_name, ds_type = 'tf', ** kwargs):
     if isinstance(ds_name, (list, tuple)): 
         if all([n in _custom_datasets for n in ds_name]):
             return load_dataset(ds_name, ** kwargs)

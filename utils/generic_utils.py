@@ -111,6 +111,7 @@ def var_from_str(v):
     
 def load_json(filename, default = {}):
     """ Safely load data from a json file """
+    if not filename.endswith('.json'): filename += '.json'
     if not os.path.exists(filename): return default
     with open(filename, 'r', encoding = 'utf-8') as file:
         result = file.read()
@@ -118,6 +119,7 @@ def load_json(filename, default = {}):
 
 def dump_json(filename, data, ** kwargs):
     """ Safely save data to a json file """
+    if not filename.endswith('.json'): filename += '.json'
     data = to_json(data)
     data = json.dumps(data, ** kwargs)
     with open(filename, 'w', encoding = 'utf-8') as file:
@@ -204,46 +206,6 @@ def map_output_names(values, names):
         raise ValueError("Try to associate {} values with {} names !\n  Values : {}\n  Names : {}".format(len(flattened_values), len(flattened_names), flattened_values, flattened_names))
     return {n : v for n, v in zip(flattened_names, flattened_values)}
 
-def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
-    """
-        Create a padded version of batch in a single np.ndarray
-        Note that this function allows to have different shapes on different dimensions and will pad all of them. 
-        However, all data must have the same rank
-        
-        Arguments : 
-            - batch         : list of np.ndarray / tf.Tensor
-            - pad_value     : the value to add as padding
-            - max_length    : maximum length for each dimension. If not given, take the max length of datas 
-            - dtype : dtype of the final output
-        Return : 
-            - padded_batch : np.ndarray of same rank as data
-    """
-    if not hasattr(batch[0], 'shape'): return np.array(batch)
-    
-    if dtype is None:
-        b0 = batch[0] if not hasattr(batch[0], 'numpy') else batch[0].numpy()
-        dtype = b0.dtype
-    
-    max_shape = batch[0].shape
-    for b in batch:
-        max_shape = [max(max_s, s) for max_s, s in zip(max_shape, b.shape)]
-    if max_length is not None: max_shape[0] = min(max_shape[0], max_length)
-    length = max_shape[0]
-    max_shape = [len(batch)] + max_shape
-    
-    padded_batch = np.zeros(max_shape, dtype = dtype) + pad_value
-    
-    for i, b in enumerate(batch):
-        if b.ndim == 1:
-            padded_batch[i, :min(length, len(b))] = b[:length]
-        elif b.ndim == 2:
-            padded_batch[i, :min(length, len(b)), : b.shape[1]] = b[:length]
-        elif b.ndim == 3:
-            padded_batch[i, :min(length, len(b)), : b.shape[1], : b.shape[2]] = b[:length]
-        elif b.ndim == 4:
-            padded_batch[i, :min(length, len(b)), : b.shape[1], : b.shape[2], : b.shape[3]] = b[:length]
-        
-    return padded_batch
 
 def compare(v1, v2, verbose = True):
     """
@@ -297,9 +259,9 @@ def parse_args(* args, allow_abrev = True, ** kwargs):
         
         parser.add_argument(* names, ** config)
     
-    parser.parse_args()
-    print(vars(parser))
+    parsed = parser.parse_known_args()[0]
+
     parsed_args = {}
-    for a in args + tuple(kwargs.keys()): parsed_args[a] = getattr(parser, a)
+    for a in args + tuple(kwargs.keys()): parsed_args[a] = getattr(parsed, a)
     
     return parsed_args

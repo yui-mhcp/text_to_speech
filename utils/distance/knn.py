@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils.thread_utils import ThreadPool
 from utils.plot_utils import plot_embedding
 from utils.embeddings import load_embedding, compute_mean_embeddings, embeddings_to_np
 from utils.distance.distance_method import distance
@@ -47,30 +46,24 @@ class KNN(object):
         self.use_mean   = use_mean
         self.method     = method
         
-        self._mean_ids   = None
-        self._mean_embeddings    = None
-        
+        self.__mean_ids, self.__mean_embeddings = None, None
+    
     @property
     def mean_ids(self):
-        if self._mean_ids is None:
-            self._mean_ids, self._mean_embeddings = self.get_mean_embeddings()
-        return self._mean_ids
+        if self.__mean_ids is None:
+            self.__mean_ids, self.__mean_embeddings = self.get_mean_embeddings()
+        return self.__mean_ids
     
     @property
     def mean_embeddings(self):
-        if self._mean_embeddings is None:
-            self._mean_ids, self._mean_embeddings = self.get_mean_embeddings()
-        return self._mean_embeddings
+        if self.__mean_embeddings is None:
+            self.__mean_ids, self.__mean_embeddings = self.get_mean_embeddings()
+        return self.__mean_embeddings
     
-    def __len__(self):
-        return len(self.ids)
-    
-    def __getitem__(self, idx):
-        return self.embeddings[idx], self.ids[idx]
-    
-    def __setitem__(self, idx, value):
-        self._mean_ids, self._mean_embeddings   = None, None
-        self.ids[idx] = value
+    def __setitem__(self, idx, val):
+        if val != self.ids[idx]:
+            self.ids[idx] = val
+            self.__mean_ids, self.__mean_embeddings = None, None
     
     def get_mean_embeddings(self):
         """ Compute the mean embeddings for each id """
@@ -85,12 +78,13 @@ class KNN(object):
             embeddings, res_ids = self.embeddings, self.ids
         
         if ids is not None:
-            indexes = tf.concat([
+            indexes = tf.reshape(tf.concat([
                 tf.where(res_ids == id_i) for id_i in ids
-            ], axis = 0)
+            ], axis = 0), [-1])
+
             embeddings = tf.gather(embeddings, indexes)
             res_ids = tf.gather(res_ids, indexes)
-        
+
         return embeddings, res_ids
     
     def distance(self, x, ids = None, use_mean = False):
@@ -98,13 +92,7 @@ class KNN(object):
         embeddings, ids = self.get_embeddings(ids, use_mean)
         return distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
     
-    def append(self, embeddings, ids):
-        self._mean_ids, self._mean_embeddings   = None, None
-        if tf.rank(embeddings) == 1: embeddings = tf.expand_dims(embeddings, axis = 0)
-        self.ids    = np.concat([self.ids, ids])
-        self.embeddings = tf.concat([self.embeddings, embeddings], axis = 0)
-        
-    def predict(self, x, possible_ids = None, k = None, use_mean = None,
+    def predict(self, query, possible_ids = None, k = None, use_mean = None,
                 plot = False, tqdm = lambda x: x, ** kwargs):
         """
             Predict ids for each `x` vector based on the `k-nn` decision procedure
@@ -124,32 +112,17 @@ class KNN(object):
         elif k is None: k = self.k
         else: k = tf.cast(k, tf.int32)
         
-        if possible_ids is not None and not isinstance(possible_ids, (list, tuple, np.ndarray)):
+        if possible_ids is not None and not isinstance(possible_ids, (list, tuple, np.ndarray, tf.Tensor)):
             possible_ids = [possible_ids]
         
-        x = tf.cast(x, tf.float32)
-        if tf.rank(x) == 2:
-            if possible_ids is None: possible_ids = [None] * len(x)
-            elif len(possible_ids) != len(x):
-                possible_ids = [possible_ids] * len(x)
+        query = tf.cast(query, tf.float32)
 
-            assert len(possible_ids) == len(x)
-            
-            pool = ThreadPool(target = self.predict)
-            for xi, ids_i in zip(x, possible_ids):
-                pool.append(kwargs = {
-                    'x' : xi, 'possible_ids' : ids_i, 'k' : k, 'use_mean' : use_mean
-                })
-            pool.start(tqdm = tqdm)
-            
-            pred = tf.concat(pool.result(), axis = 0)
-        else:
-            embeddings, ids = self.get_embeddings(possible_ids, use_mean)
-            
-            pred = knn(x, embeddings, ids, k, self.method)
+        embeddings, ids = self.get_embeddings(possible_ids, use_mean)
+        
+        pred = knn(query, embeddings, ids, k, self.method)
         
         if plot:
-            self.plot(x, pred, ** kwargs)
+            self.plot(query, pred, ** kwargs)
         
         return pred
         
@@ -180,18 +153,17 @@ class KNN(object):
                     x_ids = x['id'].values
                 x = embeddings_to_np(x)
             
-            if x.ndim == 1: x = np.expand_dims(x, 0)
+            if len(x.shape) == 1: x = np.expand_dims(x, 0)
             if x_ids is not None:
-                if not isinstance(x_ids, (list, tuple, np.ndarray, tf.Tensor)):
-                    x_ids = [x_ids]
-                x_ids = np.array(x_ids)
+                if not isinstance(x_ids, (list, tuple, np.ndarray, tf.Tensor)): x_ids = [x_ids]
+                x_ids = np.reshape(x_ids, [-1])
             else:
                 fake_id = 0
                 while fake_id in ids: fake_id += 1
                 x_ids = np.array([fake_id] * len(x))
                 marker_kwargs.setdefault('x', {'c' : 'w'})
             
-            assert len(x_ids) == len(x), "Got {} ids for {} vectors".format(len(x_ids), len(x))
+            assert len(x_ids) == len(x), "{} vs {}".format(x.shape, x_ids.shape)
             
             embeddings = np.concatenate([embeddings, x], axis = 0)
             ids = np.concatenate([ids, x_ids], axis = 0)
@@ -202,20 +174,32 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-@tf.function(experimental_relax_shapes = True)
-def knn(x, embeddings, ids, k, distance_metric):
+def knn(query, embeddings, ids, k, distance_metric, return_index = False, ** kwargs):
     """
         Compute the k-nn decision procedure for a given x based on a list of labelled embeddings
         
         Return the majoritary id in the `k` nearest neigbors or `-2` if there is an equality
     """
-    distances = tf.squeeze(distance(x, embeddings, method = distance_metric))
-    
-    k_nearest_val, k_nearest_idx = tf.nn.top_k(-distances, k)
-    
-    nearest_ids = tf.cast(tf.gather(ids, k_nearest_idx), tf.int32)
-    counts = tf.math.bincount(nearest_ids)
+    distances = distance(query, embeddings, method = distance_metric, as_matrix = True, ** kwargs)
 
-    nearest_ids = tf.squeeze(tf.where(counts == tf.reduce_max(counts)))
+    _, k_nearest_idx = tf.nn.top_k(-distances, tf.minimum(tf.shape(distances)[1], k))
+    
+    if ids is None:
+        if return_index:
+            return k_nearest_idx
+        return tf.gather(embeddings, k_nearest_idx, batch_dims = 1)
+    
+    nearest_ids = tf.cast(tf.gather(tf.reshape(ids, [-1]), k_nearest_idx), tf.int32)
 
-    return tf.cast(nearest_ids, tf.int32) if tf.rank(nearest_ids) == 0 else -2
+    counts = tf.math.bincount(nearest_ids, axis = -1)
+
+    max_counts = tf.reduce_max(counts, axis = -1, keepdims = True)
+    
+    max_idx = tf.cast(counts == max_counts, tf.int32)
+    
+    nb_nearest = tf.reduce_sum(max_idx, axis = -1)
+    mask = tf.cast(nb_nearest == 1, tf.int32)
+    
+    nearest_ids = tf.cast(tf.argmax(max_idx, axis = -1), tf.int32) * mask - 2 * (1 - mask)
+
+    return nearest_ids

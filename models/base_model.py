@@ -19,8 +19,7 @@ from utils import time_to_string, load_json, dump_json, get_metric_names, map_ou
 from custom_architectures import get_architecture, custom_objects
 from custom_train_objects import History, MetricList
 from custom_train_objects import get_optimizer, get_loss, get_metrics, get_callbacks
-
-_pretrained_models_folder = 'pretrained_models'
+from models.model_utils import _pretrained_models_folder
 
 _trackable_objects = (
     tf.keras.Model, 
@@ -723,6 +722,8 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 batch_size = valid_batch_size
         
+        if isinstance(shuffle_size, float): shuffle_size = int(shuffle_size * batch_size
+                                                            )
         config['batch_size']    = batch_size
         config['shuffle_size']  = shuffle_size if not is_validation else 0
         
@@ -761,7 +762,7 @@ class BaseModel(metaclass = ModelInstances):
                           
                           verbose           = 1, 
                           callbacks         = [], 
-                          **kwargs
+                          ** kwargs
                           ):
         """
             Function that returns dataset configuration for training / evaluation data
@@ -797,6 +798,10 @@ class BaseModel(metaclass = ModelInstances):
         test_config  = self.get_dataset_config(** test_kwargs)
         
         dataset = x if y is None else (x, y)
+        if isinstance(dataset, dict) and 'train' in dataset:
+            validation_data = dataset.get('valid', validation_data)
+            dataset         = dataset['train']
+        
         if validation_data is None:
             train_dataset, valid_dataset = train_test_split(
                 dataset, 
@@ -850,7 +855,7 @@ class BaseModel(metaclass = ModelInstances):
             'initial_epoch'     : self.epochs
         }
         
-    def fit(self, *args, name = None, custom_config = True, **kwargs):
+    def fit(self, * args, name = None, custom_config = True, ** kwargs):
         """
             Call `model.fit` for the specified model (or single model if it has only 1 submodel) 
             
@@ -899,7 +904,7 @@ class BaseModel(metaclass = ModelInstances):
         return self.history
     
     def train(self, 
-              *args, 
+              * args, 
               verbose       = 1,
               eval_epoch    = 1,
               verbose_step  = 100,
@@ -908,7 +913,7 @@ class BaseModel(metaclass = ModelInstances):
               # custom functions for training and evaluation
               train_step    = None,
               eval_step     = None,
-              **kwargs
+              ** kwargs
              ):
         """
             Train the model with given datasets and configuration bby keeping track of all training hyperparameters
@@ -939,7 +944,7 @@ class BaseModel(metaclass = ModelInstances):
         train_hparams   = self.training_hparams.extract(kwargs, pop = True)
         self.init_train_config(** train_hparams)
         
-        config = self._get_train_config(*args, **kwargs)
+        config = self._get_train_config(* args, ** kwargs)
         
         base_hparams.extract(config, pop = False)
         train_hparams.update(base_hparams)
@@ -1168,7 +1173,9 @@ class BaseModel(metaclass = ModelInstances):
             variables = self.list_trainable_variables
             loss_fn     = self.get_loss()
             optimizer   = self.get_optimizer()
-
+            
+            nb_loss     = len(get_metric_names(self.losses))
+            
             def train_step(batch):
                 inputs, target = batch
                 
@@ -1176,6 +1183,7 @@ class BaseModel(metaclass = ModelInstances):
                     y_pred = self(inputs, training = True)
 
                     loss = loss_fn(target, y_pred)
+                    if nb_loss > 1: loss = loss[0]
 
                 grads = tape.gradient(loss, variables)
                 optimizer.apply_gradients(zip(grads, variables))
@@ -1460,13 +1468,6 @@ class BaseModel(metaclass = ModelInstances):
         
         return cls(** config['config'])
     
-def infer_model_class(nom, possible_class):
-    if nom is None or not isinstance(nom, str): return None
-        
-    config = load_json(os.path.join(_pretrained_models_folder, nom, 'config.json'), default = {})
-        
-    return possible_class.get(config.get('class_name', ''), None)
-
 def _can_restore(restore, config_file):
     if restore is True: return os.path.exists(config_file)
     elif isinstance(restore, str):

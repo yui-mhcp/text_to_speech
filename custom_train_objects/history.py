@@ -44,7 +44,7 @@ class History(tf.keras.callbacks.Callback):
         self.__current_epoch_infos      = {}
     
     @property
-    def training(self):
+    def sleeping(self):
         return self.__phase == SLEEPING
     
     @property

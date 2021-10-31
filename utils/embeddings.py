@@ -1,4 +1,5 @@
 import os
+import pickle
 import random
 import numpy as np
 import pandas as pd
@@ -6,11 +7,12 @@ import tensorflow as tf
 
 from tqdm import tqdm
 
+from utils.sequence_utils import pad_batch
 from utils.pandas_utils import filter_df, aggregate_df
 from utils.thread_utils import ThreadPool
 from utils.audio.audio_io import load_audio
 
-_allowed_embeddings_ext = ('.csv', '.npy')
+_allowed_embeddings_ext = ('.csv', '.npy', '.pkl')
 _embedding_filename = 'embeddings_{}.csv'
 _accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')
 
@@ -22,13 +24,23 @@ def get_embedding_file_ext(filename):
 def embeddings_to_np(embeddings, col = 'embedding'):
     """ Return a numpy matrix of embeddings from a dataframe column """
     if isinstance(embeddings, str):
-        if not os.path.isfile(embeddings):
-            raise ValueError("You must provide an existing embedding file (got {})".format(embeddings))
-        return embeddings_to_np(load_embeddings(embeddings))
+        if embeddings.startswith('['):
+            if embeddings.startswith('[['):
+                print(embeddings[1 : -1].split(']')[0][1:])
+                return np.array([
+                    np.fromstring(xi[1 :]) for xi in embeddings[1:-1].split(']')
+                ])
+            return np.fromstring(embeddings[1:-1], dtype = float, sep = '\t').astype(np.float32)
+        else:
+            if not os.path.isfile(embeddings):
+                raise ValueError("You must provide an existing embedding file (got {})".format(embeddings))
+            return embeddings_to_np(load_embeddings(embeddings))
     elif isinstance(embeddings, np.ndarray): return embeddings
     elif isinstance(embeddings, tf.Tensor): return embeddings.numpy()
     elif isinstance(embeddings, pd.DataFrame):
-        return np.array([list(e) for e in embeddings[col].values])
+        embeddings = [e for e in embeddings[col].values]
+        if len(embeddings[0].shape) == 1: return np.array(embeddings)
+        return pad_batch(embeddings)
     else:
         raise ValueError("Invalid type of embeddings : {}".format(type(embeddings)))
 
@@ -133,30 +145,46 @@ def add_speaker_embedding(dataset, column = 'id', mode = 0):
     )
 
 def save_embeddings(directory, embeddings, embedding_name = _embedding_filename):
-    if directory.endswith('.csv') or directory.endswith('.npy'):
+    """
+        Save embedding to the given path
+        
+        /:\ WARNING /!\ for N-D embeddings you ** must ** use a `.pkl` or `.npy` but not a `.csv` otherwise it will be some errors when loading it
+    """
+    if directory[-4 :] in _allowed_embeddings_ext:
         embedding_file = directory
     else:
         if not directory.endswith('embeddings'):
             directory = os.path.join(directory, 'embeddings')
+        os.makedirs(directory, exist_ok = True)
         embedding_file = os.path.join(directory, embedding_name)
     
-    embedding_dim = embeddings_to_np(embeddings).shape[-1]
-    embedding_file = os.path.splitext(embedding_file.format(embedding_dim))[0]
+    if '{}' in embedding_file:
+        embedding_dim = embeddings_to_np(embeddings).shape[-1]
+        embedding_file = os.path.splitext(embedding_file.format(embedding_dim))[0]
     
-    if isinstance(embeddings, pd.DataFrame):
-        embedding_file += '.csv'
+    if embedding_file.endswith('.pkl'):
+        with open(embedding_file, 'wb') as file:
+            pickle.dump(embeddings, file)
+    elif isinstance(embeddings, pd.DataFrame):
+        if not embedding_file.endswith('.csv'): embedding_file += '.csv'
         embeddings.to_csv(embedding_file, index = False)
     elif isinstance(embeddings, (np.ndarray, tf.Tensor)):
-        embedding_file += '.npy'
+        if not embedding_file.endswith('.npy'): embedding_file += '.npy'
         embeddings = embeddings_to_np(embeddings)
         np.save(embedding_file, embeddings)
     
     return embedding_file
     
-def load_embedding(directory, embedding_dim = None, dataset = None,
-                   embedding_col = 'id', embedding_mode = 0, 
-                   embedding_name = _embedding_filename,
-                   with_speaker_embedding   = True, ** kwargs):
+
+def load_embedding(directory,
+                   embedding_dim    = None,
+                   dataset          = None,
+                   embedding_col    = 'id',
+                   embedding_mode   = 0, 
+                   embedding_name   = _embedding_filename,
+                   with_speaker_embedding   = True, 
+                   ** kwargs
+                  ):
     """
         Load embeddings from .csv file and create an aggregation version
         
@@ -188,14 +216,19 @@ def load_embedding(directory, embedding_dim = None, dataset = None,
     
     if emb_file.endswith('.npy'):
         return np.load(emb_file)
+    elif emb_file.endswith('.pkl'):
+        with open(emb_file, 'rb') as file:
+            embeddings = pickle.load(file)
+    elif emb_file.endswith('.csv'):
+        embeddings = pd.read_csv(emb_file)
+
+    for embedding_col_name in [col for col in embeddings.columns if col.endswith('embedding')]:
+        embeddings[embedding_col_name] = embeddings[embedding_col_name].apply(
+            lambda x: embeddings_to_np(x)
+        )
     
-    embeddings = pd.read_csv(emb_file)
     
-    embeddings['embedding'] = embeddings['embedding'].apply(
-        lambda x: np.fromstring(x[1:-1], dtype = float, sep = '\t').astype(np.float32) if isinstance(x, str) else x
-    )
-    
-    if with_speaker_embedding:
+    if with_speaker_embedding and embedding_col in embeddings.columns:
         embeddings = add_speaker_embedding(
             embeddings, embedding_col, mode = embedding_mode
         )
@@ -210,6 +243,18 @@ def load_embedding(directory, embedding_dim = None, dataset = None,
     dataset = dataset.dropna(
         axis = 'index', subset = ['embedding', 'speaker_embedding']
     )
+    
+    return dataset
+
+def pad_dataset_embedding(dataset, columns = None):
+    if columns is None: columns = [c for c in dataset.columns if c.endswith('_embedding')]
+    if not isinstance(columns, (list, tuple)): columns = [columns]
+    
+    for col in columns:
+        if len(dataset.iloc[0][col].shape) == 1: continue
+        
+        dataset['n_{}'.format(col)] = dataset[col].apply(lambda e: len(e))
+        dataset[col] = list(embeddings_to_np(dataset, col = col))
     
     return dataset
 

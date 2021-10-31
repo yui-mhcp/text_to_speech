@@ -39,7 +39,8 @@ class SiameseNetwork(BaseModel):
                 The get_input(data) receives all key-value pairs with _x and _y suffixes (one at a time) and remove the suffixe so that you can treat it the same way
                 `sare` inputs where _x and _y belong to the same class
                 `not_same` are inputs where _x and _y belong to different classes
-            2) augment_data(inp)    : receives input x / y (non-batched) once at a time so that you can augment them in independant way
+            2) augment_data(same, not_same) : receives input x / y (non-batched) once at a time so that you can augment them in independant way
+                Each (from same and not_same) will be passed to `augment_input`
             
             3) preprocess_data(same, not_same)  : receives batched datas for same and not same. They are then concatenated to form a single batch of same and not_same
                 Note that if the 1st dimension mismatch (variable length data), they are padded to match the longest one
@@ -82,6 +83,10 @@ class SiameseNetwork(BaseModel):
         """
         raise NotImplementedError("You must define the `get_input(data)` method !")
 
+    def filter_input(self, inp):
+        """ Filter a single processed input (from get_input()) """
+        return True
+        
     def augment_input(self, inp):
         """ Augment a single processed input (from get_input()) """
         return inp
@@ -130,10 +135,6 @@ class SiameseNetwork(BaseModel):
         return os.path.join(
             self.embeddings_dir, 'embeddings_{}.csv'.format(self.embedding_dim)
         )
-    
-    @property
-    def encoder_input_shape(self):
-        return self.encoder.input_shape
     
     @property
     def encoder_input_signature(self):
@@ -216,6 +217,10 @@ class SiameseNetwork(BaseModel):
         
         return (inp_x, inp_y), same
     
+    def filter(self, data):
+        (inp_x, inp_y), target = data
+        return tf.logical_and(self.filter_input(inp_x), self.filter_input(inp_y))
+    
     def augment(self, data):
         """ Augment `same` or `not_same` separately """
         (inp_x, inp_y), target = data
@@ -234,6 +239,9 @@ class SiameseNetwork(BaseModel):
     def encode_data(self, same, not_same):
         """ Apply `self.encode()` on same and not_same separately """
         return self.encode(same), self.encode(not_same)
+    
+    def filter_data(self, same, not_same):
+        return tf.logical_and(self.filter(same), self.filter(not_same))
     
     def augment_data(self, same, not_same):
         """ Apply `self.augment()` on same and not_same separately """
@@ -331,13 +339,13 @@ class SiameseNetwork(BaseModel):
             Evaluate the `label prediction` performance of the model
             
             This function essentially embed `samples` if necessary, sample `sample_size` for each label in `samples` and call `self.recognize` to have predicted labels
-            Then it computes the `binary accuracy` to get the average number of well-predicted labels
+            Then it computes the `accuracy` to get the average number of well-predicted labels
         """
         if samples is None:
             samples = self.friends
         elif isinstance(samples, str):
             samples = load_embedding(samples)
-                
+        
         assert isinstance(samples, (np.ndarray, tf.Tensor, pd.DataFrame)), "Unknown samples type : {}".format(type(samples))
         assert len(samples) > 0, "You must provide samples to recognize new datas !"
         
@@ -349,14 +357,14 @@ class SiameseNetwork(BaseModel):
             
         if sample_size is not None:
             samples = sample_df(samples, n = None, n_sample = sample_size)
-        
+
         if 'embedding' not in samples.columns:
-            samples['embedding'] = self.embed(samples, batch_size = batch_size)
+            samples['embedding'] = list(self.embed(samples, batch_size = batch_size).numpy())
+
+        pred = self.recognize(embedded = dataset, samples = samples, ** kwargs).numpy()
         
-        pred = self.recognize(embedded = dataset, samples = samples, ** kwargs)
-        
-        return tf.keras.metrics.binary_accuracy(ids, pred)
-        
+        return np.mean(pred == ids)
+    
     def evaluate_similarity(self, * args, ** kwargs):
         raise NotImplementedError()
     
@@ -391,7 +399,7 @@ class SiameseNetwork(BaseModel):
 
             embedded_batch = encoder(batch)
             embedded.append(embedded_batch)
-        
+
         return tf.concat(embedded, axis = 0)
     
     def plot_embedding(self, data, ids = None, batch_size = 128, ** kwargs):
@@ -425,8 +433,8 @@ class SiameseNetwork(BaseModel):
         """
         if decoder is None: decoder = self.decoder
         
-        if tf.rank(y) == 1: y = tf.expand_dims(y, axis = 0)
-        if tf.rank(x) == 1: x = tf.expand_dims(x, axis = 0)
+        if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
+        if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
         if tf.shape(x)[0] != tf.shape(y)[0]:
             x = tf.tile(x, [tf.shape(y)[0], 1])
         

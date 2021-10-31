@@ -131,10 +131,12 @@ def read_audio(filename, target_rate = None, normalize = True,
                debut = 0, fin = 0, temps = None, ** kwargs):
     ext = filename.split('.')[-1]
     if ext not in _supported_audio_formats:
-        raise ValueError("Extension non gérée ! \nAccepte : {} \nReçu :{}".format(list(_supported_audio_formats.keys()), ext))
+        raise ValueError("Unhandled extension ! \n  Accepted : {} \n  Got : {}".format(
+            list(_supported_audio_formats.keys()), ext
+        ))
     
     if 'read' not in _supported_audio_formats[ext]:
-        raise ValueError("Le mode lecture n'est pas disponible pour ce format : {}".format(ext))
+        raise ValueError("Read mot not handled for extension {}".format(ext))
     
     rate, audio = _supported_audio_formats[ext]['read'](filename)
     

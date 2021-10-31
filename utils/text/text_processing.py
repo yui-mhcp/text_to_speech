@@ -13,11 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
+import numpy as np
 import tensorflow as tf
+
+from utils.text.cleaners import collapse_whitespace, remove_tokens, remove_punctuation, lowercase
 
 _max_length = 150
 
 _end_sentence = ('...', '.', ' ?', ' !', '?', '!')
+
+def _normalize_text_f1(text, exclude = []):
+    return collapse_whitespace(remove_tokens(remove_punctuation(lowercase(text)), exclude)).strip()
 
 def bytes_to_unicode():
     """
@@ -41,8 +48,8 @@ def bytes_to_unicode():
     cs = [chr(n) for n in cs]
     return dict(zip(bs, cs))
 
-def get_pairs(text):
-    return list([(text[i], text[i+1]) for i in range(0, len(text) - 1)])
+def get_pairs(text, n = 2):
+    return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
 def bpe(token, bpe_ranks):
     word = tuple(token)
@@ -80,6 +87,47 @@ def bpe(token, bpe_ranks):
         else: pairs = get_pairs(word)
     return word
 
+def exact_match(y_true, y_pred):
+    return int(y_true == y_pred)
+
+def f1(y_true, y_pred, normalize = True, exclude = None):
+    if isinstance(y_true, tf.Tensor): y_true = y_true.numpy()
+    if isinstance(y_pred, tf.Tensor): y_pred = y_pred.numpy()
+    if isinstance(y_true, bytes): y_true = y_true.decode('utf-8')
+    if isinstance(y_pred, bytes): y_pred = y_pred.decode('utf-8')
+    if isinstance(y_true, (list, tuple, np.ndarray)):
+        return [
+            f1(true_i, pred_i, normalize = normalize, exclude = exclude)
+            for true_i, pred_i in zip(y_true, y_pred)
+        ]
+    
+    if normalize:
+        y_true = _normalize_text_f1(y_true, exclude)
+        y_pred = _normalize_text_f1(y_pred, exclude)
+    elif exclude:
+        y_true = collapse_whitespace(remove_tokens(y_true, exclude))
+        y_pred = collapse_whitespace(remove_tokens(y_pred, exclude))
+    
+    true_tokens = y_true.split()
+    pred_tokens = y_pred.split()
+    
+    common = collections.Counter(true_tokens) & collections.Counter(pred_tokens)
+    nb_same = sum(common.values())
+    
+    em = exact_match(y_true, y_pred)
+    
+    if len(true_tokens) == 0 or len(pred_tokens) == 0:
+        f1 = int(true_tokens == pred_tokens)
+        return em, f1, f1, f1
+    elif nb_same == 0:
+        return 0, 0, 0, 0
+    
+    precision = 1. * nb_same / len(pred_tokens)
+    recall    = 1. * nb_same / len(true_tokens)
+    f1 = (2 * precision * recall) / (precision + recall)
+    
+    return em, f1, precision, recall
+
 def create_padding_mask(seq, seq_len = None, pad_value = 0, dtype = tf.float32):
     """
         Return padding mask matching attention shape [batch_size, 1, 1, seq_len]
@@ -87,10 +135,10 @@ def create_padding_mask(seq, seq_len = None, pad_value = 0, dtype = tf.float32):
     if seq_len is None:
         mask = tf.cast(tf.math.equal(seq, pad_value), dtype = dtype)
     else:
-        mask = tf.sequence_mask(
-            seq_len, maxvalue = tf.shape(seq)[1], dtype = dtype
+        mask = 1. - tf.sequence_mask(
+            seq_len, maxlen = tf.shape(seq)[1], dtype = dtype
         )
-    return mask[:, tf.newaxis, tf.newaxis, :]
+    return tf.reshape(mask, [tf.shape(seq)[0], 1, 1, -1])
 
 def create_look_ahead_mask(batch_size, size, dtype = tf.float32):
     mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
@@ -126,6 +174,11 @@ def create_transformer_masks(inp, target, input_pad_value = 0, target_pad_value 
     
     return padding_mask, combined_mask
     
+def split_and_join(text, pattern):
+    splitted = text.split(pattern)
+    for i in reversed(range(1, len(splitted))):
+        splitted.insert(i, pattern)
+    return splitted
 
 def multi_split(text, * separators):
     """
@@ -160,6 +213,12 @@ def simple_text_split(text, max_length = _max_length):
     if length > 0: text_parts.append(" ".join(parts))
     
     return text_parts
+
+def split_sentence(text):
+    patterns = [pat + ' ' for pat in _end_sentence]
+    return [
+        part.strip() + end_char for part, end_char in multi_split(text, * patterns) if len(part.strip()) > 0
+    ]
 
 def split_text(text, max_length = _max_length):
     """

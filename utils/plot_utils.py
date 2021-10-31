@@ -193,9 +193,9 @@ def plot(x, y = None, *args, ax = None, figsize = None, xlim = None, ylim = None
 
 def plot_multiple(*args, size = 3, x_size = None, y_size = None, ncols = 2, nrows = None,
                   use_subplots = False, horizontal = False,
-                  by = None,
+                  by = None, corr = None, # for pd.DataFrame grouping
                   
-                  x = None, vlines = None, hlines = None,
+                  x = None, vlines = None, hlines = None, vlines_kwargs = {}, hlines_kwargs = {},
                   
                   title = None, filename = None, show = False, close = True,
                   ** kwargs
@@ -224,11 +224,20 @@ def plot_multiple(*args, size = 3, x_size = None, y_size = None, ncols = 2, nrow
         elif isinstance(v, dict):
             datas.append((v.pop('name', v.pop('label', None)), v))
         elif isinstance(v, pd.DataFrame):
+            use_subplots = True
             if by is not None:
                 for value, datas_i in v.groupby(by):
                     datas_i.pop(by)
                     name_i = '{} = {}'.format(by, value)
                     datas.append((name_i, {'x' : datas_i.to_dict('list')}))
+            elif corr is not None:
+                for col in v.columns:
+                    if col == corr: continue
+                    try:
+                        v[col].unique()
+                    except TypeError:
+                        continue
+                    datas.append((col, {'x' : v[col].values, 'y' : v[corr].values, 'plot_type' : 'scatter'}))
             else:
                 for k, v_i in v.to_dict('list').items():
                     datas.append((k, v_i))
@@ -286,8 +295,8 @@ def plot_multiple(*args, size = 3, x_size = None, y_size = None, ncols = 2, nrow
     }
     
     if x is not None: kwargs['x'] = x
-    if vlines is not None: kwargs['vlines'] = vlines
-    if hlines is not None: kwargs['hlines'] = hlines
+    if vlines is not None: kwargs.update({'vlines' : vlines, 'vlines_kwargs' : vlines_kwargs})
+    if hlines is not None: kwargs.update({'hlines' : hlines, 'hlines_kwargs' : hlines_kwargs})
 
     for i, (name, val) in enumerate(datas):
         ax = fig.add_subplot(nrows, ncols, i+1) if use_subplots else None

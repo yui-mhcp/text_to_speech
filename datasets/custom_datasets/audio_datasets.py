@@ -301,6 +301,7 @@ def preprocess_identification_annots(directory, by_part = False, ** kwargs):
     data = load_json(metadata_filename)
 
     dataset = pd.DataFrame(data)
+    if 'indexes' in dataset.columns: dataset.pop('indexes')
     
     dataset = add_default_rate(dataset)
     

@@ -1,73 +1,170 @@
-from tqdm import tqdm
-from threading import Thread
-from multiprocessing import cpu_count
+import logging
 
-class ThreadPool(object):
-    def __init__(self, max_workers = cpu_count(), with_result = True, ** kwargs):
-        self.max_workers    = max_workers
-        self.with_result    = with_result
-        self.__threads      = []
-        self.__thread   = None
-        self.tqdm       = lambda x: x
-        self.__thread_type = Thread if not with_result else ThreadWithReturn
-        self.__done = 0
-        self.__default_kwargs = kwargs
+from typing import Any
+from multiprocessing import cpu_count
+from dataclasses import dataclass, field
+from threading import Thread, RLock, Semaphore
+from queue import Queue, LifoQueue, PriorityQueue
+
+_queues = {
+    'queue' : Queue,
+    'stack' : LifoQueue,
+    'lifo'  : LifoQueue,
+    'priority' : PriorityQueue
+}
+
+@dataclass(order = True)
+class Data:
+    priority : Any
+    index    : int
+    data     : Any = field(compare = False)
+
+class ThreadedQueue(Thread):
+    def __init__(self, target, mode = 'queue', keep_result = False, max_size = 0,
+                 max_workers = cpu_count(), ** kwargs):
+        Thread.__init__(self)
+        
+        self.max_workers = max_workers
+
+        self.__tasks    = _queues[mode](max_size)
+        self.__runnings = 0
+        self.__run_mutex    = RLock()
+        
+        self.keep_result = keep_result
+        self.__results   = {} if keep_result else None
+        self.__mutex     = RLock() if keep_result else None
+        
+        self.__target   = target
+        self.__default_kwargs   = kwargs
+        
+        self.__stop = False
+        self.__stop_empty   = False
+        self.__semaphore    = Semaphore(max_workers) if self.multi_producer else None
+        self.__semaphore_running = Semaphore(0)
+    
+    @property
+    def queue(self):
+        return self.__tasks
+    
+    @property
+    def results(self):
+        if not self.keep_result: return []
+        with self.__mutex:
+            return [self.__results[i] for i in range(len(self.__results))]
+    
+    @property
+    def closed(self):
+        return self.__stop or self.__stop_empty
+    
+    @property
+    def multi_producer(self):
+        return self.max_workers > 0
     
     def __len__(self):
-        return len(self.__threads)
+        if not self.keep_result: return 0
+        with self.__mutex:
+            return len(self.__results)
     
-    def __str__(self):
-        return 'ThreadPool with {} threads and status : {} (done {:.2f} %)'.format(self.__len__(), self.status(), self.progress() * 100)
+    def __setitem__(self, idx, value):
+        if not self.keep_result: return
+        with self.__mutex:
+            self.__results[idx] = value
     
-    def status(self):
-        if self.__thread is None: return 'not started'
-        elif self.__thread.is_alive(): return 'running'
-        else: return 'finished'
+    def __getitem__(self, idx):
+        if not self.keep_result: return None
+        with self.__mutex:
+            return self.__results.get(idx, None)
     
-    def append(self, *args, ** kwargs):
-        for k, v in self.__default_kwargs.items(): kwargs.setdefault(k, v)
-        t = self.__thread_type(* args, ** kwargs)
-        self.__threads.append(t)
+    def __call__(self, data):
+        logging.debug('start task {} with priority {}'.format(data.index, data.priority))
+        result = None
+        try:
+            self.start_task()
+            result = self.__target(
+                * data.data.get('args', []),
+                ** {** self.__default_kwargs, ** data.data.get('kwargs', {})}
+            )
+        except Error as e:
+            logging.error('Error occured : {}'.format(e))
+        finally:
+            self.finish_task(data.index, result)
+        
+        logging.debug('finished task {}'.format(data.index))
+        return result
+    
+    def add_index(self):
+        if not self.keep_result: return -1
+        
+        with self.__mutex:
+            index = len(self)
+            self[index] = None
+        return index
+    
+    def start_task(self):
+        self.__semaphore_running.acquire(blocking = False)
+        with self.__run_mutex:
+            self.__runnings += 1
+        
+    def finish_task(self, index, result):
+        self[index] = result
+        if self.multi_producer: self.__semaphore.release()
+        
+        self.__tasks.task_done()
+        with self.__run_mutex:
+            self.__runnings -= 1
+            if self.__tasks.empty() and self.__runnings == 0:
+                self.__semaphore_running.release()
+        
+    def run_task(self, data):
+        if data.data is None: return
+        
+        if not self.multi_producer: return self(data)
+
+        Thread(target = self, args = (data, )).start()
     
     def run(self):
-        threads_actifs = []
-        for t in self.tqdm(self.__threads):
-            if len(threads_actifs) >= self.max_workers:
-                threads_actifs[0].join()
-                threads_actifs.pop(0)
-                self.__done += 1
-            
-            threads_actifs.append(t)
-            t.start()
+        logging.debug('Start queue')
         
-        for t in threads_actifs:
-            t.join()
-            self.__done += 1
+        while not self.__stop and not (self.__stop_empty and self.__tasks.empty()):
+            if self.multi_producer:
+                self.__semaphore.acquire()
+            self.run_task(self.pop())
+
+        self.__semaphore_running.acquire(blocking = not self.__stop)
+        logging.debug("Queue stopped")
     
-    def start(self, *args, tqdm = tqdm, ** kwargs):
-        if self.__thread is None:
-            self.tqdm = tqdm
-            self.__thread = Thread(* args, target = self.run, ** kwargs)
-            self.__thread.start()
+    def stop(self, wait_empty = True):
+        if wait_empty:
+            self.__stop_empty = True
+        else:
+            self.__stop = True
+        self.__tasks.put(Data(priority = 1, index = -1, data = None))
     
-    def join(self):
-        if self.status() == 'running':
-            self.__thread.join()
-    
-    def progress(self):
-        return self.__done / len(self.__threads) if len(self.__threads) > 0 else 1.
+    def append(self, * args, priority = 0, ** kwargs):
+        if self.closed: raise ValueError("You cannot add more data !")
         
-    def result(self):
-        status = self.status()
-        if status == 'running': self.join()
-        elif status == 'not started': 
-            raise ValueError("You must start the pool to get result")
-        if not self.with_result: return None
-        return [t.result() for t in self.__threads]
+        logging.debug('Adding new data on the queue !')
+        
+        self.__tasks.put(Data(
+            priority = priority, index = self.add_index(), data = {'args' : args, 'kwargs' : kwargs}
+        ))
+    
+    def pop(self, * args):
+        data = self.__tasks.get(* args)
+        
+        logging.debug('Pop new data : {}'.format(data))
+        
+        return data
+
+    def wait_result(self):
+        if not self.closed:
+            self.stop()
+            self.join()
+        return self.results
 
 class ThreadWithReturn(Thread):
-    def __init__(self, *args, **kwargs):
-        Thread.__init__(self, *args, **kwargs)
+    def __init__(self, * args, ** kwargs):
+        Thread.__init__(self, * args, ** kwargs)
         self._result = None
         self._done = False
         
@@ -79,3 +176,4 @@ class ThreadWithReturn(Thread):
         if not self._done:
             self.join()
         return self._result
+    

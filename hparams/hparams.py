@@ -1,4 +1,6 @@
-from utils.generic_utils import load_json, dump_json, parse_args
+import logging
+
+from utils import load_json, dump_json, parse_args
 
 class HParams:
     def __init__(self, _prefix = None, ** kwargs):
@@ -55,8 +57,8 @@ class HParams:
         v_config = v if isinstance(v, dict) else v.get_config(with_prefix = True)
         self_config = self.get_config(with_prefix = True)
         for k in v_config.keys():
-            if k in self_config:
-                print("[WARNING]\tValue {} is present in both HParams ({} vs {}) !".format(k, self[k], v_config[k]))
+            if k in self_config and self[k] != v_config[k]:
+                logging.warning("Value {} is present in both HParams with different values ({} vs {}) !".format(k, self[k], v_config[k]))
         
         return HParams(** {** self_config, ** v_config})
     

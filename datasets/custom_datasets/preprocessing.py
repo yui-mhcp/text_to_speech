@@ -1,14 +1,16 @@
 import os
+import json
+import gzip
 
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
-from utils import load_json, dump_json, ThreadPool
-from utils.text import parse_html
-from utils.audio import resample_file
+from utils import ThreadedQueue, load_json, dump_json
 from datasets.custom_datasets.audio_datasets import *
 
 def _resample_dataset(dataset, new_rate, max_workers = cpu_count()):
+    from utils.audio import resample_file
+
     new_col = 'wavs_{}'.format(new_rate)
     
     processed = dataset[new_col].apply(lambda f: os.path.exists(f))
@@ -19,21 +21,17 @@ def _resample_dataset(dataset, new_rate, max_workers = cpu_count()):
         new_rate, processed.sum(), len(to_process)
     ))
     
-    if max_workers <= 1:
-        for idx, row in tqdm(to_process.iterrows(), total = len(to_process)):
-            resample_file(row['filename'], new_rate, row[new_col])
-    else:
-        thread_pool = ThreadPool(with_result = False, target = resample_file)
-        for idx, row in to_process.iterrows():
-            thread_pool.append(kwargs = {
-                'filename'  : row['filename'],
-                'new_rate'  : new_rate,
-                'filename_out'  : row[new_col]
-            })
+    pool = ThreadedQueue(resample_file, keep_result = False, max_workers = max_workers)
+    pool.start()
+    
+    for idx, row in to_process.iterrows():
+        pool.append(
+            filename = row['filename'], new_rate = new_rate, filename_out = row[new_col]
+        )
 
-        thread_pool.start()
-        thread_pool.join()
-        
+    pool.stop()
+    pool.join()
+    
     return dataset
 
 def resample_commonvoice(directory, new_rate, file = 'validated.tsv', ** kwargs):
@@ -139,16 +137,33 @@ def resample_librispeech(directory, new_rate,
         dataset = _resample_dataset(dataset, new_rate, ** kwargs)
         
     return dataset
-def parse_nq_annots(path, subset = 'train', file_no = 0, overwrite = False, tqdm = lambda x: x, ** kwargs):
-    def file_generator(file):
-        line = file.readline()
-        while line:
-            yield line
-            line = file.readline()
+def parse_nq_annots(path,
+                    subset = 'train',
+                    file_no = 0,
+                    
+                    clean_ref = True,
+                    
+                    overwrite = False,
+                    tqdm = lambda x: x,
+                    ** kwargs
+                   ):
+    from utils.text import _wiki_cleaner, parse_html
 
+    def file_generator(file):
+        for l in file:
+            yield l.decode('utf-8')
+    
+    def process_html(html_text, ** kwargs):
+        parsed = parse_html(html_text, remove_pattern = _wiki_cleaner if clean_ref else None, ** kwargs)
+        return parsed
+    
     def get_answer_html(encoded_html, answer):
         if answer['start_token'] == -1 or answer['end_token'] == -1: return ''
-        return encoded_html[answer['start_byte'] : answer['end_byte']]
+        return encoded_html[answer['start_byte'] : answer['end_byte']].decode('utf-8')
+    
+    def get_paragraph_idx(context, paragraphs):
+        idx = [i for i, p in enumerate(paragraphs) if context['title'] == p['title']]
+        return idx[0] if len(idx) != 0 else -1
     
     def get_valid(encoded_html, containings, answer):
         if len(containings) == 0: return None
@@ -166,37 +181,39 @@ def parse_nq_annots(path, subset = 'train', file_no = 0, overwrite = False, tqdm
     def extract_answer(document_html, encoded, paragraphs, answer, candidates = None):
         answer_html = get_answer_html(encoded, answer)
         if not answer_html: return None, None, None
-        answer_text = parse_html(answer_html)
+        answer_text = process_html(answer_html)
         if not answer_text: return None, None, None
         answer_text = answer_text[0]['text']
         
-        if paragraphs is None: paragraphs = parse_html(document_html)
+        if paragraphs is None: paragraphs = process_html(document_html)
 
         containing = [p for p in paragraphs if answer_text in p['text']]
         valid = get_valid(encoded, containing, answer)
         
         if valid is None and candidates is not None and answer.get('candidate_index', -1) != -1:
-            candidate = parse_html(get_answer_html(encoded, candidates[answer['candidate_index']]))
-            if candidate: valid = candidate[0]
+            candidate = process_html(get_answer_html(encoded, candidates[answer['candidate_index']]), is_sub_document = True)
+            if candidate:
+                containing = [p for p in paragraphs if candidate[0]['text'] in p['text']]
+                valid = containing[0] if len(containing) > 0 else None
         
         return paragraphs, valid, answer_text
     
-    filename = os.path.join('v1.0', subset, 'nq-{}-{:02d}.jsonl'.format(subset, file_no))
+    filename = os.path.join('v1.0', subset, 'nq-{}-{:02d}.jsonl.gz'.format(subset, file_no))
     filename = os.path.join(path, filename)
     
-    simplified_filename = filename.replace('.jsonl', '-parsed.json')
+    simplified_filename = filename.replace('.jsonl.gz', '-parsed.json')
     
     if os.path.exists(simplified_filename) and not overwrite: return load_json(simplified_filename)
     if not os.path.exists(filename): return []
     
     print("Processing file {}...".format(filename))
     dataset = []
-    with open(filename, 'r', encoding = 'utf-8') as file:
+    with gzip.open(filename) as file:
         for i, line in enumerate(tqdm(file_generator(file))):
             try:
                 parsed = json.loads(line)
-            except:
-                print("Error at index {} with line : {}".format(i, line))
+            except Exception as e:
+                print("Error at index {} ({}) with line :\n{}".format(i, e, line))
                 continue
             
             paragraphs = None
@@ -204,24 +221,31 @@ def parse_nq_annots(path, subset = 'train', file_no = 0, overwrite = False, tqdm
             
             infos = {'question' : parsed['question_text'], 'long_answer' : '', 'short_answers' : []}
             for annot in parsed['annotations']:
-                la = annot['long_answer']
-                
-                paragraphs, p, la_text = extract_answer(
-                    parsed['document_html'], encoded, paragraphs, la, candidates = parsed['long_answer_candidates']
-                )
-                if la_text:
-                    infos.update({'long_answer' : la_text, 'paragraphs' : paragraphs})
-                    if p is not None:
-                        infos.update({'title' : p['title'], 'context' : p['text']})
+                if len(infos['long_answer']) == 0:
+                    la = annot['long_answer']
+
+                    paragraphs, p, la_text = extract_answer(
+                        parsed['document_html'], encoded, paragraphs, la, candidates = parsed['long_answer_candidates']
+                    )
+                    if annot['yes_no_answer'] != 'NONE':
+                        la_text = annot['yes_no_answer'].lower()
+                    
+                    if la_text:
+                        infos.update({'long_answer' : la_text, 'paragraphs' : paragraphs})
+                        if p is not None:
+                            infos.update({'title' : p['title'], 'context' : p['text']})
                 
                 for sa in annot['short_answers']:
                     paragraphs, p, sa_text = extract_answer(parsed['document_html'], encoded, paragraphs, sa)
                     if sa_text:
-                        if 'title' not in infos and p is not None:
+                        if not infos.get('title', '') and p is not None:
                             infos.update({'title' : p['title'], 'context' : p['text'], 'paragraphs' : paragraphs})
                         infos.setdefault('short_answers', []).append(sa_text)
-            
-            if 'paragraphs' in infos:
+
+            if infos.get('context', ''):
+                infos['valid_idx'] = get_paragraph_idx({'title' : infos['title'], 'text' : infos['context']}, infos['paragraphs'])
+                if infos['valid_idx'] == -1:
+                    raise ValueError("Valid idx == -1 !")
                 dataset.append(infos)
         
     dump_json(simplified_filename, dataset)

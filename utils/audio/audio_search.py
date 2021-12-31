@@ -3,8 +3,7 @@ import datetime
 import itertools
 import numpy as np
 
-from utils.plot_utils import plot
-from utils.generic_utils import time_to_string
+from utils import time_to_string, plot
 from utils.audio.audio_io import display_audio
 from utils.distance.distance_method import distance
 from utils.audio.audio_annotation import AudioAnnotation

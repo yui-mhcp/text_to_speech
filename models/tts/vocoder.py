@@ -1,14 +1,19 @@
 import os
 import time
+import logging
 import numpy as np
 import tensorflow as tf
 
 from tqdm import tqdm
 
+from loggers import timer
 from utils import time_to_string, load_json, dump_json, pad_batch
 from utils.audio import display_audio, load_audio, write_audio
+from models.base_model import BaseModel
 from models.tts.tacotron2 import Tacotron2
 from models.tts.waveglow import PtWaveGlow
+
+time_logger = logging.getLogger('timer')
 
 _stream_msg = {
     'fr'    : 'Entrez le texte à lire :',
@@ -19,23 +24,30 @@ _end_msg = {
     'en'    : 'Goodbye, see you soon !'
 }
 
-_default_synthesizer    = Tacotron2
-_default_vocoder        = PtWaveGlow
-
 class Vocoder(object):
     def __init__(self):
         self.__synthesizer  = None
         self.__vocoder      = None
     
-    def set_synthesizer(self, nom, model_class = None):
-        if model_class is None:
-            model_class = self.synthesizer_class
-        self.__synthesizer = model_class(nom = nom)
+    def set_synthesizer(self, nom):
+        if isinstance(nom, BaseModel):
+            self.__synthesizer = nom
+        elif isinstance(nom, str):
+            from models import get_pretrained
+
+            self.__synthesizer = get_pretrained(nom)
     
     def set_vocoder(self, nom = None, model_class = None):
-        if model_class is None:
-            model_class = self.vocoder_class
-        self.__vocoder = model_class(nom = nom)
+        if  nom is None:
+            self.__vocoder = PTWaveGlow()
+        elif isinstance(nom, str):
+            from models import get_pretrained
+
+            self.__vocoder = get_pretrained(nom)
+        elif isinstance(nom, BaseModel):
+            self.__vocoder = nom
+        else:
+            raise ValueError("Unknown vocoder type : {}\n  {}".format(type(nom), nom))
     
     @property
     def synthesizer(self):
@@ -47,11 +59,11 @@ class Vocoder(object):
     
     @property
     def synthesizer_class(self):
-        return type(self.__synthesizer) if self.__synthesizer is not None else _default_synthesizer
+        return type(self.__synthesizer) if self.__synthesizer is not None else None
     
     @property
     def vocoder_class(self):
-        return type(self.__vocoder) if self.__vocoder is not None else _default_vocoder
+        return type(self.__vocoder) if self.__vocoder is not None else None
     
     @property
     def lang(self):
@@ -61,6 +73,7 @@ class Vocoder(object):
     def rate(self):
         return self.synthesizer.audio_rate
     
+    @timer(name = 'full inference')
     def predict(self,
                 sentences,
                 directory       = None,
@@ -101,7 +114,7 @@ class Vocoder(object):
                     - mel_files     : mel spectrogram files for each splitted part
                     - audio_files   : raw audio (if directory is None) or filename of the full audio
         """
-        start = time.time()
+        t0 = time.time()
         
         mels_pred = self.synthesizer.predict(
             sentences,
@@ -109,7 +122,6 @@ class Vocoder(object):
             directory   = directory,
             overwrite   = overwrite,
             save        = directory is not None and save_mel,
-            debug       = debug,
             ** kwargs
         )
         
@@ -125,16 +137,15 @@ class Vocoder(object):
             play    = play,
             ** kwargs
         )
-        total_time = time.time() - start
+        total_time = time.time() - t0
         
-        if debug:
-            generated_time = sum([i['duree'] for _, i in result])
-            print("{} generated in {} ({} generated / sec)".format(
-                time_to_string(generated_time),
-                time_to_string(total_time),
-                time_to_string(generated_time / total_time)
-            ))
-            
+        generated_time = sum([i['duree'] for _, i in result])
+        logging.info("{} generated in {} ({} generated / sec)".format(
+            time_to_string(generated_time),
+            time_to_string(total_time),
+            time_to_string(generated_time / total_time)
+        ))
+
         return result
     
     def stream(self, directory = None, play = True, tqdm = lambda x: x, ** kwargs):
@@ -153,7 +164,8 @@ class Vocoder(object):
         
         if self.lang in _end_msg:
             self.predict(_end_msg[self.lang], ** predict_kwargs)
-    
+
+@timer
 def vocoder_inference(vocoder,
                       mels_predictions,
                       pad_value    = -11.,
@@ -171,7 +183,7 @@ def vocoder_inference(vocoder,
                        
                       display  = False,
                       play     = False,
-                      tqdm    = tqdm,
+                      tqdm    = lambda x: x,
                       ** kwargs
                      ):
     """
@@ -240,10 +252,14 @@ def vocoder_inference(vocoder,
     
     audio_parts = {}
     for start in tqdm(range(0, len(mels), batch_size)):
+        time_logger.start_timer('processing')
         # Load all mels as np.ndarray
         batch = [maybe_load_mel(m) for m in mels[start : start + batch_size]]
         # Pad batch for inference
         batch = pad_batch(batch, pad_value = pad_value)
+        
+        time_logger.stop_timer('processing')
+        
         # Perform vocoder inference
         audios = vocoder.infer(batch)
         
@@ -265,6 +281,8 @@ def vocoder_inference(vocoder,
                 audio_filename = audio
                 # Save the generated audio (if required)
                 if audio_dir is not None:
+                    time_logger.start_timer('saving')
+
                     num_pred = len(os.listdir(audio_dir))
                     # This trick allows to really overwrite the audio if it already exists
                     audio_filename = infos_pred[text].get(
@@ -273,6 +291,8 @@ def vocoder_inference(vocoder,
                     )
                     # Save audio to filename
                     write_audio(audio, audio_filename, rate)
+                    
+                    time_logger.stop_timer('saving')
                 
                 # Add information about audio on output information
                 infos_pred[text].update({
@@ -281,8 +301,12 @@ def vocoder_inference(vocoder,
                 })
                 # Display audio (with text) if required
                 if display:
+                    time_logger.start_timer('display')
+
                     print("Text : {}\n".format(text))
                     display_audio(audio, rate = rate, play = play)
+                    
+                    time_logger.stop_timer('display')
     
     # Concat all sentences as a big audio (if required)
     if len(mels_predictions) > 1 and concat and (audio_dir is not None or display):
@@ -295,12 +319,16 @@ def vocoder_inference(vocoder,
         # Save full audio (if required)
         audio_filename = concat_audio
         if audio_dir is not None:
+            time_logger.start_timer('saving')
+
             num_pred = len([f for f in os.listdir(audio_dir) if f.startswith('concat_')])
             audio_filename = infos_pred.get(concat_text, {}).get(
                 'audio',
                 os.path.join(audio_dir, concat_filename.format(num_pred, ext))
             )
             write_audio(concat_audio, audio_filename, rate)
+            
+            time_logger.stop_timer('saving')
         
         infos_pred[concat_text] = {
             'audio' : audio_filename,
@@ -308,8 +336,12 @@ def vocoder_inference(vocoder,
         }
         
         if display:
+            time_logger.start_timer('display')
+
             print("Concatenated text : {}\n".format(concat_text))
             display_audio(concat_audio, rate = rate)
+            
+            time_logger.stop_timer('display')
     
     if map_file is not None:
         dump_json(map_file, infos_pred, indent = 4)

@@ -5,8 +5,7 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from utils.plot_utils import plot, plot_embedding
-from utils.generic_utils import dump_json, load_json, var_from_str, time_to_string
+from utils import dump_json, load_json, var_from_str, time_to_string, plot, plot_embedding
 from utils.audio.audio_io import display_audio, read_audio, write_audio
 from utils.audio.mkv_utils import extract_audio, extract_subtitles, parse_subtitles
 
@@ -97,12 +96,13 @@ class AudioAnnotation(object):
                 # This is for retro-compatibility where keys were in french
                 # Furthermore, it checks that all required new keys are in given information / alignment
                 for old, new in [('debut', 'start'), ('fin', 'end'), ('duree', 'time'), ('id', 'id')]:
-                    if old in info:
+                    if old in info and old != new:
                         _should_update = True
                         info[new] = info.pop(old)
                     if new not in info:
                         raise ValueError("Annotation is bad configured ! Missing required key {}\n{}".format(
                             new, info))
+                info['time'] = info['end'] - info['start']
         if _should_update:
             self.save()
     
@@ -239,7 +239,7 @@ class AudioAnnotation(object):
         """
             Return all speakers with informations
             Return : infos : dict {speaker_id : {
-                alignment   : list of dict {debut:, fin:, id:, duree:, ...}
+                alignment   : list of dict {start:, end:, id:, time:, ...}
                 indexes     : list of indexes such as self.infos[i]['id'] == speaker_id
             }}
         """
@@ -410,7 +410,8 @@ class AudioAnnotation(object):
         t0 = time.time()
         i, prec = start_idx, []
         
-        while i < len(data):
+        while True:
+            if i == len(data): break
             if (ids is not None and data[i]['id'] not in ids) or (filter_fn and not filter_fn(data[i])):
                 i += 1
                 continue
@@ -427,10 +428,13 @@ class AudioAnnotation(object):
                 
             if transform_fn: audio_i = transform_fn(audio_i, rate)
             # Display and print information about current data
-            display_audio(audio_i, rate = rate, temps = play_time, play = play)
-            
-            if display:
-                plot(audio_i, ** kwargs)
+            if len(audio_i) > 0:
+                display_audio(audio_i, rate = rate, temps = play_time, play = play)
+
+                if display:
+                    plot(audio_i, ** kwargs)
+            else:
+                print("WARNING this audio is empty !")
             
             print("\n\nid : {} - start : {} - end : {} - infos :".format(
                 data[i]['id'], 
@@ -468,7 +472,7 @@ class AudioAnnotation(object):
                     data[i] = {** self.infos[info_idx], 'indexes' : [info_idx]}
                     data.insert(i + 1, {** self.infos[info_idx + 1], 'indexes' : [info_idx]})
                     # Update next alignment indexes to take into account the new inserted information
-                    for j in range(i, len(data)):
+                    for j in range(i+1, len(data)):
                         data[j]['indexes'] = [idx + 1 for idx in data[j]['indexes']]
                 else:
                     sub_time = (end_time - start_time) / len(data[i]['indexes'])
@@ -481,7 +485,7 @@ class AudioAnnotation(object):
                     } for idx, info_idx in enumerate(data[i]['indexes'])]
                     
                     data[i] = new_data[0]
-                    for j, d in enumerate(new_data[1:]):
+                    for j, d in enumerate(new_data):
                         if j == 0: continue
                         data.insert(i + j, d)
                 continue
@@ -495,7 +499,7 @@ class AudioAnnotation(object):
                         
             if '{' in new_infos and '}' in new_infos:
                 infos = json.loads(new_infos)
-            if ':' in new_infos or ' = ' in new_infos:
+            elif ':' in new_infos or ' = ' in new_infos:
                 sep = ' = ' if ' = ' in new_infos else ':'
                 infos = {}
                 for key_value_text in new_infos.split(', '):
@@ -598,8 +602,8 @@ class AudioAnnotation(object):
         
     def get_speaker_alignment(self, name):
         """
-            Return all parts of the speaker
-            Return : dict {debut : [], fin : [], duree : []}
+            Return all parts of the end
+            Return : dict {start : [], fin : [], time : []}
         """
         return [a.copy() for a in self._alignment if a['id'] == name]
     
@@ -693,7 +697,7 @@ class AudioAnnotation(object):
         dump_json(config_file, data, indent = 4)
     
     def save_wavs(self, directory, map_file = 'map.json', rate = None,
-                  by_part = False, overwrite = False):
+                  by_part = False, overwrite = False, ids = None, preprocess_fn = None):
         """
             Save all audio samples in subdirectories (1 for each speaker)
             
@@ -722,21 +726,26 @@ class AudioAnnotation(object):
                     audio_0.wav
                 ...
         """
+        if ids is not None and not isinstance(ids, (list, tuple)): ids = [ids]
         wav_dir = os.path.join(directory, 'wavs')
         data    = self.infos if by_part else self._alignment
         
         new_infos = []
         audio = None
-        if not os.path.exists(wav_dir) or overwrite:
+        if not os.path.exists(wav_dir) or overwrite == True:
+            print("load !")
             rate, audio = self.load(rate = rate)
         
-        if os.path.exists(wav_dir) and overwrite: shutil.rmtree(wav_dir)
+        if os.path.exists(wav_dir) and overwrite == True: shutil.rmtree(wav_dir)
         os.makedirs(wav_dir, exist_ok = True)
         
         spk_nb = {}
         for i, info in enumerate(data):
             if info['id'] == '?' or info['time'] < 0.1: continue
+            
             speaker_dir = os.path.join(wav_dir, str(info['id']))
+            if os.path.exists(speaker_dir) and not isinstance(overwrite, bool) and overwrite == info['id'] and info['id'] not in spk_nb:
+                shutil.rmtree(speaker_dir)
             os.makedirs(speaker_dir, exist_ok = True)
             
             spk_nb.setdefault(info['id'], 0)
@@ -747,8 +756,13 @@ class AudioAnnotation(object):
             spk_nb[info['id']] += 1
 
             if not os.path.exists(audio_name):
+                if audio is None: rate, audio = self.load(rate = rate)
                 d, f = int(rate * info['start']), int(rate * info['end'])
-                write_audio(audio[d : f], audio_name, rate = rate)
+                audio_segment = audio[d : f]
+                if preprocess_fn is not None:
+                    audio_segment = preprocess_fn(audio_segment, rate = rate, id = info['id'])
+                
+                write_audio(audio_segment, audio_name, rate = rate)
             
             new_infos.append({
                 'original_filename' : self.filename.replace(os.path.sep, '/'),
@@ -777,9 +791,9 @@ class AudioAnnotation(object):
                     "original_filename" : wav filename of the complete audio
                     "filename"  : wav filename for this part
                     "id"        : speaker's ID
-                    "debut"     : start time of the audio part (in the complete audio)
-                    "fin"       : end time of the audio part (in the complete audio)
-                    "duree"     : time of the audio file of this part
+                    "start"     : start time of the audio part (in the complete audio)
+                    "end"       : end time of the audio part (in the complete audio)
+                    "time"      : time of the audio file of this part
                     ...         : additionnal informations given during annotation
                 },
                 ...

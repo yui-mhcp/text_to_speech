@@ -1,5 +1,7 @@
 import os
 import json
+import pickle
+import logging
 import datetime
 import argparse
 import numpy as np
@@ -18,6 +20,23 @@ def time_to_string(secondes):
     s = "{:.3f} sec".format(s) if m == "" and h == "" else "{}sec".format(int(s))
     return "{}{}{}".format(h, m, s)        
 
+def split_gpus(n, memory = 2048):
+    gpus = tf.config.list_physical_devices('GPU')
+    try:
+        for gpu in gpus:
+            tf.config.set_logical_device_configuration(
+                gpu, [
+                    tf.config.LogicalDeviceConfiguration(memory_limit = memory) for _ in range(n)
+                ]
+            )
+    except RuntimeError as e:
+        print(e)
+    
+    print("# physical GPU : {}\n# logical GPU : {}".format(
+        len(tf.config.list_physical_devices('GPU')),
+        len(tf.config.list_logical_devices('GPU'))
+    ))
+
 def limit_gpu_memory(limit = 2048):
     """ Limit gpu memory for tensorflow """
     global _limited_memory
@@ -32,11 +51,11 @@ def limit_gpu_memory(limit = 2048):
             )
         _limited_memory = True
     except:
-        print("[ERROR] while limiting tensorflow GPU memory")
+        logging.error("Error while limiting tensorflow GPU memory")
 
-def get_object(available_objects, obj_name, *args,
+def get_object(available_objects, obj_name, * args,
                print_name = 'object', err = False, 
-               allowed_type = None, **kwargs):
+               allowed_type = None, ** kwargs):
     """
         Get corresponding object based on a name and dict of object names with associated class / function to call
         Arguments : 
@@ -52,24 +71,32 @@ def get_object(available_objects, obj_name, *args,
     if allowed_type is not None and isinstance(obj_name, allowed_type):
         return obj_name
     elif obj_name is None:
-        return [get_object(available_objects, n, *args, print_name = print_name, 
-                           err = err, allowed_type = allowed_type, **kw) 
-                for n, kw in kwargs.items()]
+        return [get_object(
+            available_objects, n, *args, print_name = print_name, 
+            err = err, allowed_type = allowed_type, ** kw
+        ) for n, kw in kwargs.items()]
+    
     elif isinstance(obj_name, (list, tuple)):
-        return [get_object(available_objects, n, *args, print_name = print_name, 
-                           err = err, allowed_type = allowed_type, **kwargs) 
-                for n in obj_name]
+        return [get_object(
+            available_objects, n, *args, print_name = print_name, 
+            err = err, allowed_type = allowed_type, ** kwargs
+        ) for n in obj_name]
+    
     elif isinstance(obj_name, dict):
-        return [get_object(available_objects, n, *args, print_name = print_name, 
-                           err = err, allowed_type = allowed_type, **kwargs) 
-                for n, args in obj_name.items()]
+        return [get_object(
+            available_objects, n, *args, print_name = print_name, 
+            err = err, allowed_type = allowed_type, ** kwargs
+        ) for n, args in obj_name.items()]
+    
     elif isinstance(obj_name, str) and obj_name.lower() in to_lower_keys(available_objects):
         return to_lower_keys(available_objects)[obj_name.lower()](*args, **kwargs)
     else:
         if err:
-            raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(print_name, tuple(available_objects.keys()), obj_name))
+            raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(
+                print_name, tuple(available_objects.keys()), obj_name
+            ))
         else:
-            print("[WARNING]\t{} : '{}' is not available !".format(print_name, obj_name))
+            logging.warning("{} : '{}' is not available !".format(print_name, obj_name))
         return obj_name
 
 def print_objects(objects, print_name = 'objects'):
@@ -97,7 +124,7 @@ def to_json(data):
     elif data is None or isinstance(data, str):
         return data
     else:
-        print("Type inconnu : {}".format(type(data)))
+        logging.warning("Unknown json type : {}".format(type(data)))
         return str(data)
 
 def var_from_str(v):
@@ -109,53 +136,6 @@ def var_from_str(v):
     return v
 
     
-def load_json(filename, default = {}):
-    """ Safely load data from a json file """
-    if not filename.endswith('.json'): filename += '.json'
-    if not os.path.exists(filename): return default
-    with open(filename, 'r', encoding = 'utf-8') as file:
-        result = file.read()
-    return json.loads(result)
-
-def dump_json(filename, data, ** kwargs):
-    """ Safely save data to a json file """
-    if not filename.endswith('.json'): filename += '.json'
-    data = to_json(data)
-    data = json.dumps(data, ** kwargs)
-    with open(filename, 'w', encoding = 'utf-8') as file:
-        file.write(data)
-
-def normalize_filename(filename, invalid_mode = 'error'):
-    """
-        Return (list of) str filenames extracted from multiple formats
-        
-        Arguments :
-            - filename  : (list of) filenames of different types
-                - str   : return filename or list of filenames (if directory)
-                - pd.DataFrame  : must have a 'filename' column
-                - dict      : must have a 'filename' entry
-                - tf.Tensor / np.ndarray    : string / bytes
-    """
-    if isinstance(filename, (dict, pd.Series)): filename = filename['filename']
-    if isinstance(filename, tf.Tensor): filename = filename.numpy()
-    if isinstance(filename, bytes): filename = filename.decode('utf-8')
-    
-    if isinstance(filename, (list, tuple)):
-        outputs = flatten([normalize_filename(f) for f in filename])
-    elif isinstance(filename, pd.DataFrame):
-        outputs = flatten([normalize_filename(row) for _, row in filename.iterrows()])
-    elif isinstance(filename, str):
-        if not os.path.isdir(filename): return filename
-        outputs = flatten([normalize_filename(
-            os.path.join(filename, f)
-        ) for f in os.listdir(filename)])
-    else:
-        if invalid_mode == 'skip': return None
-        if invalid_mode == 'keep' : return filename
-        else:
-            raise ValueError("Unknown type for `filename` : {}\n  {}".format(type(filename), filename))
-        
-    return [o for o in outputs if o is not None]
 
 def get_metric_names(obj, default_if_not_list = None):
     if isinstance(obj, dict):
@@ -182,7 +162,6 @@ def get_metric_names(obj, default_if_not_list = None):
     else:
         raise ValueError("Cannot extract name from {} !".format(obj))
     
-    
 def flatten(struct):
     """ Flatten nested python lists """
     return tf.nest.flatten(struct)
@@ -199,6 +178,21 @@ def unstack_and_flatten(struct):
     )
 
 def map_output_names(values, names):
+    mapping = {}
+    idx = 0
+    for i, v in enumerate(values):
+        if isinstance(v, tf.Tensor):
+            if len(tf.shape(v)) == 0:
+                v = {names[idx] : v}
+            else:
+                v = tf.reshape(v, [-1])
+                v = {n : vi for n, vi in zip(names[idx : idx + len(v)], tf.unstack(v))}
+        idx += len(v)
+        mapping.update(v)
+
+    return mapping
+
+def map_output_names_old(values, names):
     flattened_values    = unstack_and_flatten(values)
     flattened_names     = tf.nest.flatten(names)
     
@@ -206,26 +200,7 @@ def map_output_names(values, names):
         raise ValueError("Try to associate {} values with {} names !\n  Values : {}\n  Names : {}".format(len(flattened_values), len(flattened_names), flattened_values, flattened_names))
     return {n : v for n, v in zip(flattened_names, flattened_values)}
 
-
-def compare(v1, v2, verbose = True):
-    """
-        Compare np.ndarray's (or list of) and see if they are close to each other or not
-        Quite useful to see if model outputs can be considered assame or not and print useful message if not
-    """
-    if isinstance(v1, (list, tuple)):
-        return all([compare(v1_i, v2_i, verbose = verbose) for v1_i, v2_i in zip(v1, v2)])
-    all_close = np.allclose(v1, v2) if v1.shape == v2.shape else False
-    if verbose:
-        if v1.shape != v2.shape:
-            print("Shape mismatch ({} vs {}) !".format(v1.shape, v2.shape))
-        else:
-            err = np.abs(v1 - v2)
-            print("All close : {} - min : {} - max : {} - mean : {} - sum : {}".format(
-                all_close, np.min(err), np.max(err), np.mean(err), np.sum(err)
-            ))
-    return all_close
-
-def parse_args(* args, allow_abrev = True, ** kwargs):
+def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
     """
         Not tested yet but in theory it parses arguments :D
         Arguments : 
@@ -259,9 +234,25 @@ def parse_args(* args, allow_abrev = True, ** kwargs):
         
         parser.add_argument(* names, ** config)
     
-    parsed = parser.parse_known_args()[0]
-
+    parsed, unknown = parser.parse_known_args()
+    
     parsed_args = {}
     for a in args + tuple(kwargs.keys()): parsed_args[a] = getattr(parsed, a)
+    if add_unknown:
+        k, v = None, None
+        for a in unknown:
+            if not a.startswith('--'):
+                if k is None:
+                    raise ValueError("Unknown argument without key !\n  Got : {}".format(unknown))
+                a = var_from_str(a)
+                if v is None: v = a
+                elif not isinstance(v, list): v = [v, a]
+                else: v.append(a)
+            else: # startswith '--'
+                if k is not None:
+                    parsed_args.setdefault(k, v if v is not None else True)
+                k, v = a[2:], None
+        if k is not None:
+            parsed_args.setdefault(k, v if v is not None else True)
     
     return parsed_args

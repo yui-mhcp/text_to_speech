@@ -46,16 +46,29 @@ class TacotronLoss(tf.keras.losses.Loss):
         return names + ['gate_loss']
     
     def compute_mel_loss(self, y_true, y_pred, loss = None, mask = None):
+        """
+            Compute mel loss for given mel ground truth / pred wiith for a given loss function
+            Arguments : 
+                - y_true / y_pred : mel ground truth / predicted with shape [B, seq_len, n_channels]
+                - loss : the loss function name (mae, mse or similarity supported)
+                - mask : binary mask of shape [B, seq_len], frames to mask
+            Return :
+                - mel_loss per sample (shape = [B])
+            
+            Note : the loss is computed (for mae / mse) as the mean over the entire spectrogram (without masking if mask is provided) and **not** the mean over frames.
+        """
         if loss is None: loss = self.mel_loss
         if isinstance(loss, (list, tuple)):
             return [self.compute_mel_loss(y_true, y_pred, l, mask = mask) for l in loss]
         
+        if mask is not None: mask = tf.cast(mask, y_pred.dtype)
+        
         if loss == 'similarity':
-            if mask is not None: y_pred *= tf.cast(mask, y_pred.dtype)
+            if mask is not None: y_pred *= mask
             similarity = self.similarity_function(tf.stop_gradient(y_true), y_pred)
-            return tf.reduce_mean(tf.keras.losses.binary_crossentropy(
+            return tf.reshape(tf.keras.losses.binary_crossentropy(
                 tf.ones_like(similarity), similarity
-            ))
+            ), [-1])
         elif callable(loss):
             error   = loss(y_true, y_pred)
         elif loss == 'mse':
@@ -65,30 +78,37 @@ class TacotronLoss(tf.keras.losses.Loss):
         else:
             raise ValueError("Unknown loss : {}".format(loss))
         
-        if mask is None:
-            return tf.reduce_mean(error)
+        if len(tf.shape(error)) == 3: error = tf.reduce_sum(error, axis = -1)
         
-        mask = tf.cast(mask, error.dtype)
-        return tf.reduce_sum(error * mask) / (tf.reduce_sum(mask) * tf.cast(tf.shape(error)[-1], mask.dtype))
+        n_channels = tf.shape(y_pred)[-1]
+        if mask is None:
+            return tf.reduce_sum(error, axis = -1) / tf.cast(tf.shape(y_pred)[1] * n_channels, error.dtype)
+        
+        return tf.reduce_sum(error * mask, axis = -1) / (tf.reduce_sum(mask, axis = -1) * tf.cast(n_channels, mask.dtype))
     
     def call(self, y_true, y_pred):
         """
-            Compute the Tacotron-2 loss as following : 
+            Compute the Tacotron-2 loss as follows : 
                 loss = loss_mel + loss_mel_postnet + loss_gate
-                - loss_mel          = MSE on mel-spectrogram (before postnet)
-                - loss_mel_postnet  = MSE on mel-spectrogram (after postnet)
-                - loss_gate         = binary_crossentropy on gates
+                - loss_mel          = `self.mel_loss` on mel-spectrogram (before postnet)
+                - loss_mel_postnet  = `self.mel_loss` on mel-spectrogram (after postnet)
+                - loss_gate         = `binary_crossentropy` on gates
             
             Arguments : 
                 - y_true : [mel_target, gate_target], expected spectrogram / gate
-                - y_pred : [mel, mel_postnet, gates, attention], prediction of Tacotron2
+                - y_pred : [mel, mel_postnet, gates, ...], prediction of Tacotron2
             
             Shapes :
-                - mel_target, mel, mel_postnet  : [batch_size, seq_len, n_mel_channels]
+                - mel_target, mel, mel_postnet  : [batch_size, seq_len, n_channels]
                 - gate_target, gates    : [batch_size, seq_len]
+                - output    : [4, batch_size] (4 is for [loss, mel_loss, mel_postnet_loss, gate_loss])
         """
         mel_target, gate_target = y_true
         mel_pred, mel_postnet_pred, gate_pred = y_pred[:3]
+        
+        ##############################
+        #      Compute gate loss     #
+        ##############################
         
         reshaped_gate_target = tf.reshape(gate_target, [-1, 1])
         reshaped_gate_pred   = tf.reshape(gate_pred, [-1, 1])
@@ -101,8 +121,13 @@ class TacotronLoss(tf.keras.losses.Loss):
             label_smoothing = self.label_smoothing
         )
         gate_loss = gate_loss * finish_mask + gate_loss * not_finish_mask
+        gate_loss = tf.reduce_mean(tf.reshape(gate_loss, [tf.shape(mel_target)[0], -1]), axis = -1)
 
-        mask = 1. - tf.expand_dims(gate_target, -1) if self.mask_mel_padding else None
+        ####################
+        # Compute mel loss #
+        ####################
+        
+        mask = 1. - gate_target if self.mask_mel_padding else None
         
         mel_loss            = self.compute_mel_loss(mel_target, mel_pred, mask = mask)
         mel_postnet_loss    = self.compute_mel_loss(mel_target, mel_postnet_pred, mask = mask)
@@ -110,11 +135,13 @@ class TacotronLoss(tf.keras.losses.Loss):
         if not isinstance(mel_loss, list): mel_loss = [mel_loss]
         if not isinstance(mel_postnet_loss, list): mel_postnet_loss = [mel_postnet_loss]
         
-        gate_loss = tf.reduce_mean(gate_loss)
+        ##############################
+        #     Compute final loss     #
+        ##############################
         
-        loss  = tf.reduce_sum(mel_loss) + tf.reduce_sum(mel_postnet_loss) + gate_loss
+        loss  = tf.reduce_sum(mel_loss, 0) + tf.reduce_sum(mel_postnet_loss, 0) + gate_loss
 
-        return [loss] + mel_loss + mel_postnet_loss + [gate_loss]
+        return tf.stack([loss] + mel_loss + mel_postnet_loss + [gate_loss], 0)
     
     def get_config(self):
         config = super().get_config()

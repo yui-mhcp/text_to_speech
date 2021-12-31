@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 
 from sklearn.utils import shuffle as sklearn_shuffle
@@ -13,16 +14,21 @@ from datasets.custom_datasets.text_datasets import _text_dataset_processing
 
 from datasets.custom_datasets.preprocessing import *
 
-_dataset_dir = 'D:/datasets'
+_dataset_dir = os.environ.get('DATASET_DIR', 'D:/datasets')
 
-def load_dataset(ds_name, dataset_dir = None, type_annots = None, verbose = True,
+def set_dataset_dir(dataset_dir):
+    global _dataset_dir
+    _dataset_dir = dataset_dir
+
+def load_dataset(ds_name, dataset_dir = None, type_annots = None,
                  modes = ['train', 'valid'], train_kw = {}, valid_kw = {}, 
-                 size = None, shuffle = False, random_state = 10, **kwargs):
+                 size = None, shuffle = False, random_state = 10, ** kwargs):
     def format_kwargs(kwargs):
         formatted = {}
         for k, v in kwargs.items():
             formatted[k] = v.format(dataset_dir) if type(v) is str else v
         return formatted
+    global _dataset_dir
     if dataset_dir is None: dataset_dir = _dataset_dir
     
     if isinstance(ds_name, (list, tuple)):
@@ -33,7 +39,6 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None, verbose = True
                 'type_annots'   : type_annots,
                 'dataset_dir'   : dataset_dir,
                 'modes'         : modes,
-                'verbose'       : verbose,
                 'size'          : size[i] if isinstance(size, (list, tuple)) else size,
                 'shuffle'       : shuffle,
                 'random_state'  : random_state,
@@ -71,7 +76,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None, verbose = True
         
     process_fn = _custom_processing[type_annots]
     
-    if verbose: print('Loading dataset {}...'.format(ds_name))
+    logging.info('Loading dataset {}...'.format(ds_name))
     
     if 'train'  not in _custom_datasets.get(ds_name, {}):
         ds_kwargs = {**_custom_datasets.get(ds_name, {}), **kwargs}

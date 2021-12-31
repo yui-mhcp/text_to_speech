@@ -24,7 +24,7 @@ def augment_image(img, transforms, prct = 0.25, ** kwargs):
         fn = transfo if callable(transfo) else _image_augmentations_fn[transfo]
         
         img = tf.cond(
-            tf.random.uniform(()) < prct,
+            tf.random.uniform((), seed = kwargs.get('seed', None)) < prct,
             lambda: fn(img, ** kwargs),
             lambda: img
         )
@@ -36,8 +36,8 @@ def flip_vertical(img, ** kwargs):
 def flip_horizontal(img, ** kwargs):
     return tf.image.flip_left_right(img)
 
-def rotate(img, n = None, ** kwargs):
-    if n is None: n = tf.random.uniform((), minval = 0, maxval = 4, dtype = tf.int32)
+def rotate(img, n = None, seed = None, ** kwargs):
+    if n is None: n = tf.random.uniform((), minval = 0, maxval = 4, dtype = tf.int32, seed = seed)
     return tf.image.rot90(img, n)
 
 def zoom(img, min_factor = 0.8, ** kwargs):
@@ -55,12 +55,12 @@ def zoom(img, min_factor = 0.8, ** kwargs):
     
     return random_crop(img)
 
-def noise(img, factor = 25., ** kwargs):
-    noise = tf.random.normal(tf.shape(img)) / factor
+def noise(img, factor = 25., seed = None, ** kwargs):
+    noise = tf.random.normal(tf.shape(img), seed = seed) / factor
     return tf.clip_by_value(img + noise, 0., 1.)
 
-def quality(img, min_jpeg_quality = 25, max_jpeg_quality = 75, ** kwargs):
-    return tf.image.random_jpeg_quality(img, min_jpeg_quality, max_jpeg_quality)
+def quality(img, min_jpeg_quality = 25, max_jpeg_quality = 75, seed = None, ** kwargs):
+    return tf.image.random_jpeg_quality(img, min_jpeg_quality, max_jpeg_quality, seed = seed)
 
 def color(img, ** kwargs):
     img = hue(img, ** kwargs)
@@ -69,17 +69,17 @@ def color(img, ** kwargs):
     img = contrast(img, ** kwargs)
     return img
 
-def hue(img, max_delta = 0.15, ** kwargs):
-    return tf.image.random_hue(img, max_delta)
+def hue(img, max_delta = 0.15, seed = None, ** kwargs):
+    return tf.image.random_hue(img, max_delta, seed = seed)
 
-def saturation(img, lower = 0.5, upper = 2., ** kwargs):
-    return tf.image.random_saturation(img, lower, upper)
+def saturation(img, lower = 0.5, upper = 2., seed = None, ** kwargs):
+    return tf.image.random_saturation(img, lower, upper, seed = seed)
 
-def brightness(img, max_delta = 0.15, ** kwargs):
-    return tf.clip_by_value(tf.image.random_brightness(img, max_delta), 0., 1.)
+def brightness(img, max_delta = 0.15, seed = None, ** kwargs):
+    return tf.clip_by_value(tf.image.random_brightness(img, max_delta, seed = seed), 0., 1.)
 
-def contrast(img, lower = 0.5, upper = 1.5, ** kwargs):
-    return tf.clip_by_value(tf.image.random_contrast(img, lower, upper), 0., 1.)
+def contrast(img, lower = 0.5, upper = 1.5, seed = None, ** kwargs):
+    return tf.clip_by_value(tf.image.random_contrast(img, lower, upper, seed = seed), 0., 1.)
 
 
 _image_augmentations_fn = {

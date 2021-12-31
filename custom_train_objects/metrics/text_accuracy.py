@@ -3,7 +3,7 @@ import tensorflow as tf
 class TextAccuracy(tf.keras.metrics.Metric):
     def __init__(self, mask_padding = True, pad_value = 0,
                  name = 'TextAccuracy', ** kwargs):
-        super(TextAccuracy, self).__init__(name = name, ** kwargs)
+        super(TextAccuracy, self).__init__(name = name)
         self.mask_padding   = mask_padding
         self.pad_value      = tf.cast(pad_value, tf.int32)
         
@@ -15,7 +15,7 @@ class TextAccuracy(tf.keras.metrics.Metric):
     def metric_names(self):
         return ["accuracy", "sentence_accuracy"]
     
-    def update_state(self, y_true, y_pred):
+    def update_state(self, y_true, y_pred, sample_weight = None):
         """
             Arguments : 
                 - y_true : expected values with shape (batch_size, max_length)
@@ -28,7 +28,7 @@ class TextAccuracy(tf.keras.metrics.Metric):
             y_true, target_length = y_true
         
         padding_mask    = tf.sequence_mask(
-            target_length, maxlen = tf.reduce_max(target_length), dtype = tf.float32
+            target_length, maxlen = tf.shape(y_pred)[1], dtype = tf.float32
         )
         
         n_symbols = tf.reduce_sum(padding_mask, axis = -1, keepdims = True)

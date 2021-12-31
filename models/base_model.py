@@ -2,6 +2,7 @@ import os
 import copy
 import time
 import shutil
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -13,13 +14,15 @@ from tensorflow.python.util import nest
 from tensorflow.python.eager import def_function
 from tensorflow.python.keras.callbacks import CallbackList
 
+from loggers import DEV
 from hparams import HParams, HParamsTraining
 from datasets import train_test_split, prepare_dataset
 from utils import time_to_string, load_json, dump_json, get_metric_names, map_output_names
 from custom_architectures import get_architecture, custom_objects
 from custom_train_objects import History, MetricList
 from custom_train_objects import get_optimizer, get_loss, get_metrics, get_callbacks
-from models.model_utils import _pretrained_models_folder
+from models.weights_converter import partial_transfer_learning
+from models.model_utils import _pretrained_models_folder, is_model_name, get_model_dir
 
 _trackable_objects = (
     tf.keras.Model, 
@@ -41,6 +44,7 @@ class ModelInstances(type):
             cls.restore(nom)
             cls._is_restoring = False
         else:
+            #cls._is_restoring = False
             instance = super(ModelInstances, cls).__call__(*args, **kwargs)
             cls._instances[nom] = instance
         return cls._instances[nom]
@@ -52,7 +56,7 @@ class BaseModel(metaclass = ModelInstances):
                  max_to_keep    = 3,
                  pretrained_name    = None,
                  
-                 **kwargs
+                 ** kwargs
                 ):
         """
         Constructor that initialize the model's configuration, architecture, folders, ... 
@@ -80,7 +84,13 @@ class BaseModel(metaclass = ModelInstances):
             if isinstance(restore, str): restore = {'directory' : restorre}
             
             if 'directory' in restore_kwargs:
-                self.__history  = History.load(os.path.join(restore_kwargs['directory'], 'historique.json'))
+                if is_model_name(restore_kwargs['directory']):
+                    restore_kwargs['directory'] = os.path.join(
+                        _pretrained_models_folder, restore_kwargs['directory'], 'saving'
+                    )
+                self.__history  = History.load(
+                    os.path.join(restore_kwargs['directory'], 'historique.json')
+                )
             self.restore_models(** restore_kwargs)
             if restore not in (True, False) and os.path.exists(self.folder):
                 self.save()
@@ -95,7 +105,7 @@ class BaseModel(metaclass = ModelInstances):
         
         self.init_train_config()
         
-        print("Model {} initialized successfully !".format(self.nom))
+        logging.info("Model {} initialized successfully !".format(self.nom))
     
     def __build_call_fn(self):
         if not hasattr(self, 'call_fn'):
@@ -153,7 +163,7 @@ class BaseModel(metaclass = ModelInstances):
             models = _build_single_model(model_config)
             _set_single_model(models, name = name)
             
-    def init_train_config(self, augment_prct = 0.25):
+    def init_train_config(self, augment_prct = 0.25, global_batch_size = None):
         """
             Initialize training configuration
             Can take as argument whathever you put in the `training_hparams` property
@@ -167,6 +177,7 @@ class BaseModel(metaclass = ModelInstances):
         self.stop_training  = False
         self.current_epoch  = tf.Variable(self.epochs, trainable = False, name = 'epoch')
         self.current_step   = tf.Variable(self.steps, trainable = False, name = 'step')
+        self.global_batch_size  = -1
     
     def update_train_config(self, epoch, step):
         """ Update training configuration after each step / epoch """
@@ -230,7 +241,8 @@ class BaseModel(metaclass = ModelInstances):
     
     @property
     def include_signature(self):
-        return True
+        strat = self.distribute_strategy
+        return False if strat is not None and strat.num_replicas_in_sync > 1 else True
     
     @property
     def input_signature(self):
@@ -296,6 +308,10 @@ class BaseModel(metaclass = ModelInstances):
     @property
     def model_infos(self):
         return self.__models
+    
+    @property
+    def default_metrics_config(self):
+        return {}
     
     @property
     def layers(self):
@@ -434,10 +450,10 @@ class BaseModel(metaclass = ModelInstances):
     def _init_model(self, name, model):
         assert isinstance(model, tf.keras.Model), "'model' doit être un tf.keras.Model !"
         if name in self.__models:
-            print("Submodel '{}' already exists !".format(name))
+            logging.warning("Submodel '{}' already exists !".format(name))
             return
         
-        print("Initializing submodel : {} !".format(name))
+        logging.info("Initializing submodel : {} !".format(name))
         
         config_model_file = os.path.join(self.save_dir, name + '.json')
         
@@ -455,10 +471,10 @@ class BaseModel(metaclass = ModelInstances):
         assert isinstance(optimizer, tf.keras.optimizers.Optimizer), "'optimizer' doit êtreun tf.keras.optimizers.Optimizer !"
         
         if name in self.__optimizers:
-            print("Optimizer '{}' already exists !".format(name))
+            logging.warning("Optimizer '{}' already exists !".format(name))
             return
         
-        print("Optimizer '{}' initilized successfully !".format(name))
+        logging.info("Optimizer '{}' initilized successfully !".format(name))
         
         self.__optimizers[name] = optimizer
         setattr(self.__ckpt, name, optimizer)
@@ -467,7 +483,7 @@ class BaseModel(metaclass = ModelInstances):
         assert isinstance(loss, tf.keras.losses.Loss) or callable(loss), "'loss' doit êtreun tf.keras.losses.Loss ou un callable !"
         
         if name in self.__losses:
-            print("Loss '{}' already exists !".format(name))
+            logging.warning("Loss '{}' already exists !".format(name))
             return
         
         self.__losses[name] = loss
@@ -476,7 +492,7 @@ class BaseModel(metaclass = ModelInstances):
         assert isinstance(metric, tf.keras.metrics.Metric) or callable(metric), "'metric' doit êtreun tf.keras.metrics.Metric ou un callable !"
         
         if name in self.__metrics:
-            print("Metric '{}' already exists !".format(name))
+            logging.warning("Metric '{}' already exists !".format(name))
             return
         
         self.__metrics[name] = metric
@@ -521,9 +537,11 @@ class BaseModel(metaclass = ModelInstances):
             return [self.__metrics[m] for m in met_name]
         return self.__metrics[met_name] if met_name is not None else None
     
-    def get_compiled_metrics(self, new_metrics = None):
-        metrics = new_metrics if new_metrics else self.__metrics
-        return MetricList(metrics, losses = self.__losses, names = self.metric_names)
+    def get_compiled_metrics(self, new_metrics = None, add_loss = True):
+        metrics = get_metrics(
+            new_metrics, ** self.default_metrics_config
+        ) if new_metrics else self.__metrics
+        return MetricList(metrics, losses = self.__losses if add_loss else None)
     
     def __setattr__(self, name, value):
         if isinstance(value, _trackable_objects) and name != 'compiled_metrics':
@@ -577,8 +595,8 @@ class BaseModel(metaclass = ModelInstances):
         if len(free_optimizer) + len(free_loss) + len(free_metric) > 0: des += '\n'
         return des
     
-    def __call__(self, * inputs, training = False):
-        return self.call_fn(* inputs, training = training)
+    def __call__(self, * inputs, training = False, ** kwargs):
+        return self.call_fn(* inputs, training = training, ** kwargs)
     
     def summary(self, model = None, **kwargs):
         if model is None: model = self.model_names
@@ -634,7 +652,7 @@ class BaseModel(metaclass = ModelInstances):
             if model_name is None: model_name = self.model_names
                 
             for name in model_name:
-                self.compile(model_name = name, **kwargs)
+                self.compile(model_name = name, ** kwargs)
         
         elif type(model_name) is dict:
             for name, kw in model_name.items():
@@ -650,11 +668,14 @@ class BaseModel(metaclass = ModelInstances):
                       loss          = 'mse',    loss_config         = {},
                       optimizer     = 'adam',   optimizer_config    = {},
                       metrics       = [],       metrics_config      = {},
+                      verbose       = True
                      ):
         if self.is_compiled(model_name):
-            print("Model {} is already compiled !".format(model_name))
+            logging.warning("Model {} is already compiled !".format(model_name))
             return
         
+        loss_config.setdefault('reduction', tf.keras.losses.Reduction.NONE)
+
         loss    = get_loss(loss,            ** loss_config)
         opt     = get_optimizer(optimizer,  ** optimizer_config)
         metrics = get_metrics(metrics,      ** metrics_config)
@@ -682,11 +703,13 @@ class BaseModel(metaclass = ModelInstances):
         self.add_metric(model_metrics, met_name)
         
         str_loss = model_loss.get_config() if isinstance(model_loss, tf.keras.losses.Loss) else model_loss.__name__
-        print("Submodel {} compiled !\n  Loss : {}\n  Optimizer : {}\n  Metrics : {}".format(
-            model_name, 
-            str_loss, 
-            model_optimizer.get_config(), 
-            [m.get_config() for m in model_metrics]
+        logging.log(
+            logging.INFO if verbose else DEV,
+            "Submodel {} compiled !\n  Loss : {}\n  Optimizer : {}\n  Metrics : {}".format(
+                model_name, 
+                str_loss, 
+                model_optimizer.get_config(), 
+                [m.get_config() for m in model_metrics]
         ))
                 
     def _get_default_callbacks(self):
@@ -708,6 +731,7 @@ class BaseModel(metaclass = ModelInstances):
 
                            shuffle_size     = 1024,
                            is_validation    = True,
+                           strategy     = None,
                            ** kwargs
                           ):
         """
@@ -722,8 +746,11 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 batch_size = valid_batch_size
         
-        if isinstance(shuffle_size, float): shuffle_size = int(shuffle_size * batch_size
-                                                            )
+        if isinstance(shuffle_size, float): shuffle_size = int(shuffle_size * batch_size)
+        
+        if strategy is not None:
+            batch_size *= strategy.num_replicas_in_sync
+        
         config['batch_size']    = batch_size
         config['shuffle_size']  = shuffle_size if not is_validation else 0
         
@@ -799,7 +826,7 @@ class BaseModel(metaclass = ModelInstances):
         
         dataset = x if y is None else (x, y)
         if isinstance(dataset, dict) and 'train' in dataset:
-            validation_data = dataset.get('valid', validation_data)
+            validation_data = dataset.get('valid', dataset.get('test', validation_data))
             dataset         = dataset['train']
         
         if validation_data is None:
@@ -824,7 +851,7 @@ class BaseModel(metaclass = ModelInstances):
         if test_size > 0:
             test_dataset    = prepare_dataset(valid_dataset,  ** test_config)
             test_dataset    = test_dataset.take(test_size)
-                
+        
         train_dataset = prepare_dataset(train_dataset, ** train_config)
         valid_dataset = prepare_dataset(valid_dataset, ** valid_config)
         
@@ -852,7 +879,8 @@ class BaseModel(metaclass = ModelInstances):
             'callbacks'         : callbacks,
             'validation_data'   : valid_dataset,
             'shuffle'           : False,
-            'initial_epoch'     : self.epochs
+            'initial_epoch'     : self.epochs,
+            'global_batch_size' : train_config['batch_size']
         }
         
     def fit(self, * args, name = None, custom_config = True, ** kwargs):
@@ -876,13 +904,14 @@ class BaseModel(metaclass = ModelInstances):
             self.init_train_config(** train_hparams)
 
             config = self._get_train_config(*args, **kwargs)
-
+            self.global_batch_size = config.pop('global_batch_size', -1)
+            
             base_hparams.extract(config, pop = False)
             train_hparams.update(base_hparams)
             
             self.history.set_params(train_hparams)
             
-            print("Training config :\n{}\n".format(train_hparams))
+            logging.info("Training config :\n{}\n".format(train_hparams))
         else:
             config = kwargs
 
@@ -896,9 +925,9 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 _ = train_model.fit(* args, ** config)
         except KeyboardInterrupt as e:
-            print("Training interrupted ! Saving model...")
+            logging.warning("Training interrupted ! Saving model...")
         
-        print("Training lasted {} !".format(time_to_string(time.time() - start)))
+        logging.info("Training finished after {} !".format(time_to_string(time.time() - start)))
         
         self.save()
         return self.history
@@ -910,6 +939,7 @@ class BaseModel(metaclass = ModelInstances):
               verbose_step  = 100,
               tqdm          = tqdm_progress_bar,
               strategy      = None,
+              run_eagerly   = False,
               # custom functions for training and evaluation
               train_step    = None,
               eval_step     = None,
@@ -944,12 +974,13 @@ class BaseModel(metaclass = ModelInstances):
         train_hparams   = self.training_hparams.extract(kwargs, pop = True)
         self.init_train_config(** train_hparams)
         
-        config = self._get_train_config(* args, ** kwargs)
+        config = self._get_train_config(* args, strategy = strategy, ** kwargs)
+        self.global_batch_size = config.pop('global_batch_size', -1)
         
         base_hparams.extract(config, pop = False)
         train_hparams.update(base_hparams)
         
-        print("Training config :\n{}\n".format(train_hparams))
+        logging.info("Training config :\n{}\n".format(train_hparams))
         
         ##############################
         #     Dataset variables      #
@@ -962,12 +993,13 @@ class BaseModel(metaclass = ModelInstances):
         assert isinstance(valid_dataset, tf.data.Dataset) or valid_epoch <= 0
                 
         if strategy is not None:
+            logging.info("Running on {} GPU".format(strategy.num_replicas_in_sync))
             train_dataset   = strategy.experimental_distribute_dataset(train_dataset)
             valid_dataset   = strategy.experimental_distribute_dataset(valid_dataset)
-                
+        
         init_epoch  = config['initial_epoch']
         last_epoch  = config['epochs']
-                
+        
         ##############################
         #  Metrics + callbacks init  #
         ##############################
@@ -994,15 +1026,15 @@ class BaseModel(metaclass = ModelInstances):
         #     Training     #
         ####################
         
-        train_function  = self.make_train_function(strategy, train_step)
-        eval_function   = self.make_eval_function(strategy, eval_step)
+        train_function  = self.make_train_function(strategy, train_step, run_eagerly = run_eagerly)
+        eval_function   = self.make_eval_function(strategy, eval_step, run_eagerly = run_eagerly)
         
         start_training_time = time.time()
-        last_print_time, last_print_step = start_training_time, int(self.current_step)
+        last_print_time, last_print_step = start_training_time, int(self.current_step.numpy())
         
         try:
             for epoch in range(init_epoch, last_epoch):
-                if verbose != 1: print("\nEpoch {} / {}".format(epoch + 1, last_epoch))
+                logging.info("\nEpoch {} / {}".format(epoch + 1, last_epoch))
                 callbacks.on_epoch_begin(epoch)
                 
                 start_epoch_time = time.time()
@@ -1013,6 +1045,9 @@ class BaseModel(metaclass = ModelInstances):
                     callbacks.on_train_batch_begin(i)
                     
                     metrics = train_function(batch)
+                    metrics = {
+                        n : m for n, m in zip(self.compiled_metrics.metric_names, self.compiled_metrics.result())
+                    }
                     
                     callbacks.on_train_batch_end(i, logs = metrics)
 
@@ -1023,7 +1058,7 @@ class BaseModel(metaclass = ModelInstances):
                     if self.stop_training: break
                     
                     if verbose == 2 and (i+1) % verbose_step == 0:
-                        print("Epoch {} step {} (avg time : {}) :\n  {}".format(
+                        logging.info("Epoch {} step {} (avg time : {}) :\n  {}".format(
                             epoch,
                             i+1, 
                             time_to_string((time.time() - last_print_time) / (int(self.current_step) - last_print_step)), 
@@ -1032,7 +1067,7 @@ class BaseModel(metaclass = ModelInstances):
 
                 if eval_epoch > 0 and epoch % eval_epoch == 0:
                     self._test_loop(
-                        valid_dataset, eval_function, callbacks, tqdm
+                        valid_dataset, eval_function, callbacks, tqdm, prefix = 'val_'
                     )
 
                 epoch_time = time.time() - start_epoch_time
@@ -1045,20 +1080,20 @@ class BaseModel(metaclass = ModelInstances):
                 callbacks.on_epoch_end(epoch, logs = self.__history.training_logs)
                 
                 if verbose == 2:
-                    print("\nEpoch {} / {} - Time : {} - Remaining time : {}".format(
+                    logging.info("\nEpoch {} / {} - Time : {} - Remaining time : {}\n{}".format(
                         epoch, last_epoch,
                         time_to_string(epoch_time),
-                        time_to_string(epoch_time * (last_epoch - epoch))
+                        time_to_string(epoch_time * (last_epoch - epoch)),
+                        self.__history.to_string(mode = 'all')
                     ))
-                    print(self.__history.to_string(mode = 'all'))
 
         except KeyboardInterrupt:
-            print("Training interrupted ! Saving model...")
+            logging.warning("Training interrupted ! Saving model...")
         
         callbacks.on_train_end()
         
         total_training_time = time.time() - start_training_time
-        print("Training lasted {} !".format(time_to_string(total_training_time)))
+        logging.info("Training finished after {} !".format(time_to_string(total_training_time)))
         
         self.save()
         
@@ -1067,21 +1102,24 @@ class BaseModel(metaclass = ModelInstances):
     def update_metrics(self, y_true, y_pred):
         self.compiled_metrics.update_state(y_true, y_pred)
 
-        metrics = self.compiled_metrics.result()
-        metrics = map_output_names(metrics, self.compiled_metrics.metric_names)
-
-        return metrics
+        return self.compiled_metrics.result()
         
-    def _test_loop(self, dataset, eval_function, callbacks, tqdm):
+    def _test_loop(self, dataset, eval_function, callbacks, tqdm, prefix = None):
         """ Utility function used in `train` for evaluation phase and in `test` """
+        if prefix is None:
+            prefix = 'val_' if self.__history.training else 'test_'
+
         self.compiled_metrics.reset_states()
-        
+
         callbacks.on_test_begin()
         for i, batch in enumerate(tqdm(dataset)):
             callbacks.on_test_batch_begin(i)
             
             val_metrics = eval_function(batch)
-            prefix = 'val_' if self.__history.training else 'test_'
+            val_metrics = {
+                n : m for n, m in zip(self.compiled_metrics.metric_names, self.compiled_metrics.result())
+            }
+            
             val_metrics = {
                 prefix + name : val for name, val in val_metrics.items()
             }
@@ -1092,13 +1130,18 @@ class BaseModel(metaclass = ModelInstances):
     
     def test(self, 
              dataset,
-             verbose       = 1,
-             verbose_step  = 100,
-             tqdm          = tqdm_progress_bar,
-             strategy      = None,
+             test_name      = 'test',
+             metrics        = None,
+             add_loss       = True,
+             
+             verbose        = 1,
+             verbose_step   = 100,
+             tqdm           = tqdm_progress_bar,
+             strategy       = None,
+             run_eagerly    = False,
              # custom functions for training and evaluation
-             eval_step     = None,
-             **kwargs
+             eval_step      = None,
+             ** kwargs
             ):
         """
             Same as `train`, it is an equivalent to `tf.keras.Model.evaluate` but using `self.test_step` as testing function
@@ -1106,6 +1149,7 @@ class BaseModel(metaclass = ModelInstances):
         if strategy is None: strategy = self.distribute_strategy
         if verbose_step is not None or verbose < 2: tqdm = lambda x: x
         
+        prefix = test_name if test_name.endswith('_') else test_name + '_'
         ########################################
         #     Initialisation des variables     #
         ########################################
@@ -1113,13 +1157,13 @@ class BaseModel(metaclass = ModelInstances):
         test_hparams   = self.training_hparams.extract(kwargs, pop = True)
         self.init_train_config(** test_hparams)
         
-        print("Testing config :\n{}\n".format(test_hparams))
+        logging.info("Testing config :\n{}\n".format(test_hparams))
                 
         ##################################
         #     Dataset initialization     #
         ##################################
         
-        config = self.get_dataset_config(is_validation = True, **kwargs)
+        config  = self.get_dataset_config(is_validation = True, ** kwargs)
         dataset = prepare_dataset(dataset, ** config)
         
         assert isinstance(dataset, tf.data.Dataset)
@@ -1128,7 +1172,7 @@ class BaseModel(metaclass = ModelInstances):
             dataset   = strategy.experimental_distribute_dataset(dataset)
                         
         # Prepare metrics and logs
-        self.compiled_metrics    = self.get_compiled_metrics()
+        self.compiled_metrics    = self.get_compiled_metrics(metrics, add_loss = add_loss)
         
         # Prepare callbacks
         callbacks   = [self.__history]
@@ -1145,28 +1189,30 @@ class BaseModel(metaclass = ModelInstances):
             'epochs'    : self.epochs
         })
         callbacks.set_params(test_hparams)
-                 
+        
         ####################
         #     Testing      #
         ####################
         
-        eval_function   = self.make_eval_function(strategy, eval_step)
+        eval_function   = self.make_eval_function(strategy, eval_step, run_eagerly = run_eagerly)
         
         start_test_time = time.time()
         
         try:
             self._test_loop(
-                dataset, eval_function, callbacks, tqdm
+                dataset, eval_function, callbacks, tqdm, prefix = prefix
             )
         except KeyboardInterrupt:
-            print("Testing interrupted !")
+            logging.warning("Testing interrupted !")
+        
+        self.save_history()
         
         total_test_time = time.time() - start_test_time
-        print("Testing lasted {} !".format(time_to_string(total_test_time)))
+        logging.info("Testing finished after {} !".format(time_to_string(total_test_time)))
         
         return self.__history
     
-    def make_train_function(self, strategy, train_step = None):
+    def make_train_function(self, strategy, train_step = None, run_eagerly = False):
         if train_step is not None: pass
         elif hasattr(self, 'train_step'): train_step = self.train_step
         else:
@@ -1181,14 +1227,18 @@ class BaseModel(metaclass = ModelInstances):
                 
                 with tf.GradientTape() as tape:
                     y_pred = self(inputs, training = True)
+                    
+                    replica_loss = compute_distributed_loss(
+                        loss_fn, target, y_pred,
+                        global_batch_size = self.global_batch_size,
+                        nb_loss = nb_loss
+                    )
 
-                    loss = loss_fn(target, y_pred)
-                    if nb_loss > 1: loss = loss[0]
-
-                grads = tape.gradient(loss, variables)
+                grads = tape.gradient(replica_loss, variables)
                 optimizer.apply_gradients(zip(grads, variables))
 
-                return self.update_metrics(target, y_pred)
+                self.update_metrics(target, y_pred)
+                return replica_loss
                         
         def run_step(batch):
             if strategy is None:
@@ -1196,17 +1246,18 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 outputs = strategy.run(train_step, args = (batch,))
 
-                outputs = _reduce_per_replica(outputs, strategy, reduction = 'first')
+                outputs = _reduce_per_replica(outputs, strategy, reduction = 'sum')
             
             return outputs
         
         return _compile_fn(
             run_step, 
-            run_eagerly = self.run_eagerly,
-            signature   = (self.input_signature, self.output_signature)
+            run_eagerly = self.run_eagerly if not run_eagerly else True,
+            signature   = (self.input_signature, self.output_signature),
+            include_signature   = self.include_signature
         )
         
-    def make_eval_function(self, strategy, eval_step = None):
+    def make_eval_function(self, strategy, eval_step = None, run_eagerly = False):
         if eval_step is not None: pass
         elif hasattr(self, 'eval_step'): eval_step = self.eval_step
         else:
@@ -1224,14 +1275,15 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 outputs = strategy.run(eval_step, args = (batch,))
 
-                outputs = _reduce_per_replica(outputs, strategy, reduction = 'first')
+                #outputs = _reduce_per_replica(outputs, strategy, reduction = 'first')
             
             return outputs
         
         return _compile_fn(
             run_step, 
-            run_eagerly = self.run_eagerly,
-            signature   = (self.input_signature, self.output_signature)
+            run_eagerly = self.run_eagerly if not run_eagerly else True,
+            signature   = (self.input_signature, self.output_signature),
+            include_signature   = self.include_signature
         )
     
     def predict(self, inputs, name = None, **kwargs):
@@ -1255,7 +1307,7 @@ class BaseModel(metaclass = ModelInstances):
         return self.__class__.clone(pretrained = self.nom, nom = nom)
     
     def restore_models(self, directory = None, checkpoint = None, compile = True):
-        print("Model restoration...")
+        logging.info("Model restoration...")
         
         if directory is not None:
             filename = os.path.join(directory, "config_models.json")
@@ -1293,6 +1345,9 @@ class BaseModel(metaclass = ModelInstances):
         if directory is None and checkpoint is None:
             checkpoint = self.latest_checkpoint
         elif directory is not None:
+            if is_model_name(directory):
+                directory = os.path.join(_pretrained_models_folder, directory, 'saving')
+            
             if checkpoint is None:
                 checkpoint = tf.train.latest_checkpoint(directory)
             else:
@@ -1355,9 +1410,12 @@ class BaseModel(metaclass = ModelInstances):
              save_history = True, save_config = True):
         if save_models: self.save_models()
         if save_ckpt: self.ckpt_manager.save()
-        if save_history: self.__history.save(self.history_file)
+        if save_history: self.save_history()
         if save_config: self.save_config()
-            
+    
+    def save_history(self):
+        self.__history.save(self.history_file)
+        
     def save_models(self, directory = None, **kwargs):
         for model_name in self.model_names:
             filename = None if directory is None else os.path.join(directory, model_name)
@@ -1368,8 +1426,7 @@ class BaseModel(metaclass = ModelInstances):
             )
         
         
-    def save_model(self, model_name, filename = None, verbose = True, 
-                   save_weights = False, **kwargs):
+    def save_model(self, model_name, filename = None, save_weights = False, ** kwargs):
         if filename is None and type(model_name) is str: 
             if model_name not in self.models:
                 raise ValueError("Le modèle est inconnu !\nReçu : {}\nExistants : {}".format(model_name, self.model_names))
@@ -1384,7 +1441,7 @@ class BaseModel(metaclass = ModelInstances):
         if save_weights:
             self.__models[model_name]['model'].save_weights(filename, **kwargs)
             
-        if verbose: print("Submodel {} saved in {} !".format(model_name, config_filename))
+        logging.info("Submodel {} saved in {} !".format(model_name, config_filename))
                 
     def save_config(self, with_trackable_variables = True, directory = None):
         config = {
@@ -1414,9 +1471,9 @@ class BaseModel(metaclass = ModelInstances):
         
         setattr(self, name, restored_model)
         if compile_infos is not None:
-            self.compile(model_name = name, ** compile_infos)
-        if verbose: 
-            print("Successfully restored {} from {} !".format(name, filename))
+            self.compile(model_name = name, ** compile_infos, verbose = False)
+
+        logging.info("Successfully restored {} from {} !".format(name, filename))
     
     def destroy(self, ask = True):
         """ Destroy the model and all its folders """
@@ -1431,7 +1488,7 @@ class BaseModel(metaclass = ModelInstances):
     
     @classmethod
     def clone(cls, pretrained, nom = None, compile = False):
-        pretrained_dir = os.path.join(_pretrained_models_folder, pretrained)
+        pretrained_dir = get_model_dir(pretrained)
         if not os.path.exists(pretrained_dir):
             raise ValueError("Pretrained model {} does not exist !".format(pretrained))
         
@@ -1445,29 +1502,67 @@ class BaseModel(metaclass = ModelInstances):
 
         config = load_json(os.path.join(pretrained_dir, 'config.json'))
         if config['class_name'] != cls.__name__:
-            raise ValueError("Le modèle {} existe déjà mais n'est pas de la bonne classe !\n  Classe atendue : {}\n  Classe obtenue : {}".format(nom, config['class_name'], cls.__name__))
+            raise ValueError("Model {} already exists but is not the expected class !\n  Expected : {}\n  Got : {}".format(nom, config['class_name'], cls.__name__))
         
         config = config['config']
+        config.update({'nom' : nom, 'pretrained_name' : pretrained})
+        config.setdefault('max_to_keep', 1)
         
         instance = cls(
-            nom = nom, max_to_keep = 1, ** config,
-            restore = {'directory' : os.path.join(pretrained_dir, 'saving'), 'compile' : compile}
+            restore = {'directory' : pretrained, 'compile' : compile}, ** config
         )
         instance.save()
         return instance
     
     @classmethod
+    def from_pretrained(cls, nom, pretrained_name, ** kwargs):
+        from models import get_pretrained
+        
+        with tf.device('cpu') as d:
+            pretrained = get_pretrained(pretrained_name)
+        
+        config = pretrained.get_config()
+        config.update({'nom' : nom, 'pretrained_name' : pretrained_name, ** kwargs})
+        
+        instance = cls(max_to_keep = 1, ** config)
+        
+        partial_transfer_learning(instance.get_model(), pretrained.get_model())
+        
+        instance.save()
+        
+        return instance
+
+    @classmethod
     def restore(cls, nom):
-        folder = os.path.join(_pretrained_models_folder, nom)
+        folder = get_model_dir(nom)
         if not os.path.exists(folder): return None
         
         config = load_json(os.path.join(os.path.join(folder, 'config.json')))
         
         if config['class_name'] != cls.__name__:
-            raise ValueError("Le modèle {} existe déjà mais n'est pas de la bonne classe !\n  Classe atendue : {}\n  Classe obtenue : {}".format(nom, config['class_name'], cls.__name__))
+            raise ValueError("Model {} already exists but is not the expected class !\n  Expected : {}\n  Got : {}".format(nom, config['class_name'], cls.__name__))
         
         return cls(** config['config'])
     
+    @staticmethod
+    def rename(nom, new_name):
+        def _rename_in_file(filename):
+            if os.path.isdir(filename):
+                for f in os.listdir(filename): _rename_in_file(os.path.join(filename, f))
+            if filename.endswith('.json'):
+                with open(filename, 'r+', encoding = 'utf-8') as file:
+                    file.write(file.read().replace(nom, new_name))
+            
+        folder = get_model_dir(nom)
+        if not os.path.exists(folder):
+            raise ValueError("Pretrained model {} does not exist !".format(pretrained))
+        
+        if new_name in os.listdir(_pretrained_models_folder):
+            raise ValueError("Model {} already exist, cannot rename model !".format(new_name))
+
+        _rename_in_file(folder)
+        os.rename(folder, os.path.join(get_model_dir(new_name)))
+        
 def _can_restore(restore, config_file):
     if restore is True: return os.path.exists(config_file)
     elif isinstance(restore, str):
@@ -1495,5 +1590,15 @@ def _reduce_per_replica(values, strategy, reduction = 'mean'):
             return strategy.unwrap(v)[0]
         elif reduction == 'mean':
             return strategy.reduce(tf.distribute.ReduceOp.MEAN, v, axis = None)
+        elif reduction == 'sum':
+            return strategy.reduce(tf.distribute.ReduceOp.SUM, v, axis = None)
+        else:
+            return v
 
     return nest.map_structure(_reduce, values)
+
+def compute_distributed_loss(loss_fn, y_true, y_pred, global_batch_size = None, nb_loss = None):
+    loss = loss_fn(y_true, y_pred)
+
+    if nb_loss is not None and nb_loss > 1: loss = loss[0]
+    return tf.nn.compute_average_loss(loss, global_batch_size = global_batch_size)

@@ -1,4 +1,5 @@
 import cv2
+import logging
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -66,6 +67,9 @@ class BoundingBox:
     
     def __str__(self):
         return "{:.4f} {:.4f} {:.4f} {:.4f} {} {:.4f}".format(*self.box, self.score)
+    
+    def get_config(self):
+        return self.json()
     
     def json(self, labels = None):
         infos = {
@@ -216,7 +220,7 @@ def get_box_pos(box, image = None, image_h = None, image_w = None,
         label = box['name'] if 'name' in label else box['label']
         score = 1
     else:
-        print("Box {} n'est pas du bon format ! ".format(box))
+        logging.error("Box {} n'est pas du bon format ! ".format(box))
         return 0, 0, 0, 0
     
     new_w = w * dezoom_factor

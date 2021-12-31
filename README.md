@@ -13,11 +13,14 @@
 ├── datasets/               : utilities for dataset loading / processing
 │   ├── custom_datasets/    : where to save custom datasets processing
 ├── hparams/                : utility class to define modulable hyper-parameters
+├── loggers/                : some logging utilities
+│   ├── tts_logger.py       : special TTS logger
 ├── models/                 : main `BaseModel` subclasses directory
 │   ├── siamese/            : directory for `AudioSiamese` class* used in `SV2TTS`
 │   ├── tts/                : directory for Text-To-Speech models
 ├── pretrained_models/      : saving directory for pretrained models
-└── utils/
+├── unitest/                : custom unitest framework to test models' consistency
+└── utils/                  : utilities for data processing
 ```
 
 See [my data_processing repo](https://github.com/yui-mhcp/data_processing) for more information on the `utils` module and `data processing` features.
@@ -34,6 +37,7 @@ See [my base project](https://github.com/yui-mhcp/base_dl_project) for more info
 | :-------- | :---------------- | :---------- |
 | Text-To-Speech    | `tts`             | perform TTS on text you want with the model you want  |
 | stream            | `tts_stream`      | perform TTS on text you enter |
+| TTS logger        | `loggers.TTSLogger`   | converts `logging` logs to voice and play it |
 
 You can check the `text_to_speech` notebook for a concrete demonstration
 
@@ -86,10 +90,10 @@ You can also find some audio generated in `example_outputs/` or directly in the 
 - [x] Implement WaveGlow in `tensorflow 2.x`
 - [x] Add `batch_size` support for `vocoder inference`
 - [x] Add pretrained `SV2TTS` weights
+- [x] Add a `similarity loss` to test a new training procedure for single-speaker fine-tuning
 - [ ] Add document parsing to perform `TTS` on document
 - [ ] Add new languages support
 - [ ] Add new TTS architectures / models
-- [x] Add a `similarity loss` to test a new training procedure for single-speaker fine-tuning
 
 ## Multi-speaker Text-To-Speech
 

@@ -1,3 +1,4 @@
+import logging
 import tensorflow as tf
 
 from tensorflow.keras.layers import Input, Flatten, Dense
@@ -229,15 +230,12 @@ def comparator(encoder_a,
     def get_input(model, signature, name):
         if signature is None:
             input_shape, input_type = model.input_shape[1:], tf.float32
+        elif not isinstance(signature, (list, tuple)):
+            input_shape, input_type = signature.shape[1:], signature.dtype
         else:
-            if isinstance(signature, (list, tuple)):
-                input_shape = [inp.shape[1:] for inp in signature]
-                input_type  = [inp.dtype for inp in signature]
-            else:
-                input_shape, input_type = signature.shape[1:], signature.dtype
+            input_shape = [inp.shape[1:] for inp in signature]
+            input_type  = [inp.dtype for inp in signature]
         
-        if isinstance(input_shape, (list, tuple)):
-            if not isinstance(input_type, (list, tuple)): input_type = [input_type] * len(input_shape)
             return [
                 Input(shape, dtype = dtype, name = name + '_{}'.format(i))
                 for i, (shape, dtype) in enumerate(zip(input_shape, input_type))
@@ -248,6 +246,7 @@ def comparator(encoder_a,
     
     input_a = get_input(encoder_a, input_signature_a, 'input_a')
     input_b = get_input(encoder_b, input_signature_b, 'input_b')
+    
     inputs  = [input_a, input_b]
     
     embedded_a = encoder_a(input_a)
@@ -266,7 +265,9 @@ def siamese(model, input_signature = None, activation = 'sigmoid', name = 'Siame
     """ Special case of `Comparator` where both `encoder_a` and `encoder_b` are the same model """
     kwargs.update({'input_signature_a' : input_signature, 'input_signature_b' : input_signature})
     
-    return comparator(encoder_a = model, encoder_b = model, activation = activation, name = name, ** kwargs)
+    return comparator(
+        encoder_a = model, encoder_b = model, activation = activation, name = name, ** kwargs
+    )
 
 _distance_fn = {
     'dp'        : lambda inputs: tf.matmul(inputs[0], inputs[1]),

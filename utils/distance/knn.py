@@ -37,16 +37,17 @@ class KNN(object):
             ids = embeddings['id'].values
             embeddings = embeddings_to_np(embeddings)
         
-        assert len(embeddings) == len(ids)
+        assert ids is None or len(embeddings) == len(ids)
         
-        self.ids    = np.array(ids)
+        self.ids        = np.array(ids)
         self.embeddings = tf.cast(embeddings, tf.float32)
         
         self.k          = tf.cast(k, dtype = tf.int32)
         self.use_mean   = use_mean
         self.method     = method
         
-        self.__mean_ids, self.__mean_embeddings = None, None
+        self.__mean_ids         = None
+        self.__mean_embeddings  = None
     
     @property
     def mean_ids(self):
@@ -82,14 +83,14 @@ class KNN(object):
                 tf.where(res_ids == id_i) for id_i in ids
             ], axis = 0), [-1])
 
-            embeddings = tf.gather(embeddings, indexes)
-            res_ids = tf.gather(res_ids, indexes)
+            embeddings  = tf.gather(embeddings, indexes)
+            res_ids     = tf.gather(res_ids, indexes)
 
         return embeddings, res_ids
     
-    def distance(self, x, ids = None, use_mean = False):
+    def distance(self, x, ** kwargs):
         """ Compute distance between x and embeddings for given ids """
-        embeddings, ids = self.get_embeddings(ids, use_mean)
+        embeddings, ids = self.get_embeddings(** kwargs)
         return distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
     
     def predict(self, query, possible_ids = None, k = None, use_mean = None,
@@ -178,11 +179,12 @@ def knn(query, embeddings, ids, k, distance_metric, return_index = False, ** kwa
     """
         Compute the k-nn decision procedure for a given x based on a list of labelled embeddings
         
-        Return the majoritary id in the `k` nearest neigbors or `-2` if there is an equality
+        Return the majoritary id in the `k` nearest neigbors or `-2` if there is an equality.
+        If no ids are provided (`ids = None`), return either indexes (`return_index = True`) or nearest embeddings.
     """
     distances = distance(query, embeddings, method = distance_metric, as_matrix = True, ** kwargs)
 
-    _, k_nearest_idx = tf.nn.top_k(-distances, tf.minimum(tf.shape(distances)[1], k))
+    _, k_nearest_idx = tf.nn.top_k(- distances, tf.minimum(tf.shape(distances)[1], k))
     
     if ids is None:
         if return_index:

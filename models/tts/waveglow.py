@@ -5,6 +5,7 @@ import tensorflow as tf
 
 from tqdm import tqdm
 
+from loggers import timer
 from models.base_model import BaseModel
 from custom_architectures import get_architecture
 from models.weights_converter import pt_convert_model_weights
@@ -72,6 +73,7 @@ class WaveGlow(BaseModel):
     def call(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect)
     
+    @timer(name = 'inference')
     def infer(self, spect, * args, ** kwargs):
         if isinstance(spect, str): spect = np.load(spect)
         if len(spect.shape) == 2: spect = tf.expand_dims(spect, axis = 0)
@@ -101,10 +103,12 @@ class WaveGlow(BaseModel):
         return config
 
     @classmethod
-    def build_from_nvidia_pretrained(cls, nom = None, ** kwargs):            
+    def from_nvidia_pretrained(cls, nom = None, ** kwargs):            
         nvidia_model = get_nvidia_waveglow()
         
-        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_waveglow', ** kwargs)
+        instance = cls(
+            nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_waveglow', ** kwargs
+        )
         
         pt_convert_model_weights(nvidia_model, instance.vocoder)
         
@@ -119,6 +123,7 @@ class PtWaveGlow(object):
     def __call__(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect)
     
+    @timer(name = 'inference')
     def infer(self, mels):
         import torch
         

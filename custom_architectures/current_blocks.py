@@ -1,3 +1,4 @@
+import logging
 import tensorflow as tf
 
 from tensorflow.keras.layers import *
@@ -143,7 +144,9 @@ def _layer_bn(model, layer_type, n, * args,
     if residual and tuple(x.shape) == tuple(model.shape):
         x = Add()([x, inputs])
     elif residual:
-        print("Skip connection failed : shape mismatch ({} vs {})".format(model.shape, x.shape))
+        logging.info("Skip connection failed : shape mismatch ({} vs {})".format(
+            model.shape, x.shape
+        ))
     
     if activation:
         x = _add_layer(x, get_activation(activation, ** activation_kwargs))

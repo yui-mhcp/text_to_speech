@@ -1,3 +1,4 @@
+import logging
 import tensorflow as tf
 
 class PredictorCallback(tf.keras.callbacks.Callback):
@@ -22,7 +23,7 @@ class PredictorCallback(tf.keras.callbacks.Callback):
             self._predict(logs)
     
     def _predict(self, logs = None):
-        print("\nMaking prediction at step {}".format(self.step))
+        logging.info("\nMaking prediction at step {}".format(self.step))
         if logs is None: logs = {}
         for i, batch in enumerate(self.batch_generator):
             prefix = self.prefix.format(batch = i, step = self.step, **logs)

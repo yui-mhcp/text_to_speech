@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 
 def print_vars(model):
@@ -54,15 +55,14 @@ def pt_convert_model_weights(pt_model, tf_model, verbose = False):
         converted_variables = pt_convert_layer_weights(layer_variables) if 'embedding' not in layer_name else layer_variables
         converted_weights += converted_variables
         
-        if verbose:
-            print("Layer : {} \t {} \t {}".format(
-                layer_name, 
-                [tuple(v.shape) for v in layer_variables],
-                [tuple(v.shape) for v in converted_variables],
-            ))
+        logging.log(logging.INFO if verbose else logging.DEBUG, "Layer : {} \t {} \t {}".format(
+            layer_name, 
+            [tuple(v.shape) for v in layer_variables],
+            [tuple(v.shape) for v in converted_variables],
+        ))
     
     partial_transfer_learning(tf_model, converted_weights, verbose = verbose)
-    print("Weights converted successfully !")
+    logging.info("Weights converted successfully !")
     
     
 """ Tensorflow to Pytorch converter """
@@ -98,12 +98,11 @@ def tf_convert_model_weights(tf_model, pt_model, verbose = False):
         converted_variables = tf_convert_layer_weights(layer_variables) if 'embedding' not in layer_name else layer_variables
         converted_weights += converted_variables
         
-        if verbose:
-            print("Layer : {} \t {} \t {}".format(
-                layer_name, 
-                [tuple(v.shape) for v in layer_variables],
-                [tuple(v.shape) for v in converted_variables],
-            ))
+        logging.log(logging.INFO if verbose else logging.DEBUG, "Layer : {} \t {} \t {}".format(
+            layer_name, 
+            [tuple(v.shape) for v in layer_variables],
+            [tuple(v.shape) for v in converted_variables],
+        ))
     
     tf_idx = 0
     for i, (pt_name, pt_weights) in enumerate(pt_layers.items()):
@@ -113,7 +112,7 @@ def tf_convert_model_weights(tf_model, pt_model, verbose = False):
         tf_idx += 1
     
     pt_model.load_state_dict(pt_layers)
-    print("Weights converted successfully !")
+    logging.info("Weights converted successfully !")
 
 """ Partial transfer learning """
 
@@ -191,9 +190,12 @@ def partial_transfer_learning(target_model,
             pretrained_v = pretrained_variables[idx_b]
             if not isinstance(pretrained_v, np.ndarray): pretrained_v = pretrained_v.numpy()
 
-        if verbose:
-            print("Target[{}] shape     : {}".format(idx_a, v.shape))
-            print("Pretrained[{}] shape : {}".format(idx_b,pretrained_v.shape))
+        logging.log(
+            logging.INFO if verbose else logging.DEBUG,
+            "Target[{}] shape     : {}\nPretrained[{}] shape : {}".format(
+                idx_a, v.shape, idx_b, pretrained_v.shape
+            )
+        )
             
         if v.shape != pretrained_v.shape and skip_layer:
             if skip_from_a: 
@@ -209,11 +211,11 @@ def partial_transfer_learning(target_model,
         if v.shape == pretrained_v.shape:
             new_v = pretrained_v
         elif not partial_transfer:
-            print("Variables {} shapes mismatch ({} vs {}), skipping it".format(idx_a, v.shape, pretrained_v.shape))
+            logging.info("Variables {} shapes mismatch ({} vs {}), skipping it".format(idx_a, v.shape, pretrained_v.shape))
             
             new_v = v
         else:            
-            print("Variables {} shapes mismatch ({} vs {}), making partial transfer".format(idx_a, v.shape, pretrained_v.shape))
+            logging.info("Variables {} shapes mismatch ({} vs {}), making partial transfer".format(idx_a, v.shape, pretrained_v.shape))
             
             new_v = partial_weight_transfer(v, pretrained_v)
 
@@ -225,5 +227,5 @@ def partial_transfer_learning(target_model,
             
     
     target_model.set_weights(new_weights)
-    print("Weights transfered successfully !")
+    logging.info("Weights transfered successfully !")
         

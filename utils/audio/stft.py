@@ -10,7 +10,7 @@ from scipy.signal import get_window
 from librosa.util import pad_center, tiny
 from librosa.filters import mel as librosa_mel_fn
 
-from utils.generic_utils import dump_json, load_json
+from utils import dump_json, load_json
 from utils.audio.audio_processing import window_sumsquare
 from utils.audio.audio_processing import dynamic_range_compression
 from utils.audio.audio_processing import dynamic_range_decompression

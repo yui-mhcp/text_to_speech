@@ -1,4 +1,5 @@
 import os
+import logging
 import datetime
 import numpy as np
 import pandas as pd
@@ -172,6 +173,12 @@ class History(tf.keras.callbacks.Callback):
     def set_params(self, params):
         self.__current_training_config.update(to_json(params))
     
+    def get_epoch_config(self, epoch):
+        for t in self.__trainings:
+            if t['infos']['start_epoch'] < epoch and epoch <= t['infos']['final_epoch']:
+                return t['config']
+        raise ValueError("Unknown epoch : {}".format(epoch))
+    
     def str_training(self, win_size = 0, **kwargs):
         if self.sleeping: return self.__str__()
         
@@ -180,7 +187,7 @@ class History(tf.keras.callbacks.Callback):
         
     def plot(self, show_valid_step = False, ** kwargs):
         if self.epoch == -1:
-            print("No data to plot !")
+            logging.warning("No data to plot !")
             return
         
         history_with_none = {}
@@ -308,7 +315,7 @@ class History(tf.keras.callbacks.Callback):
         
         interrupted = False
         if len(self.__current_epoch_history) != 0:
-            print("Training interrupted at epoch {} !".format(self.current_epoch))
+            logging.info("Training interrupted at epoch {} !".format(self.current_epoch))
             self.on_epoch_end(self.current_epoch)
         
         self.__current_training_config  = {}

@@ -1,3 +1,6 @@
+import os
+import logging
+
 from utils.text import cmudict
 
 from utils.text.text_encoder import TextEncoder, CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL
@@ -5,7 +8,7 @@ from utils.text.text_decoder import decode
 from utils.text.text_processing import *
 from utils.text.text_augmentation import random_mask
 
-from utils.text.html_parser import parse_html
+from utils.text.html_parser import _wiki_cleaner, parse_html
 
 _pad            = '_'
 _punctuation    = '!\'(),.:;? '
@@ -50,7 +53,10 @@ def get_encoder(lang, text_encoder = None, ** kwargs):
         encoder = TextEncoder(** text_encoder)
         
     elif isinstance(text_encoder, str):
-        encoder = TextEncoder.load_from_file(text_encoder)
+        if os.path.exists(text_encoder):
+            encoder = TextEncoder.load_from_file(text_encoder)
+        else:
+            encoder = TextEncoder.from_transformers_pretrained(text_encoder)
     elif isinstance(text_encoder, TextEncoder):
         encoder = text_encoder
     else:
@@ -87,7 +93,7 @@ def default_encoder(lang, ** kwargs):
     elif lang in ('en', 'english', 'anglais'):
         return default_english_encoder(** kwargs)
     else:
-        print("Unknown language : {} - return char-level encoder with default symbols".format(lang))
+        logging.warning("Unknown language : {} - return char-level encoder with default symbols".format(lang))
         return TextEncoder(get_symbols(lang), level = 'char', ** kwargs)
 
 def default_english_encoder(cleaners = ['english_cleaners'], level = 'char', ** kwargs):

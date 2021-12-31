@@ -1,16 +1,20 @@
 import os
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
 from tqdm import tqdm
 
+from loggers import timer
 from models.siamese.siamese_network import SiameseNetwork
 from custom_architectures import get_architecture
 from utils import load_json, dump_json, normalize_filename
 from utils.audio import MelSTFT, load_audio, load_mel, AudioAnnotation
 from utils.audio import random_pad, random_shift, random_noise
 from utils.distance import KPropagation
+
+time_logger = logging.getLogger('timer')
 
 _supported_input_types      = ('raw', 'audio', 'mel', 'spect', 'spectrogram')
 _supported_encoder_types    = ('rnn', 'conv1d', 'conv2d', 'transformer', 'prenet_transformer')
@@ -335,6 +339,7 @@ class AudioSiamese(SiameseNetwork):
         kwargs['rate'] = self.audio_rate
         return super().embed_dataset(* args, ** kwargs)
     
+    @timer
     def identify(self,
                  filenames,
                  alignments = None,
@@ -390,7 +395,7 @@ class AudioSiamese(SiameseNetwork):
             else:
                 audio_filename = normalize_filename(filename)
             
-            print("Processing file {}...".format(audio_filename))
+            logging.info("Processing file {}...".format(audio_filename))
             # Load already predicted result
             if audio_filename in all_outputs and not overwrite:
                 result = AudioAnnotation.load_from_file(
@@ -399,7 +404,11 @@ class AudioSiamese(SiameseNetwork):
                 outputs.append(result)
                 continue
             
+            time_logger.start_timer('loading')
+            
             audio = audio_filename if isinstance(audio_filename, np.ndarray) else load_audio(audio_filename, self.audio_rate)
+            
+            time_logger.stop_timer('loading')
             
             if alignments is not None:
                 alignment = alignments[i]

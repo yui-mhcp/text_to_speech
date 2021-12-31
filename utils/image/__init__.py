@@ -4,3 +4,5 @@ from utils.image.mask_utils import *
 from utils.image.image_utils import *
 from utils.image.video_utils import *
 from utils.image.image_augmentation import *
+
+_image_formats = ('gif', 'png', 'jpeg')

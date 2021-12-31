@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from loggers import timer
 from models.tts.tacotron2 import Tacotron2
 from models.siamese.audio_siamese import AudioSiamese
 from models.weights_converter import partial_transfer_learning
@@ -156,6 +157,7 @@ class SV2TTSTacotron2(Tacotron2):
         
         self.set_embeddings(embeddings)
         
+    @timer(name = 'inference')
     def infer(self, text, text_length, spk_embedding, * args, ** kwargs):
         if tf.rank(spk_embedding) == 1:
             spk_embedding = tf.expand_dims(spk_embedding, axis = 0)
@@ -287,33 +289,11 @@ class SV2TTSTacotron2(Tacotron2):
             * args, spk_embedding = selected_embedding, overwrite = overwrite, ** kwargs
         )
     
-    def get_config(self, *args, **kwargs):
+    def get_config(self, * args, ** kwargs):
         config = super().get_config(*args, **kwargs)
         config['speaker_embedding_dim'] = self.speaker_embedding_dim
         config['use_utterance_embedding']   = self.use_utterance_embedding
         config['speaker_encoder_name']      = self.speaker_encoder_name
         
         return config
-    
-    @classmethod
-    def build_from_sv2tts_pretrained(cls, 
-                                     nom,
-                                     pretrained_name   = 'sv2tts_tacotron2',
-                                     ** kwargs
-                                    ):
-        with tf.device('cpu') as device:        
-            pretrained_model = SV2TTSTacotron2(nom = pretrained_name)
-        
-        kwargs.setdefault('lang', pretrained_model.lang)
-        kwargs.setdefault('text_encoder', pretrained_model.text_encoder)
-        kwargs.setdefault('speaker_encoder_name', pretrained_model.speaker_encoder_name)
-        kwargs.setdefault('speaker_embedding_dim', pretrained_model.speaker_embedding_dim)
-        
-        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = pretrained_name, ** kwargs)
-
-        partial_transfer_learning(instance.tts_model, pretrained_model.tts_model)
-        
-        instance.save()
-        
-        return instance
     

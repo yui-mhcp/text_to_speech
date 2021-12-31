@@ -1,9 +1,10 @@
 import os
+import logging
 import numpy as np
 import pandas as pd
 
+from loggers import timer
 from utils import load_json
-from utils.text.cleaners import remove_control
 from datasets.sqlite_dataset import preprocess_sqlite_database
 from datasets.custom_datasets.preprocessing import parse_nq_annots
 
@@ -11,6 +12,8 @@ _siamese_renaming = {'sentence1' : 'text_x', 'sentence2' : 'text_y'}
 _spaces = (' ', '\n', '\t')
 
 def _clean_paragraph(para):
+    from utils.text.cleaners import remove_control
+    
     para['context'] = remove_control(para['context'])
     for qa in para['qas']:
         qa['question']  = remove_control(qa['question'])
@@ -20,6 +23,8 @@ def _clean_paragraph(para):
     return para
         
 def _clean_answer(context, answer, answer_start):
+    from utils.text.cleaners import remove_control
+
     answer = remove_control(answer)
     start, end = answer_start, answer_start + len(answer)
     
@@ -28,6 +33,7 @@ def _clean_answer(context, answer, answer_start):
     
     return {'text' : context[start : end + 1], 'answer_start' : start, 'answer_end' : end}
 
+@timer(name = 'europarl loading')
 def preprocess_europarl_annots(directory, base_name, input_lang, output_lang):
     input_filename = os.path.join(directory, '{}.{}'.format(base_name, input_lang))
     output_filename = os.path.join(directory, '{}.{}'.format(base_name, output_lang))
@@ -41,9 +47,18 @@ def preprocess_europarl_annots(directory, base_name, input_lang, output_lang):
     datas = [[inp, out] for inp, out in zip(inputs, outputs)]
     return pd.DataFrame(data = datas, columns = [input_lang, output_lang])
 
+@timer(name = 'natural questions loading')
 def preprocess_nq_annots(directory, subset = 'train', file_no = -1, use_long_answer = False,
-                         include_document = False, tqdm = lambda x: x, ** kwargs):
-    if file_no == -1: file_no = list(range(50 if subset == 'train' else 5))
+                         include_document = False, allow_la = True, tqdm = lambda x: x, ** kwargs):
+    
+    def select_short_answer(row):
+        if not isinstance(row['short_answers'], list) or len(row['short_answers']) == 0:
+            return row['long_answer'] if allow_la or row['long_answer'] in ('yes', 'no') else ''
+        
+        candidates = [a for a in row['short_answers'] if a in row['context']]
+        return sorted(candidates, key = lambda a: len(a))[-1] if len(candidates) > 0 else row['long_answer']
+    
+    if file_no == -1: file_no = list(range(50))
     if isinstance(file_no, (list, tuple)):
         return pd.concat([preprocess_nq_annots(
             directory, subset = subset, file_no = no, use_long_answer = use_long_answer,
@@ -53,21 +68,34 @@ def preprocess_nq_annots(directory, subset = 'train', file_no = -1, use_long_ans
     dataset = parse_nq_annots(directory, subset = subset, file_no = file_no, tqdm = tqdm, ** kwargs)
     dataset = pd.DataFrame(dataset)
     if len(dataset) == 0: return dataset
-
-    if not include_document: dataset.pop('paragraphs')
+    
+    dataset.dropna(inplace = True)
+    dataset.reset_index(drop = True, inplace = True)
+    
+    if include_document:
+        dataset['titles']       = dataset['paragraphs'].apply(lambda para: [p['title'] for p in para])
+        dataset['paragraphs']   = dataset['paragraphs'].apply(lambda para: [p['text'] for p in para])
+    else:
+        dataset.pop('paragraphs')
+    
     if use_long_answer:
-        dataset['answers'] = dataset['long_answer']
+        dataset['answers'] = dataset.apply(
+            lambda row: row['long_answer'] if row['long_answer'] in row['context'] or row['long_answer'] in ('yes', 'no') else select_short_answer(row),
+            axis = 'columns'
+        )
     else:
         dataset['answers'] = dataset.apply(
-            lambda row: row['short_answers'][0] if isinstance(row['short_answers'], list) and len(row['short_answers']) > 0 else row['long_answer'],
+            lambda row: select_short_answer(row),
             axis = 'columns'
         )
     
+    dataset = dataset[dataset['answers'] != '']
     dataset.pop('long_answer')
     dataset.pop('short_answers')
 
     return dataset
 
+@timer(name = 'parade loading')
 def preprocess_parade_annots(directory, subset = 'train', rename_siamese = True):
     filename = os.path.join(directory, 'PARADE_{}.txt'.format(subset))
     
@@ -81,6 +109,7 @@ def preprocess_parade_annots(directory, subset = 'train', rename_siamese = True)
     
     return dataset
 
+@timer(name = 'paws loading')
 def preprocess_paws_annots(directory, subset = 'train', rename_siamese = True):
     filename = os.path.join(directory, '{}.tsv'.format(subset))
     
@@ -94,6 +123,7 @@ def preprocess_paws_annots(directory, subset = 'train', rename_siamese = True):
     
     return dataset
 
+@timer(name = 'quora question pairs loading')
 def preprocess_qqp_annots(directory, subset = 'train', rename_siamese = True):
     filename = os.path.join(directory, '{}.csv'.format(subset))
     
@@ -108,6 +138,7 @@ def preprocess_qqp_annots(directory, subset = 'train', rename_siamese = True):
     
     return dataset
 
+@timer(name = 'snli loading')
 def preprocess_snli_annots(directory, subset, version = '1.0', skip_parsed = True,
                            skip_sub_labels = True, skip_ukn_label = True, skip_id = True,
                            rename = _siamese_renaming, ** kwargs):
@@ -135,6 +166,7 @@ def preprocess_snli_annots(directory, subset, version = '1.0', skip_parsed = Tru
     
     return dataset.dropna()
 
+@timer(name = 'sts loading')
 def process_sts_annots(directory, subset, rename = _siamese_renaming, ** kwargs):
     if isinstance(subset, (list, tuple)):
         return pd.concat([preprocess_snli_annots(
@@ -155,6 +187,7 @@ def process_sts_annots(directory, subset, rename = _siamese_renaming, ** kwargs)
     
     return dataset
 
+@timer(name = 'squad loading')
 def preprocess_SQUAD_annots(directory, subset, version = '2.0', skip_impossible = False,
                             clean_text = True, keep_mode = 'longest', ** kwargs):
     assert keep_mode in ('all', 'longest', 'shortest', 'one_per_line')
@@ -205,6 +238,7 @@ def preprocess_SQUAD_annots(directory, subset, version = '2.0', skip_impossible 
     
     return dataset
 
+@timer(name = 'triviaqa loading')
 def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True, load_context = False,
                                keep_doc_mode = 'one_per_line', subset = 'train', tqdm = lambda x: x, ** kwargs):
     def get_contexts(contexts):
@@ -214,7 +248,8 @@ def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True, 
             f = c['Filename']
             for char in ('?', ':', '*', '"'): f = f.replace(char, '_')
             f = os.path.join(directory, 'evidence', prefix, f)
-            if not os.path.exists(f): print("File for context {} does not exist !".format(c))
+            if not os.path.exists(f):
+                logging.warning("File for context {} does not exist !".format(c))
             text = None
             if load_context:
                 with open(f, 'r', encoding = 'utf-8') as file:
@@ -265,6 +300,7 @@ def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True, 
     
     return pd.DataFrame(metadata)
 
+@timer(name = 'parsed wikipedia loading')
 def preprocess_parsed_wiki_annots(directory):
     filename = os.path.join(directory, 'psgs_w100.tsv')
     return pd.read_csv(filename, sep = '\t')

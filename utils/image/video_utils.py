@@ -1,6 +1,7 @@
 import os
 import cv2
 import imageio
+import logging
 import subprocess
 import numpy as np
 
@@ -19,7 +20,7 @@ def load_youtube_playlist(url, directory = 'youtube_playlist',
     try:
         from pytube import Playlist
     except ImportError:
-        print("You must install pytube : pip install pytube3")
+        logging.error("You must install pytube : pip install pytube3")
         return None
     os.makedirs(directory, exist_ok = True)
     
@@ -36,12 +37,12 @@ def load_youtube_playlist(url, directory = 'youtube_playlist',
     return os.listdir(directory)
 
 def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle', 
-                       separate_audio = False, only_audio = False, verbose = True):
+                       separate_audio = False, only_audio = False):
     assert resolution in ('lowest', 'middle', 'highest')
     try:
         from pytube import YouTube
     except ImportError:
-        print("You must install pytube : pip install pytube3")
+        logging.error("You must install pytube : pip install pytube3")
         return None
 
     video = YouTube(url)
@@ -56,8 +57,7 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
     elif resolution == 'highest':
         stream = streams[-1]
     
-    if verbose:
-        print('Downloading stream : {}'.format(stream))
+    logging.info('Downloading stream : {}'.format(stream))
     
     video_filename = 'tmp_video.mp4' if only_audio else  filename
     if not video_filename.endswith('.mp4'): video_filename += '.mp4'
@@ -82,14 +82,13 @@ def extract_audio(video_filename, filename = None):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        print("You must install moviepy : pip install moviepy")
+        logging.error("You must install moviepy : pip install moviepy")
         return None
 
-    video = VideoFileClip(video_filename)
-    audio = video.audio
-    
     if filename is None: filename = '{}_audio.mp3'.format(video_filename[:-4])
     if not filename.endswith('.mp3'): filename += '.mp3'
-    audio.write_audiofile(filename)
+
+    with VideoFileClip(video_filename) as video:
+        video.audio.write_audiofile(filename)
     
     return filename

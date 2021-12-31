@@ -1,6 +1,7 @@
 import os
 import pickle
 import random
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -9,8 +10,7 @@ from tqdm import tqdm
 
 from utils.sequence_utils import pad_batch
 from utils.pandas_utils import filter_df, aggregate_df
-from utils.thread_utils import ThreadPool
-from utils.audio.audio_io import load_audio
+from utils.thread_utils import ThreadedQueue
 
 _allowed_embeddings_ext = ('.csv', '.npy', '.pkl')
 _embedding_filename = 'embeddings_{}.csv'
@@ -26,7 +26,7 @@ def embeddings_to_np(embeddings, col = 'embedding'):
     if isinstance(embeddings, str):
         if embeddings.startswith('['):
             if embeddings.startswith('[['):
-                print(embeddings[1 : -1].split(']')[0][1:])
+                logging.debug(embeddings[1 : -1].split(']')[0][1:])
                 return np.array([
                     np.fromstring(xi[1 :]) for xi in embeddings[1:-1].split(']')
                 ])
@@ -70,14 +70,16 @@ def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
         
         Notes : files are saved in directory <directory>/embeddings_<embedding_dim>/
     """
+    from utils.audio.audio_io import load_audio
+
     def embed_batch(batch):
-        embedded = []            
-        pool = ThreadPool(target = load_audio)
-        if isinstance(batch, pd.DataFrame): batch = batch.to_dict('records')
-        for a in batch: pool.append(kwargs = {'data' : a, 'rate' : rate, ** audio_kwargs})
-        pool.start(tqdm = tqdm if verbose else lambda x: x)
+        pool = ThreadedQueue(load_audio, keep_result = True)
+        pool.start()
         
-        loaded_audios = pool.result()
+        if isinstance(batch, pd.DataFrame): batch = batch.to_dict('records')
+        for a in batch: pool.append(data = a, rate = rate, ** audio_kwargs)
+        
+        loaded_audios = pool.wait_result()
         
         if verbose: kwargs['tqdm'] = tqdm
         embedded_audios = embed_fn(loaded_audios, ** kwargs)
@@ -97,15 +99,15 @@ def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
     to_process = dataset[~processed].to_dict('records')
     
     if len(to_process) == 0:
-        print("Dataset already processed !")
+        logging.info("Dataset already processed !")
         return embeddings
         
-    print("Processing dataset...\n  {} utterances already processed\n  {} utterances to process".format(len(dataset) - len(to_process), len(to_process)))
+    logging.info("Processing dataset...\n  {} utterances already processed\n  {} utterances to process".format(len(dataset) - len(to_process), len(to_process)))
     
     n = len(embeddings)
     nb_batch = len(to_process) // max_audios + 1
     for i in range(nb_batch):
-        print("Batch {} / {}".format(i+1, nb_batch))
+        logging.info("Batch {} / {}".format(i+1, nb_batch))
         start_idx = i * max_audios
         batch = to_process[start_idx : start_idx + max_audios]
         if len(batch) == 0: continue
@@ -122,7 +124,7 @@ def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
         
         if len(embeddings) - n >= save_every:
             n = len(embeddings)
-            print("Saving at utterance {}".format(len(embeddings)))
+            logging.info("Saving at utterance {}".format(len(embeddings)))
             save_embeddings(embeddings_file, embeddings)
     
     if n < len(embeddings):
@@ -201,6 +203,8 @@ def load_embedding(directory,
     
     if os.path.isfile(directory):
         emb_file = directory
+    elif os.path.exists(embedding_name):
+        emb_file = embedding_name
     else:
         if not directory.endswith('embeddings'):
             directory = os.path.join(directory, 'embeddings')
@@ -269,8 +273,11 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
             - embedding : 1D ndarray
     """
     if isinstance(embeddings, pd.DataFrame):
-        embeddings = filter_df(embeddings, ** kwargs)
-        np_embeddings = embeddings_to_np(embeddings)
+        filtered_embeddings = filter_df(embeddings, ** kwargs)
+        if len(filtered_embeddings) == 0:
+            logging.warning('No embedding respects filters {}'.format(kwargs))
+            filtered_embeddings = embeddings
+        np_embeddings = embeddings_to_np(filtered_embeddings)
     else:
         np_embeddings = embeddings
     

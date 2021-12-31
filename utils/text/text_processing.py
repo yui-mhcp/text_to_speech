@@ -1,4 +1,4 @@
-# /!\ COPYRIGHT FOR FUNCTIONS `bpe` and `bytes_to_unicode` only /!\
+# /!\ COPYRIGHT ONLY FOR FUNCTIONS `bpe` and `bytes_to_unicode` only /!\
 # Copyright 2018 The Open AI Team Authors and The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -90,16 +90,21 @@ def bpe(token, bpe_ranks):
 def exact_match(y_true, y_pred):
     return int(y_true == y_pred)
 
-def f1(y_true, y_pred, normalize = True, exclude = None):
+def f1_score(y_true, y_pred, normalize = True, exclude = None):
     if isinstance(y_true, tf.Tensor): y_true = y_true.numpy()
     if isinstance(y_pred, tf.Tensor): y_pred = y_pred.numpy()
     if isinstance(y_true, bytes): y_true = y_true.decode('utf-8')
     if isinstance(y_pred, bytes): y_pred = y_pred.decode('utf-8')
     if isinstance(y_true, (list, tuple, np.ndarray)):
-        return [
-            f1(true_i, pred_i, normalize = normalize, exclude = exclude)
-            for true_i, pred_i in zip(y_true, y_pred)
-        ]
+        if not isinstance(y_true[0], (int, np.integer)):
+            return np.array([
+                f1_score(true_i, pred_i, normalize = normalize, exclude = exclude)
+                for true_i, pred_i in zip(y_true, y_pred)
+            ])
+        else:
+            if exclude: exclude = [str(e) for e in exclude]
+            y_true  = ' '.join([str(yi) for yi in y_true])
+            y_pred  = ' '.join([str(yi) for yi in y_pred])
     
     if normalize:
         y_true = _normalize_text_f1(y_true, exclude)
@@ -113,9 +118,9 @@ def f1(y_true, y_pred, normalize = True, exclude = None):
     
     common = collections.Counter(true_tokens) & collections.Counter(pred_tokens)
     nb_same = sum(common.values())
-    
+
     em = exact_match(y_true, y_pred)
-    
+
     if len(true_tokens) == 0 or len(pred_tokens) == 0:
         f1 = int(true_tokens == pred_tokens)
         return em, f1, f1, f1

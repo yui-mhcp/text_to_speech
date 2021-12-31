@@ -1,0 +1,41 @@
+{
+    "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !": {
+        "splitted": [
+            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
+        ],
+        "mels": [
+            "example_outputs/fr/mels/mel_0.npy"
+        ],
+        "plots": [
+            "example_outputs/fr/plots/plot_0.png"
+        ],
+        "audio": "example_outputs/fr/audios/audio_0.mp3",
+        "duree": 4.631428571428572
+    },
+    "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes d'audios !Je ne partagerai pas cemod\u00e8le mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
+        "splitted": [
+            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes d'audios !Je ne partagerai pas cemod\u00e8le mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !"
+        ],
+        "mels": [
+            "example_outputs/fr/mels/mel_1.npy"
+        ],
+        "plots": [
+            "example_outputs/fr/plots/plot_1.png"
+        ],
+        "audio": "example_outputs/fr/audios/audio_1.mp3",
+        "duree": 10.122947845804989
+    },
+    "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 5 minutes d'audios !Je ne partagerai pas cemod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
+        "splitted": [
+            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 5 minutes d'audios !Je ne partagerai pas cemod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !"
+        ],
+        "mels": [
+            "example_outputs/fr/mels/mel_2.npy"
+        ],
+        "plots": [
+            "example_outputs/fr/plots/plot_2.png"
+        ],
+        "audio": "example_outputs/fr/audios/audio_2.mp3",
+        "duree": 10.842766439909298
+    }
+}

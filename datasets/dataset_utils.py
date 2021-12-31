@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import logging
 import itertools
 import numpy as np
 import pandas as pd
@@ -10,6 +11,7 @@ from tqdm import tqdm
 from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.model_selection import train_test_split as sklearn_train_test_split
 
+from loggers import DEV
 from utils.generic_utils import time_to_string
 from utils.pandas_utils import filter_df
 
@@ -40,13 +42,36 @@ def _get_infos(tensor, level = 0):
         np.max(tensor)
     )
 
+def _infer_type_spec(item):
+    if isinstance(item, dict):
+        return {k : _infer_type_spec(v) for k, v in item.items()}
+    
+    shape, dtype = (), None
+    if isinstance(item, (list, tuple)): shape, dtype = (None, ), _infer_type_spec(item[0]).dtype
+    elif isinstance(item, str):                                 dtype = tf.string
+    elif isinstance(item, (int, np.integer, tf.int32)):         dtype = tf.int32
+    elif isinstance(item, (float, np.floating, tf.float32)):    dtype = tf.float32
+    elif isinstance(item, (np.ndarray, tf.Tensor)):
+        if isinstance(item, tf.Tensor): dtype = item.dtype
+        elif item.dtype == np.int32:    dtype = tf.int32
+        elif item.dtype == np.float32:  dtype = tf.float32
+        elif item.dtype == np.object:   dtype = tf.string
+        shape = tuple([None for _ in range(len(item.shape))])
+    else:
+        raise ValueError("Unknown type spec for item {}".format(item))
+        
+    return tf.TensorSpec(shape = shape, dtype = dtype)
+    
+def _infer_generator_spec(generator):
+    return _infer_type_spec(generator[0])
+
 def filter_dataset(dataset, on_unique = [], ** kwargs):
     return filter_df(dataset, on_unique = on_unique, ** kwargs)
 
-def test_dataset_time(dataset, steps = 100, batch_size = 0, verbose = 2):
+def test_dataset_time(dataset, steps = 100, batch_size = 0, ** kwargs):
     """
         Generate `steps` batchs of `dataset` and compute its average time
-        If verbose == 2, shows information on the last generated batch
+        It also shows information on the last generated batch
     """
     start = time.time()
     i = 0
@@ -54,28 +79,25 @@ def test_dataset_time(dataset, steps = 100, batch_size = 0, verbose = 2):
     for batch in tqdm(dataset.take(steps)):
         i += 1
         if i >= steps: break
-    print()
+
     temps = time.time() - start
-    if verbose:
-        print("{} batchs in {} sec ({:.3f} batch / sec)".format(
-            i, time_to_string(temps), i / temps
-        ), end ='')
-        if batch_size > 0:
-            print(" ({:.3f} samples / sec)".format(batch_size * i / temps))
-        else:
-            print()
-        size = tf.data.experimental.cardinality(dataset).numpy()
-        if size > 0:
-            print("Time estimated for all dataset ({} batch) : {}".format(
-                size, time_to_string(size * (i / temps))
-            ))
+    
+    samp_per_s = '\n' if batch_size <= 0 else ' ({:.3f} samples / sec)'.format(batch_size * i / temps)
+    logging.info("\n{} batchs in {} sec ({:.3f} batch / sec){}".format(
+        i, time_to_string(temps), i / temps, samp_per_s
+    ))
+
+    size = tf.data.experimental.cardinality(dataset).numpy()
+    if size > 0:
+        logging.info("Time estimated for all dataset ({} batch) : {}".format(
+            size, time_to_string(size * (i / temps))
+        ))
         
-        if verbose == 2:
-            print("Batch infos : {}".format(_get_infos(batch)))
+    logging.info("Batch infos : {}".format(_get_infos(batch)))
             
     return temps
 
-def build_tf_dataset(data, as_dict = True, siamese = False, ** kwargs):
+def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = False, ** kwargs):
     """
         Build a tf.data.Dataset based on multiple types of `data`
         
@@ -108,7 +130,17 @@ def build_tf_dataset(data, as_dict = True, siamese = False, ** kwargs):
         if siamese:
             dataset = build_siamese_dataset(data, ** kwargs)
         elif as_dict:
-            dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'), ** kwargs)
+            if is_rectangular:
+                dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'), ** kwargs)
+            else:
+                data = data.to_dict('records')
+                if 'output_signature' not in kwargs:
+                    kwargs['output_signature'] = _infer_generator_spec(data)
+                    logging.log(DEV, 'Inferred dataset signature : {}'.format(
+                        kwargs['output_signature']
+                    ))
+
+                dataset = tf.data.Dataset.from_generator(default_generator_fn(data), ** kwargs)
         else:
             dataset = tf.data.Dataset.from_tensor_slices(data.values, ** kwargs)
     elif isinstance(data, str):
@@ -377,8 +409,8 @@ def prepare_dataset(data,
                     prefetch_size          = AUTOTUNE,
                     num_parallel_calls     = AUTOTUNE,
                     
-                    debug = False,
-                    ** kwargs):
+                    ** kwargs
+                   ):
     """
         Prepare the dataset for training with all configuration given
         
@@ -414,29 +446,29 @@ def prepare_dataset(data,
     def batch_dataset(dataset):
         if augment_fn is not None: 
             dataset = dataset.map(augment_fn, num_parallel_calls = num_parallel_calls)
-            if debug: print("- Dataset after augmentation : {}".format(dataset))
+            logging.log(DEV, "- Dataset after augmentation : {}".format(dataset))
         
         if batch_size > 0:
             if not padded_batch:
                 dataset = dataset.batch(batch_size)
             else:
                 dataset = dataset.padded_batch(batch_size, **pad_kwargs)
-            if debug: print("- Dataset after batch : {}".format(dataset))
+            logging.log(DEV, "- Dataset after batch : {}".format(dataset))
             
         return dataset 
     
     dataset = build_tf_dataset(data, ** kwargs)
     if dataset is None: return None
     
-    if debug: print("Original dataset : {}".format(dataset))
+    logging.log(DEV, "Original dataset : {}".format(dataset))
     
     if encode_fn is not None:
         dataset = dataset.map(encode_fn, num_parallel_calls = num_parallel_calls)
-        if debug: print("- Dataset after encoding : {}".format(dataset))
+        logging.log(DEV, "- Dataset after encoding : {}".format(dataset))
     
     if filter_fn is not None:
         dataset = dataset.filter(filter_fn)
-        if debug: print("- Dataset after filtering : {}".format(dataset))
+        logging.log(DEV, "- Dataset after filtering : {}".format(dataset))
     
     if batch_before_map:
         dataset = cache_dataset(dataset)
@@ -444,14 +476,15 @@ def prepare_dataset(data,
         
     if map_fn is not None:
         dataset = dataset.map(map_fn, num_parallel_calls = num_parallel_calls)
-        if debug: print("- Dataset after mapping : {}".format(dataset))
+        logging.log(DEV, "- Dataset after mapping : {}".format(dataset))
     
     dataset = cache_dataset(dataset)
     
     if memory_consuming_fn is not None:
-        dataset = dataset.map(memory_consuming_fn, 
-                              num_parallel_calls = num_parallel_calls)
-        if debug: print("- Dataset after memory mapping : {}".format(dataset))
+        dataset = dataset.map(
+            memory_consuming_fn, num_parallel_calls = num_parallel_calls
+        )
+        logging.log(DEV, "- Dataset after memory mapping : {}".format(dataset))
     
     if not batch_before_map:        
         dataset = batch_dataset(dataset)

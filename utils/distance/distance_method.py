@@ -1,8 +1,11 @@
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-def distance(x, y, method, as_matrix = False, max_matrix_size = -1, ** kwargs):
+MAX_MATRIX_SIZE = 512 * 1024 * 1024
+
+def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE, ** kwargs):
     """
         Compute distance between `x` and `y` with `method` function
         
@@ -42,10 +45,13 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = -1, ** kwargs):
     elif len(tf.shape(x)) == 2 and len(tf.shape(y)) == 3:
         x = tf.expand_dims(x, axis = 1)
 
+    max_x, max_y = -1, -1
     if max_matrix_size > 0:
-        max_y = max_matrix_size // tf.shape(x)[-1] + 1
-        max_x = max_matrix_size // (max_y * tf.shape(x)[-1]) + 1
+        max_x = tf.minimum(max_matrix_size // tf.shape(x)[-1] + 1, tf.shape(x)[0])
+        max_y = tf.minimum(max_matrix_size // (max_x * tf.shape(x)[-1]) + 1, tf.shape(y)[1])
         
+    
+    if max_x != -1 and (max_x < tf.shape(x)[0] or max_y < tf.shape(y)[1]):
         distances = []
         for i in range(0, tf.shape(x)[0], max_x):
             distances.append(tf.concat([
@@ -129,7 +135,7 @@ def edit_distance(hypothesis,
     if verbose:
         columns = [''] + [str(v) for v in truth]
         index = [''] + [str(v) for v in hypothesis]
-        print(pd.DataFrame(matrix, columns = columns, index = index))
+        logging.info(pd.DataFrame(matrix, columns = columns, index = index))
     
     distance = matrix[-1, -1] if not partial else np.min(matrix[-1, 1:])
     if normalize:

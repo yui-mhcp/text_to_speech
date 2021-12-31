@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import tensorflow as tf
 
@@ -84,14 +85,12 @@ class KPropagation(Clustering):
                 if np.mean(simi) >= self.threshold and np.min(simi) >= self.min_threshold:
                     possible_ids.append(id_i)
 
-            if debug:
-                print("Mean similarity / id (max = {}) : {}".format(
-                    np.max(list(means.values())), means
-                ))
+            logging.debug("Mean similarity / id (max = {}) : {}".format(
+                np.max(list(means.values())), means
+            ))
             
             if len(possible_ids) == 0:
-                if debug:
-                    print("New id at idx {} ({})".format(index, nb_unique))
+                logging.debug("New id at idx {} ({})".format(index, nb_unique))
                     
                 pred_id = nb_unique
                 nb_unique += 1
@@ -121,7 +120,7 @@ class KPropagation(Clustering):
         for i, point in enumerate(tqdm(points)):
             new_id = knn.predict(point)
             if new_id != cluster[i] and new_id != -2:
-                if debug: print("Clusterr {} get {}".format(new_id, i))
+                logging.debug("Clusterr {} get {}".format(new_id, i))
                 knn[i] = new_id
         return knn.ids
         
@@ -147,7 +146,7 @@ class KPropagation(Clustering):
                 
                 min_similarity = self.fusion_threshold if len(indexes_j) > 10 else 0.66
                 if mean_similarity >= min_similarity:
-                    if debug: print("{} englobes {} !".format(cluster_i, cluster_j))
+                    logging.debug("{} englobes {} !".format(cluster_i, cluster_j))
                     cluster[indexes_j] = cluster_i
                     
         return cluster

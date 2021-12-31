@@ -193,7 +193,7 @@ def plot(x, y = None, *args, ax = None, figsize = None, xlim = None, ylim = None
 
 def plot_multiple(*args, size = 3, x_size = None, y_size = None, ncols = 2, nrows = None,
                   use_subplots = False, horizontal = False,
-                  by = None, corr = None, # for pd.DataFrame grouping
+                  by = None, corr = None, color_corr = None, color_order = None, # for pd.DataFrame grouping
                   
                   x = None, vlines = None, hlines = None, vlines_kwargs = {}, hlines_kwargs = {},
                   
@@ -231,13 +231,33 @@ def plot_multiple(*args, size = 3, x_size = None, y_size = None, ncols = 2, nrow
                     name_i = '{} = {}'.format(by, value)
                     datas.append((name_i, {'x' : datas_i.to_dict('list')}))
             elif corr is not None:
+                corr_colors = None
+                if color_corr is not None:
+                    if color_corr not in v.columns:
+                        logging.error('Color correlation color {} is not in data !'.format(color_corr))
+                    else:
+                        unique_values = list(v[color_corr].unique())
+                        corr_colors = [
+                            unique_values.index(corr_val_i) for corr_val_i in v[color_corr].values
+                        ]
+                        if color_order is not None:
+                            if len(color_order) < len(unique_values):
+                                logging.info('Not enough colors : {} vs {}'.format(len(color_order), len(unique_values)))
+                            else:
+                                corr_colors = [color_order[color_idx] for color_idx in corr_colors]
                 for col in v.columns:
                     if col == corr: continue
                     try:
                         v[col].unique()
+                        col_values = v[col].values
                     except TypeError:
-                        continue
-                    datas.append((col, {'x' : v[col].values, 'y' : v[corr].values, 'plot_type' : 'scatter'}))
+                        col_values = [str(val_i) for val_i in v[col].values]
+                    datas.append((col, {
+                        'x' : col_values, 'y' : v[corr].values, 'ylabel' : corr,
+                        'plot_type' : 'scatter'
+                    }))
+                    if corr_colors is not None:
+                        datas[-1][1]['c'] = corr_colors
             else:
                 for k, v_i in v.to_dict('list').items():
                     datas.append((k, v_i))

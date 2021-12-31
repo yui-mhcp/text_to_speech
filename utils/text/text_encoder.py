@@ -1,14 +1,14 @@
-""" from https://github.com/keithito/tacotron """
 import json
+import logging
 import regex as re
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from utils import dump_json, load_json, flatten
 from utils.text import cleaners as cleaners_module
 from utils.text.text_processing import bytes_to_unicode, bpe, split_and_join
 from utils.distance.distance_method import distance
-from utils.generic_utils import dump_json, load_json, flatten
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 
@@ -77,7 +77,7 @@ class TextEncoder(object):
         if isinstance(level, str): level = _str_level.get(level, None)
         assert level in (CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL)
         if level != CHAR_LEVEL and 'detach_punctuation' not in cleaners:
-            print("Note : when using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
+            logging.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
         
         self.name       = name
         self.vocab      = list(vocab)
@@ -349,7 +349,7 @@ class TextEncoder(object):
         tokens = [
             self._symbol_to_id.get(token, self.ukn_token_idx) for token in tokens
         ]
-        tokens = [token for token in tokens if token is not None]
+        tokens = [token for token in tokens if token is not None and token != -1]
         
         if add_sos_and_eos:
             tokens = [self.sos_token_idx] + tokens + [self.eos_token_idx]
@@ -391,9 +391,9 @@ class TextEncoder(object):
             tokens = cleaned
         
         if self.byte_encoder is not None:
-            tokens = [
-                ''.join([chr(self.byte_encoder_inv[c]) for c in token]) for token in tokens
-            ]
+            tokens = [''.join([
+                chr(self.byte_encoder_inv[c]) if c in self.byte_encoder_inv else c for c in token
+            ]) for token in tokens]
         
         text = sep.join(tokens)
         
@@ -435,12 +435,12 @@ class TextEncoder(object):
         elif not isinstance(not_split, (list, tuple, np.ndarray)): not_split = [not_split]
         encoded_not_split = [self.encode(' {} '.format(ns.strip()), add_sos_and_eos = False, return_type = 'list') for ns in not_split]
 
-        sep_token_idx = self[sep_token]
+        sep_token_idx = self[sep_token] if sep_token else -1
         
         prefix = self.encode(prefix, add_sos_and_eos = False, return_type = 'list') if prefix is not None else []
         suffix = self.encode(suffix, add_sos_and_eos = False, return_type = 'list') if suffix is not None else []
-        if len(prefix) > 0: prefix.append(sep_token_idx)
-        if len(suffix) > 0: suffix.insert(0, sep_token_idx)
+        if len(prefix) > 0 and sep_token_idx != -1: prefix.append(sep_token_idx)
+        if len(suffix) > 0 and sep_token_idx != -1: suffix.insert(0, sep_token_idx)
         if add_sos_and_eos:
             prefix, suffix = [self.sos_token_idx] + prefix, suffix + [self.eos_token_idx]
         

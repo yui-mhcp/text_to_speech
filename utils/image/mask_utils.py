@@ -93,7 +93,7 @@ def replace_mask(image, mask, background, ** kwargs):
     
 _transformations    = {
     'keep'      : lambda image, mask, ** kwargs: image * mask,
-    'remove'    : lambda image, mask, ** kwargs: image * ~mask,
+    'remove'    : lambda image, mask, ** kwargs: image * (1. - mask),
     'blur'      : blur_mask,
     'replace'   : replace_mask
 }

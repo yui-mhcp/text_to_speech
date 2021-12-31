@@ -1,8 +1,13 @@
 import os
 import json
+import logging
 import subprocess
 
-from utils.generic_utils import load_json, dump_json
+from utils import load_json, dump_json
+
+def log(message, verbose = True):
+    level = logging.DEBUG if not verbose else logging.INFO
+    logging.log(level, message)
 
 def process_mkv(path, audio_stream = 1, subs_stream = -1, 
                 output_dir = None, audio_filename = None, subs_filename = None, 
@@ -31,7 +36,7 @@ def process_mkv(path, audio_stream = 1, subs_stream = -1,
     if os.path.isdir(path) or isinstance(path, (list, tuple)):
         files = os.listdir(path) if not isinstance(path, (list, tuple)) else path
         files = [f for f in files if f.endswith('.mkv')]
-        if verbose: print("Processing list of {} files...".format(len(files)))
+        log("Processing list of {} files...".format(len(files)), verbose)
         
         return [process_mkv(
             os.path.join(path, f), 
@@ -182,20 +187,18 @@ def _extract(path, output_file, mode, stream = 1, verbose = True, overwrite = Fa
     
     if os.path.exists(output_file):
         if not overwrite:
-            if verbose: print("File {} already exists !".format(output_file))
+            log("File {} already exists !".format(output_file), verbose)
             return output_file
         
         os.remove(output_file)
     
-    if verbose:
-        print("Extraction of {} (stream #{})...".format(long_mode, stream))
+    log("Extraction of {} (stream #{})...".format(long_mode, stream), verbose)
         
     c = subprocess.run(
         ['ffmpeg', '-i', path, '-map', '0:{}:{}'.format(mode, stream), output_file]
     ).returncode
     
-    if verbose:
-        if c == 0: print("{} successfully extracted !".format(long_mode))
-        else: print("Error (code : {})".format(c))
+    if c == 0: log("{} successfully extracted !".format(long_mode), verbose)
+    else: log("Error (code : {})".format(c), verbose)
         
     return output_file if c == 0 else None

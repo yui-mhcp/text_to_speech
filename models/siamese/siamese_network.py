@@ -1,6 +1,7 @@
 import os
 import time
 import random
+import logging
 import datetime
 import numpy as np
 import pandas as pd
@@ -8,10 +9,13 @@ import tensorflow as tf
 
 from tqdm import tqdm
 
+from loggers import timer
 from models.base_model import BaseModel
 from utils.distance import distance, KNN
 from utils.embeddings import load_embedding, save_embeddings, embed_dataset, embeddings_to_np
 from utils import normalize_filename, plot_embedding, pad_batch, sample_df
+
+time_logger = logging.getLogger('timer')
 
 def l2_normalize(x):
     import tensorflow as tf
@@ -113,7 +117,7 @@ class SiameseNetwork(BaseModel):
             input_kwargs = {'input_shape' : encoder.input_shape[1:]}
         else:
             if normalize:
-                print("[WARNING]\tEncoder is not a `tf.keras.Sequential` so you have to handle `normalize` internally !")
+                logging.warning("Encoder is not a `tf.keras.Sequential` so you have to handle `normalize` internally !")
             input_kwargs = {'input_signature' : self.encoder_input_signature}
         
         siamese_config = {
@@ -150,7 +154,7 @@ class SiameseNetwork(BaseModel):
     
     @property
     def output_signature(self):
-        return tf.TensorSpec(shape = (None,), dtype = tf.int32)
+        return tf.TensorSpec(shape = (None, 1), dtype = tf.int32)
     
     @property
     def encoder(self):
@@ -215,7 +219,7 @@ class SiameseNetwork(BaseModel):
         elif 'id' in data: same = 1
         else: same = int(data['id_x'] == data['id_y'])
         
-        return (inp_x, inp_y), same
+        return (inp_x, inp_y), [same]
     
     def filter(self, data):
         (inp_x, inp_y), target = data
@@ -303,6 +307,7 @@ class SiameseNetwork(BaseModel):
             embedded, filename = filename, title = title, ** kwargs
         )
     
+    @timer
     def evaluate(self,
                  dataset,
                  ids    = None, 
@@ -371,6 +376,7 @@ class SiameseNetwork(BaseModel):
     def evaluate_clustering(self, * args, ** kwargs):
         raise NotImplementedError()
     
+    @timer
     def embed(self, data, batch_size = 128, tqdm = lambda x: x):
         """
             Embed a list of data
@@ -385,7 +391,11 @@ class SiameseNetwork(BaseModel):
             
             This function is the core of the `siamese networks` as embeddings are used for everything (predict similarity / distance), label predictions, clustering, make funny colored plots, ...
         """
+        time_logger.start_timer('processing')
+
         inputs = self.get_input(data)
+        
+        time_logger.stop_timer('processing')
         
         if not isinstance(inputs, list): inputs = [inputs]
         
@@ -393,15 +403,24 @@ class SiameseNetwork(BaseModel):
         
         embedded = []
         for idx in tqdm(range(0, len(inputs), batch_size)):
+            time_logger.start_timer('processing')
+
             batch = inputs[idx : idx + batch_size]
             batch = pad_batch(batch) if not isinstance(batch[0], (list, tuple)) else [pad_batch(b) for b in zip(* batch)]
             batch = self.preprocess_input(batch)
+            
+            time_logger.stop_timer('processing')
+            time_logger.start_timer('encoding')
 
             embedded_batch = encoder(batch)
+            
+            time_logger.stop_timer('encoding')
+
             embedded.append(embedded_batch)
 
         return tf.concat(embedded, axis = 0)
     
+    @timer
     def plot_embedding(self, data, ids = None, batch_size = 128, ** kwargs):
         """
             Call self.embed() on `data` and plot the result
@@ -421,8 +440,11 @@ class SiameseNetwork(BaseModel):
         
         embedded = self.embed(data, batch_size = batch_size)
         
+        time_logger.start_timer('showing')
         plot_embedding(embedded, ids = ids, ** kwargs)
-    
+        time_logger.stop_timer('showing')
+
+    @timer
     def pred_similarity(self, x, y, decoder = None):
         """
             Return a score of similarity between x and y
@@ -479,6 +501,7 @@ class SiameseNetwork(BaseModel):
         """
         return 1. - self.pred_similarity_matrix(embeddings)
     
+    @timer
     def embed_dataset(self, directory, dataset, ** kwargs):
         """ Call the `embed_dataset` function with `self.embed` as embedding function """
         return embed_dataset(
@@ -500,7 +523,7 @@ class SiameseNetwork(BaseModel):
     def show_friends(self, n = 25, n_sample = 25, ** kwargs):
         friends = self.friends
 
-        print("Number of friends : {} ({} embeddings)".format(
+        logging.info("Number of friends : {} ({} embeddings)".format(
             len(friends['id'].unique()), len(friends)
         ))
         
@@ -573,6 +596,7 @@ class SiameseNetwork(BaseModel):
         
         return dropped
     
+    @timer
     def recognize(self,
                   datas     = None,
                   embedded  = None,

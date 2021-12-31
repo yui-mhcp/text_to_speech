@@ -734,6 +734,9 @@ class Tacotron2(tf.keras.Model):
         """ Call only for inference. """
         self.maximum_iterations = maximum_iterations
 
+    def set_deterministic(self, deterministic):
+        self.decoder.cell.prenet.deterministic = deterministic
+        
     def _build(self):
         input_text = np.array([[1, 2, 3, 4, 5, 6, 7, 8, 9]])
         input_lengths = np.array([9])
@@ -843,19 +846,19 @@ class Tacotron2(tf.keras.Model):
         
         return decoder_outputs, mel_outputs, stop_token_prediction, alignment_history
 
-    @tf.function(experimental_relax_shapes = True,
+    @tf.function(experimental_relax_shapes = True
                  #input_signature = [
                  #    tf.TensorSpec([None, None], dtype=tf.int32, name="input_text"),
                  #    tf.TensorSpec([None], dtype=tf.int32, name="input_lengths")
                  #]
                 )
-    def infer(self, inputs, input_lengths, ** kwargs):
+    def infer(self, inputs, input_lengths, training = False, ** kwargs):
         """Call logic."""
         # create input-mask based on input_lengths
         input_mask = tf.sequence_mask(
             input_lengths,
-            maxlen=tf.reduce_max(input_lengths),
-            name="input_sequence_masks",
+            maxlen  = tf.reduce_max(input_lengths),
+            name    = "input_sequence_masks",
         )
 
         # Encoder Step.
@@ -879,8 +882,8 @@ class Tacotron2(tf.keras.Model):
             self.decoder.cell.get_initial_state(batch_size)
         )
         self.decoder.cell.attention_layer.setup_memory(
-            memory=encoder_hidden_states,
-            memory_sequence_length=input_lengths,  # use for mask attention.
+            memory = encoder_hidden_states,
+            memory_sequence_length = input_lengths,  # use for mask attention.
         )
 
         # run decode step.

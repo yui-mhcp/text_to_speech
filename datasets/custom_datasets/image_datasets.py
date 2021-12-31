@@ -1,6 +1,5 @@
 import os
-import json
-import multiprocessing
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -9,17 +8,18 @@ import xml.etree.ElementTree as ET
 from tqdm import tqdm
 from PIL import Image
 
-from utils import ThreadPool
-from utils.image import get_image_size
+from loggers import timer
+from utils import ThreadedQueue, load_json
 
 def _add_image_size(dataset):
-    pool = ThreadPool(target = get_image_size)
+    from utils.image import get_image_size
+    pool = ThreadedQueue(get_image_size, keep_result = True)
+    pool.start()
     
     for idx, row in dataset.iterrows():
-        pool.append(kwargs = {'image' : row['filename']})
+        pool.append(image = row['filename'])
     
-    pool.start(tqdm = lambda x: x)
-    sizes = pool.result()
+    sizes = pool.wait_result()
     
     dataset['height']   = [h for h, _ in sizes]
     dataset['width']    = [w for _, w in sizes]
@@ -38,6 +38,7 @@ def _rectangularize_boxes(dataset):
     
     return dataset.apply(to_rectangular_box, axis = 1)
 
+@timer(name = 'image dir loading')
 def preprocess_image_directory(directory, ** kwargs):
     metadata = []
     for filename in os.listdir(directory):
@@ -52,6 +53,7 @@ def preprocess_image_directory(directory, ** kwargs):
     return pd.DataFrame(metadata)
             
 
+@timer(name = 'essex loading')
 def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0, 
                             one_line_per_box=True, accepted_labels=None, 
                             labels_substituts=None, ** kwargs):
@@ -122,6 +124,7 @@ def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0,
             
     return metadata_df
 
+@timer(name = 'yolo output loading')
 def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False, 
                            box_mode=0, accepted_labels=None, labels_substituts=None, 
                            keep_empty=False, **kwargs):
@@ -178,7 +181,7 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
         i += 1
         if not os.path.exists(img_filename):
             i += n_pers
-            print("{} est présent dans le fichier d'annotation mais n'existe pas !".format(img_filename))
+            logging.warning('{} is in annotation file but does not exist'.format(img_filename))
             continue
             
         image = Image.open(img_filename)
@@ -220,6 +223,7 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
                 
     return pd.DataFrame(datas, columns=columns)
 
+@timer(name = 'wider faces loading')
 def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
                             box_as_dict = False, label_name = 'face', keep_empty = False,
                             min_box_per_image = 0, max_box_per_image = 1000, 
@@ -322,6 +326,7 @@ def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
     
     return dataset
                     
+@timer(name = 'pascal voc loading')
 def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False, 
                           one_line_per_box = False, accepted_labels = None,
                           aliases = None, keep_empty = False, 
@@ -401,6 +406,7 @@ def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False,
     
     return dataset
 
+@timer(name = 'coco loading')
 def preprocess_COCO_annots(filename, img_dir, one_line_per_box=False, box_mode=0, 
                     accepted_labels=None, use_supercategory_as_label=False, 
                     keep_empty=False, 
@@ -435,9 +441,8 @@ def preprocess_COCO_annots(filename, img_dir, one_line_per_box=False, box_mode=0
         row['filename'] = os.path.join(img_dir, row['file_name'])
         
         return row
-            
-    with open(filename, 'r', encoding='utf-8') as fichier:
-        infos = json.loads(fichier.read())
+    
+    infos = load_json(filename)
         
     annotations = pd.DataFrame(infos['annotations'])
     images      = pd.DataFrame(infos['images'])

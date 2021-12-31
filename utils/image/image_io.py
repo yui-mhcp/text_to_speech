@@ -3,6 +3,7 @@ import cv2
 import glob
 import time
 import imageio
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -123,7 +124,7 @@ def stream_camera(cam_id = 0, max_time = 60, transform_fn = None, ** kwargs):
             break
                 
     total_time = time.time() - start
-    print("Streaming processed {} frames in {} ({:.2f} fps)".format(
+    logging.info("Streaming processed {} frames in {} ({:.2f} fps)".format(
         n, time_to_string(total_time), n / total_time
     ))
     cap.release()

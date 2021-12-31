@@ -1,17 +1,20 @@
 import os
-import time
 import random
+import logging
 import numpy as np
 import tensorflow as tf
 
 from tqdm import tqdm
 
+from loggers import timer
 from models.base_model import BaseModel
 from custom_architectures import get_architecture
 from models.weights_converter import partial_transfer_learning, pt_convert_model_weights
 from utils import load_json, dump_json, time_to_string, plot_spectrogram, pad_batch
 from utils.audio import MelSTFT, load_audio, load_mel
 from utils.text import get_encoder, default_english_encoder, split_text
+
+time_logger = logging.getLogger('timer')
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 DEFAULT_MAX_TEXT_LENGTH = 150
@@ -222,10 +225,18 @@ class Tacotron2(BaseModel):
         pred = self.tts_model(inputs, training = training, **kwargs)
         return pred if len(pred) != 2 else pred[0]
     
+    @timer(name = 'inference')
     def infer(self, text, text_length = None, * args, ** kwargs):
-        if isinstance(text, str):
-            text = tf.expand_dims(self.encode_text(text), axis = 0)
-            text_length = [len(text[0])]
+        if not isinstance(text, list):
+            if isinstance(text, str):
+                text = tf.expand_dims(self.encode_text(text), axis = 0)
+                text_length = tf.cast([len(text[0])], tf.int32)
+            elif len(tf.shape(text)) == 1:
+                text = tf.expand_dims(text, axis = 0)
+        
+        if text_length is None and tf.shape(text)[0] == 1:
+            text_length = tf.cast([tf.shape(text)[1]], tf.int32)
+        
         assert text_length is not None
         
         pred = self.tts_model.infer(text, text_length, * args, ** kwargs)
@@ -378,6 +389,7 @@ class Tacotron2(BaseModel):
             np.save(os.path.join(mel_dir, prefix_i + '_infer.npy'), i_mel)
 
         
+    @timer
     def predict(self,
                 sentences,
                 max_text_length = -1,
@@ -389,7 +401,6 @@ class Tacotron2(BaseModel):
                 overwrite = False,
                 
                 tqdm    = lambda x: x,
-                debug   = False,
                 
                 ** kwargs
                ):
@@ -411,8 +422,8 @@ class Tacotron2(BaseModel):
         """
         if max_text_length <= 0: max_text_length = self.max_input_length
         
-        t_process, t_infer, t_save = time.time(), 0., 0.
-        
+        time_logger.start_timer('processing')
+
         # get saving directory
         if not save:
             mel_dir, plot_dir, map_file = None, None, None
@@ -448,12 +459,12 @@ class Tacotron2(BaseModel):
         # encoded part-sentences 
         encoded = [self.encode_text(p) for p in flattened]
         
-        t_process = time.time() - t_process
+        time_logger.stop_timer('processing')
         
         # for each batch
         num = 0
         for start_idx in tqdm(range(0, len(encoded), batch_size)):
-            start_process = time.time()
+            time_logger.start_timer('processing')
             
             batch   = encoded[start_idx : start_idx + batch_size]
             lengths = np.array([len(part) for part in batch])
@@ -463,22 +474,19 @@ class Tacotron2(BaseModel):
             lengths     = tf.cast(lengths, tf.int32)
             padded_inputs   = tf.cast(padded_inputs, tf.int32)
             
-            start_infer = time.time()
-            t_process += start_infer - start_process
-            
+            time_logger.stop_timer('processing')
+
             _, mels, gates, attn_weights = self.infer(
                 text = padded_inputs, text_length = lengths, ** kwargs
             )
             
-            t_infer += time.time() - start_infer
-            
             mels, gates, attn_weights = mels.numpy(), gates.numpy(), attn_weights.numpy()
             
             for mel, gate, attn in zip(mels, gates, attn_weights):
-                stop_gate = np.where(gate > 0.5)[0]
-                mel_length = stop_gate[0] if len(stop_gate) > 0 else len(gate)
-                mel = mel[ : mel_length, :]
-                attn = attn[ : mel_length, :]
+                stop_gate   = np.where(gate > 0.5)[0]
+                mel_length  = stop_gate[0] if len(stop_gate) > 0 else len(gate)
+                mel         = mel[ : mel_length, :]
+                attn        = attn[ : mel_length, :]
                 
                 text = sentences_to_read[index[num]]
                 
@@ -490,9 +498,9 @@ class Tacotron2(BaseModel):
 
                 infos_pred[text]['splitted'].append(flattened[num])
                 
-                start_save = time.time()
-                
                 if save:
+                    time_logger.start_timer('saving')
+
                     num_pred = len(os.listdir(mel_dir))
                     if len(infos_pred[text]['mels']) > index_part[num]:
                         mel_filename = infos_pred[text]['mels'][index_part[num]]
@@ -514,6 +522,8 @@ class Tacotron2(BaseModel):
                         filename = plot_filename, show = False, 
                         title = "Spectrogramme pour :\n{}".format(text)
                     )
+                    
+                    time_logger.stop_timer('saving')
                 else:
                     if index_part[num] == 0:
                         infos_pred[text].update({
@@ -522,21 +532,10 @@ class Tacotron2(BaseModel):
                     
                     infos_pred[text]['mels'].append(mel)
                 
-                t_save += time.time() - start_save
                 num += 1
         
         if save:
-            start_save = time.time()
             dump_json(map_file, infos_pred, indent = 4)
-            t_save += time.time() - start_save
-        
-        if debug:
-            print("Total time : {}\n- Processing time : {}\n- Inference time : {}\n- Saving time : {}".format(
-                time_to_string(t_process + t_infer + t_save),
-                time_to_string(t_process),
-                time_to_string(t_infer),
-                time_to_string(t_save)
-            ))
         
         return [(p, infos_pred[p]) for p in sentences if p in infos_pred]
                                     
@@ -552,22 +551,6 @@ class Tacotron2(BaseModel):
         
         return config
     
-    @classmethod
-    def build_from_pretrained(cls, nom, pretrained_name, ** kwargs):
-        with tf.device('cpu') as device:        
-            pretrained_model = Tacotron2(nom = pretrained_name)
-        
-        kwargs.setdefault('lang', pretrained_model.lang)
-        kwargs.setdefault('text_encoder', pretrained_model.text_encoder)
-        
-        instance = cls(nom = nom, max_to_keep = 1, pretrained_name = pretrained_name, ** kwargs)
-
-        partial_transfer_learning(instance.tts_model, pretrained_model.tts_model)
-        
-        instance.save()
-        
-        return instance
-
     @classmethod
     def build_from_nvidia_pretrained(cls, nom = 'pretrained_tacotron2', ** kwargs):
         kwargs.setdefault('lang', 'en')

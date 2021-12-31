@@ -2,6 +2,8 @@ import os
 import time
 import shutil
 import librosa
+import logging
+import subprocess
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -12,8 +14,11 @@ from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
 from utils.audio import audio_processing
+from utils.thread_utils import ThreadedQueue
 
 MAX_DISPLAY_TIME = 600
+
+_audio_player   = None
 
 """ Generic functions to load audio and mel """
 
@@ -90,11 +95,22 @@ def resample_file(filename, new_rate, filename_out = None):
     try:
         rate, audio = read_audio(filename, target_rate = new_rate)
     except ValueError as e:
-        print("Error while loading file {} !\n{}".format(filename, e))
+        logging.error("Error while loading file {} !\n{}".format(filename, e))
         return None
     write_audio(audio, filename_out, rate, verbose = False)
     return filename_out
+
+def play_audio(filename, block = True):
+    if block:
+        return subprocess.run(['ffplay', '-nodisp', '-autoexit', filename])
+    else:
+        global _audio_player
+        if _audio_player is None:
+            _audio_player = ThreadedQueue(play_audio, max_workers = 0)
+            _audio_player.start()
         
+        _audio_player.append(filename = filename, block = True)
+
 def display_audio(filename, rate = None, play = False,
                   debut = None, fin = None, temps = None, ** kwargs):
     from IPython.display import Audio, display
@@ -141,7 +157,7 @@ def read_audio(filename, target_rate = None, normalize = True,
     rate, audio = _supported_audio_formats[ext]['read'](filename)
     
     if len(audio) == 0:
-        print("[WARNING]\tAudio {} is empty !".format(filename))
+        logging.warning("Audio {} is empty !".format(filename))
         return np.ones((rate,), dtype = np.float32)
     
     if target_rate is not None and target_rate != rate:
@@ -175,7 +191,7 @@ def read_audio(filename, target_rate = None, normalize = True,
 def read_wav(filename):
     return read(filename)
 
-def read_mp3(filename):
+def read_pydub(filename):
     audio = AudioSegment.from_mp3(filename)
     audio_np = np.array(audio.get_array_of_samples())
     if audio.channels > 1: audio_np = audio_np[::audio.channels]
@@ -189,7 +205,7 @@ def read_mp4(filename):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        print("You must install moviepy : pip install moviepy")
+        logging.error("You must install moviepy : pip install moviepy")
         return None
 
     video = VideoFileClip(filename)
@@ -212,9 +228,9 @@ def write_audio(audio, filename, rate=22050, normalize = True,
         raise ValueError("Extension non gérée ! \nAccepte : {} \nReçu :{}".format(list(_supported_audio_formats.keys()), ext))
         
     if 'write' not in _supported_audio_formats[ext]:
-        raise ValueError("Le mode écriture n'est pas disponible pour ce format : {}".format(ext))
+        raise ValueError("Writing mode is not available for format : {}".format(ext))
         
-    if verbose: print("Sauvegarde de l'audio dans {}".format(filename))
+    logging.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
     normalized = audio
     if normalize:
@@ -227,17 +243,19 @@ def write_audio(audio, filename, rate=22050, normalize = True,
 def write_wav(audio_np, filename, rate):
     write(filename, rate, audio_np)
     
-def write_mp3(audio_np, filename, rate):
-    audio = AudioSegment(audio_np.tobytes(), frame_rate = rate, 
-                         sample_width = audio_np.dtype.itemsize, channels = 1)
-    file = audio.export(filename, format="mp3")
+def write_pydub(audio_np, filename, rate):
+    audio = AudioSegment(
+        audio_np.tobytes(), frame_rate = rate, sample_width = audio_np.dtype.itemsize, channels = 1
+    )
+    file = audio.export(filename, format = filename.split('.')[-1])
     file.close()
     
 """ Fonction de processing de l'audio """
 
 _supported_audio_formats = {
     'wav'   : {'read' : read_wav, 'write' : write_wav},
-    'mp3'   : {'read' : read_mp3, 'write' : write_mp3},
+    'mp3'   : {'read' : read_pydub, 'write' : write_pydub},
+    'm4a'   : {'read' : read_pydub, 'write' : write_pydub},
     'mp4'   : {'read' : read_mp4},
     'flac'  : {'read' : read_librosa},
     'opus'  : {'read' : read_librosa}

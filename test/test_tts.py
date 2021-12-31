@@ -1,0 +1,45 @@
+from unitest import Test, assert_function, assert_model_output, assert_equal
+
+_pretrained_tacotron = 'pretrained_tacotron2'
+_text_en = 'Hello World ! This is a small text to test the Tacotron 2 architecture in English.'
+_text_fr = 'Bonjour à tous ! Ceci est un petit texte de test pour tester l\'architecture Tacotron 2.'
+
+models_to_test = [_pretrained_tacotron, 'tacotron2_siwis']
+
+def test_tacotron(model_name):
+    from models.tts import Tacotron2
+    from models.model_utils import is_model_name
+    from utils.text import default_english_encoder
+
+    if not is_model_name(model_name):
+        print("Model {} does not exist, skipping its consistency test !".format(model_name))
+        return
+    
+    model = Tacotron2(nom = model_name)
+    model.tts_model.set_deterministic(True)
+    
+    assert_equal(148, model.vocab_size)
+    assert_equal(0, model.blank_token_idx)
+    assert_equal(80, model.n_mel_channels)
+    assert_equal(22050, model.audio_rate)
+    
+    assert_equal(default_english_encoder, model.text_encoder)
+    
+    assert_function(model.encode_text, _text_en)
+    assert_function(model.encode_text, _text_fr)
+    
+    # These 2 lines are required in order to compile the model
+    # because the result can differ between the 1st call (before compilation) and next calls (once compiled)
+    model.infer(_text_en)
+    model.infer(_text_fr)
+    model.predict([_text_en, _text_fr], save = False)
+    
+    assert_model_output(model.infer, _text_en)
+    assert_model_output(model.infer, _text_fr)
+    assert_model_output(model.infer, model.encode_text(_text_en))
+    assert_model_output(model.infer, model.encode_text(_text_fr))
+    
+    assert_model_output(model.predict, [_text_en, _text_fr], save = False)
+
+for name in models_to_test:
+    Test(lambda: test_tacotron(name), sequential = True, name = 'test_{}'.format(name), model_dependant = name)

@@ -91,7 +91,7 @@ def format_output(hparams,
 def create_decoder_mask(target, mask = None, look_ahead_mask = None,
                         dec_padding_mask = None, dec_seq_len = None):
     if mask is not None: return mask
-    
+
     if look_ahead_mask is None:
         look_ahead_mask = create_look_ahead_mask(
             tf.shape(target)[0], tf.shape(target)[1], tf.float32

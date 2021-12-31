@@ -1,0 +1,32 @@
+{
+    "If you train new models, do not hesitate to contact me or add it in the available models !": {
+        "splitted": [
+            "If you train new models, do not hesitate to contact me or add it in the available models !"
+        ],
+        "mels": [
+            "example_outputs/en/mels/mel_0.npy"
+        ],
+        "plots": [
+            "example_outputs/en/plots/plot_0.png"
+        ],
+        "audio": "example_outputs/en/audios/audio_1.mp3",
+        "duree": 5.943356009070294
+    },
+    "Hello world ! Hope you will enjoy this funny API for Text-To-Speech !": {
+        "splitted": [
+            "Hello world ! Hope you will enjoy this funny API for Text-To-Speech !"
+        ],
+        "mels": [
+            "example_outputs/en/mels/mel_1.npy"
+        ],
+        "plots": [
+            "example_outputs/en/plots/plot_1.png"
+        ],
+        "audio": "example_outputs/en/audios/audio_0.mp3",
+        "duree": 5.130657596371882
+    },
+    "Hello world ! Hope you will enjoy this funny API for Text-To-Speech !\nIf you train new models, do not hesitate to contact me or add it in the available models !": {
+        "audio": "example_outputs/en/audios/concat_audios_0.mp3",
+        "duree": 11.074013605442177
+    }
+}

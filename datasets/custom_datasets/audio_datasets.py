@@ -1,19 +1,16 @@
 import os
-import json
 import librosa
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
 from tqdm import tqdm
-from threading import Thread
 from unidecode import unidecode
 from multiprocessing import cpu_count
 
-from utils.thread_utils import ThreadPool
-from utils.generic_utils import load_json
-from utils.embeddings import load_embedding
-from utils.audio import load_audio, load_mel, write_audio, resample_file
+from loggers import timer
+from utils import load_json, load_embedding
 from datasets.dataset_utils import prepare_dataset
 
 def add_default_rate(dataset):
@@ -24,6 +21,7 @@ def add_default_rate(dataset):
     
     return dataset
 
+@timer(name = 'siwis loading')
 def preprocess_SIWIS_annots(directory, langue = 'fr', parts = [1, 2, 3, 5], 
                             with_duree = False, ** kwargs):
     base_dir = os.path.join(directory, langue)
@@ -60,6 +58,7 @@ def preprocess_SIWIS_annots(directory, langue = 'fr', parts = [1, 2, 3, 5],
     
     return dataset
 
+@timer(name = 'voxforge loading')
 def preprocess_VoxForge_annots(directory, langue = 'fr', ** kwargs):
     def process_speaker(main_dir, name):
         speaker_dir = os.path.join(main_dir, name)
@@ -109,6 +108,7 @@ def preprocess_VoxForge_annots(directory, langue = 'fr', ** kwargs):
     
     return dataset
 
+@timer(name = 'common voice loading')
 def preprocess_CommonVoice_annots(directory, file = 'validated.tsv', 
                                   dropna = False, sexe = None, age = None, 
                                   accent = None, pop_down = True, pop_votes = True, 
@@ -160,6 +160,7 @@ def preprocess_CommonVoice_annots(directory, file = 'validated.tsv',
     
     return dataset
 
+@timer(name = 'mls loading')
 def preprocess_mls_annots(directory, langue = 'fr', subset = 'train', ** kwargs):
     directory = os.path.join(directory, langue, subset)
     
@@ -213,6 +214,7 @@ def preprocess_mls_annots(directory, langue = 'fr', subset = 'train', ** kwargs)
     
     return dataset
 
+@timer(name = 'libri speech loading')
 def preprocess_LibriSpeech_annots(directory, subsets = None, tqdm = lambda x: x, 
                                   ** kwargs):
     def process_speaker(line):
@@ -287,6 +289,7 @@ def preprocess_LibriSpeech_annots(directory, subsets = None, tqdm = lambda x: x,
     
     return dataset
 
+@timer(name = 'identification dataset loading')
 def preprocess_identification_annots(directory, by_part = False, ** kwargs):
     if 'parts' not in os.listdir(directory):
         return pd.concat([preprocess_identification_annots(
@@ -304,7 +307,7 @@ def preprocess_identification_annots(directory, by_part = False, ** kwargs):
     if 'indexes' in dataset.columns: dataset.pop('indexes')
     
     dataset = add_default_rate(dataset)
-    
+
     if 'embedding_dim' in kwargs:
         dataset = load_embedding(directory, dataset = dataset, ** kwargs)
 
@@ -313,6 +316,8 @@ def preprocess_identification_annots(directory, by_part = False, ** kwargs):
 
 
 def make_siwis_mel(directory, stft_fn, target_rate, langue = 'fr', parts = [1, 2, 3, 5]):
+    from utils.audio import load_mel
+    
     def map_mel_fn(data):
         mel = load_mel(data, stft_fn)
         return data['filename'], mel
@@ -325,7 +330,9 @@ def make_siwis_mel(directory, stft_fn, target_rate, langue = 'fr', parts = [1, 2
     
     transformed = dataset[mel_dir_name].apply(lambda f: os.path.exists(f))
     
-    print("Nombre d'éléments : {}\n  Déjà transformés : {}\n  A transformer : {}".format(len(dataset), transformed.sum(), len(dataset) - transformed.sum()))
+    logging.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
+        len(dataset), transformed.sum(), len(dataset) - transformed.sum()
+    ))
     
     tf_dataset = prepare_dataset(dataset[~transformed][['filename']], batch_size = 0, 
                                  map_fn = map_mel_fn, cache = False)
@@ -343,6 +350,8 @@ def make_siwis_mel(directory, stft_fn, target_rate, langue = 'fr', parts = [1, 2
     return dataset
 
 def make_CV_mel(directory, stft_fn, target_rate, file = 'validated.tsv'):
+    from utils.audio import load_mel
+
     def map_mel_fn(data):
         mel = load_mel(data, stft_fn)
         return data['path'], mel
@@ -356,7 +365,9 @@ def make_CV_mel(directory, stft_fn, target_rate, file = 'validated.tsv'):
     
     transformed = dataset[mel_dir_name].apply(lambda f: os.path.exists(f))
     
-    print("Nombre d'éléments : {}\n  Déjà transformés : {}\n  A transformer : {}".format(len(dataset), transformed.sum(), len(dataset) - transformed.sum()))
+    logging.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
+        len(dataset), transformed.sum(), len(dataset) - transformed.sum()
+    ))
     
     tf_dataset = prepare_dataset(dataset[~transformed][['path']], batch_size = 0, 
                                  map_fn = map_mel_fn, cache = False)

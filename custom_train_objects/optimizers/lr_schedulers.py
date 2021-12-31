@@ -17,16 +17,17 @@ class CustomScheduler(tf.keras.optimizers.schedules.LearningRateSchedule):
              title = "Learning rate over epoch", **kwargs)
 
 class DivideByStep(CustomScheduler):
-    def __init__(self, factor = 1., maxval = 5e-3, minval = 5e-4, **kwargs):
-        super(DivideByStep, self).__init__(**kwargs)
-        self.factor = factor
-        self.minval = minval
-        self.maxval = maxval
+    def __init__(self, factor = 1., maxval = 1e-2, minval = 1e-6, ** kwargs):
+        super(DivideByStep, self).__init__(** kwargs)
+        self.factor = tf.cast(factor, tf.float32)
+        self.minval = tf.cast(minval, tf.float32)
+        self.maxval = tf.cast(maxval, tf.float32)
         
     def __call__(self, step):
-        return tf.clip_by_value(self.factor / step, 
-                                clip_value_min = self.minval, 
-                                clip_value_max = self.maxval)
+        step = tf.cast(step, tf.float32)
+        return tf.clip_by_value(
+            self.factor / step, clip_value_min = self.minval, clip_value_max = self.maxval
+        )
     
     def get_config(self):
         config = super(DivideByStep, self).get_config()
@@ -49,9 +50,9 @@ class WarmupScheduler(CustomScheduler):
         x1 = tf.math.rsqrt(step)
         x2 = step * (self.warmup_steps ** -1.5)
         lr = tf.math.rsqrt(self.factor) * tf.math.minimum(x1, x2)
-        return tf.clip_by_value(lr, 
-                                clip_value_min = self.minval, 
-                                clip_value_max = self.maxval)
+        return tf.clip_by_value(
+            lr, clip_value_min = self.minval, clip_value_max = self.maxval
+        )
     
     def get_config(self):
         config = super(WarmupScheduler, self).get_config()

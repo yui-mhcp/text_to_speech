@@ -14,6 +14,7 @@ HParamsMHA = HParams(
     drop_rate   = 0.1,
     normalize   = True,
     epsilon     = 1e-6,
+    normalize_input = False,
     norm_training   = True
 )
 
@@ -21,6 +22,10 @@ class MultiHeadAttention(tf.keras.layers.Layer):
     def __init__(self, name = None, ** kwargs):
         super().__init__(name = name)
         self.hparams = HParamsMHA.extract(kwargs)
+        
+        self.residual       = self.hparams.residual
+        self.mask_factor    = tf.cast(self.hparams.mask_factor, tf.float32)
+        self.norm_training  = self.hparams.norm_training
         
         assert self.hparams.attention_dim % self.hparams.num_heads == 0, "Attention_dim % num_heads != 0 !"
         
@@ -32,12 +37,21 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         self.wk = tf.keras.layers.Dense(self.hparams.attention_dim, name = "key_layer")
         self.wv = tf.keras.layers.Dense(self.hparams.attention_dim, name = "value_layer")
         
-        self.attn_dropout   = tf.keras.layers.Dropout(self.hparams.attention_drop_rate) if self.hparams.attention_drop_rate > 0. else None
+        self.attn_dropout   = tf.keras.layers.Dropout(
+            self.hparams.attention_drop_rate
+        ) if self.hparams.attention_drop_rate > 0. else None
 
-        self.output_layer   = tf.keras.layers.Dense(self.hparams.attention_dim) if self.hparams.use_output_layer else None
+        self.output_layer   = tf.keras.layers.Dense(
+            self.hparams.attention_dim
+        ) if self.hparams.use_output_layer else None
         self.dropout        = tf.keras.layers.Dropout(self.hparams.drop_rate)
-        self.norm_layer     = tf.keras.layers.LayerNormalization(epsilon = self.hparams.epsilon) if self.hparams.normalize else None
-        
+        self.inp_norm_layer = tf.keras.layers.LayerNormalization(
+            epsilon = self.hparams.epsilon, name = 'input_normalization'
+        ) if self.hparams.normalize_input else None
+        self.norm_layer     = tf.keras.layers.LayerNormalization(
+            epsilon = self.hparams.epsilon
+        ) if self.hparams.normalize else None
+    
     def split_heads(self, x, batch_size):
         """
             Split the last dimension into (num_heads, depth)
@@ -46,6 +60,14 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         
         x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
         return tf.transpose(x, perm = [0, 2, 1, 3])
+    
+    def merge_heads(self, scaled_attention, batch_size):
+        """ Merge heads' output """
+        # batch, seq_len_q, num_heads, depth
+        scaled_attention = tf.transpose(scaled_attention, perm = [0, 2, 1, 3])
+        
+        # (batch, seq_len_q, d_model)
+        return tf.reshape(scaled_attention, (batch_size, -1, self.attention_dim))
     
     def scaled_dot_product_attention(self, q, k, v, mask = None, training = False):
         """
@@ -65,7 +87,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
 
         if mask is not None:
-            scaled_attention_logits += (mask * self.hparams.mask_factor)
+            scaled_attention_logits = scaled_attention_logits * (1. - mask) + mask * self.mask_factor
 
         # (..., seq_len_q, seq_len_k)
         attention_weights = tf.nn.softmax(scaled_attention_logits, axis = -1)
@@ -77,37 +99,51 @@ class MultiHeadAttention(tf.keras.layers.Layer):
 
         return output, attention_weights
     
-    def call(self, query, key, value, mask = None, training = False, return_attention = True):        
+    def call(self, query, key, value, mask = None, training = False, initial_state = None,
+             return_attention = True, return_state = False, normalize_kv = True):
         batch_size = tf.shape(query)[0]
         
-        q = self.wq(query)      # (batch_size, seq_len, d_model)
-        k = self.wk(key)        # (batch_size, seq_len, d_model)
-        v = self.wv(value)      # (batch_size, seq_len, d_model)
-        
+        q, k, v = query, key, value
+        if self.inp_norm_layer is not None:
+            q = self.inp_norm_layer(q, training = training and self.norm_training)
+            if normalize_kv:
+                k = self.inp_norm_layer(k, training = training and self.norm_training)
+                v = self.inp_norm_layer(v, training = training and self.norm_training)
+
+        q = self.wq(q)      # (batch_size, seq_len, d_model)
+        k = self.wk(k)        # (batch_size, seq_len, d_model)
+        v = self.wv(v)      # (batch_size, seq_len, d_model)
+
         q = self.split_heads(q, batch_size)     # (batch, num_heads, seq_len_q, depth)
         k = self.split_heads(k, batch_size)     # (batch, num_heads, seq_len_k, depth)
         v = self.split_heads(v, batch_size)     # (batch, num_heads, seq_len_v, depth)
-                
+        
+        if initial_state is not None:
+            past_k, past_v = initial_state
+            k = tf.concat([past_k, k], axis = -2)
+            v = tf.concat([past_v, v], axis = -2)
+
         # scaled_attention shape == (atch, num_heads, seq_len_q, depth)
         # attention_weights shape == (batch, num_heads, seq_len_q, seq_len_k)
-        scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask, training)
-        
-        # batch, seq_len_q, num_heads, depth
-        scaled_attention = tf.transpose(scaled_attention, perm = [0, 2, 1, 3])
-        
-        # (batch, seq_len_q, d_model)
-        output = tf.reshape(scaled_attention, (batch_size, -1, self.attention_dim))
+        scaled_attention, attention_weights = self.scaled_dot_product_attention(
+            q, k, v, mask = mask, training = training
+        )
+
+        output = self.merge_heads(scaled_attention, batch_size)
         
         if self.output_layer is not None:
             output = self.output_layer(output)
             
             if self.dropout is not None:    output = self.dropout(output, training = training)
-            if self.hparams.residual:       output = output + query
+            if self.residual:       output = output + query
             if self.norm_layer is not None:
-                output = self.norm_layer(output, training = training and self.hparams.norm_training)
+                output = self.norm_layer(output, training = training and self.norm_training)
         
-        return output, attention_weights if return_attention else output
+        output = (output, )
+        if return_state:        output = output + ((k, v), )
+        if return_attention:    output = output + (attention_weights, )
+        return output[0] if len(output) == 1 else output
     
     def get_config(self):
         config = super().get_config()
-        return self.hparams + config
+        return (self.hparams + config).get_config()

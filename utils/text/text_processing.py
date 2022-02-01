@@ -133,15 +133,16 @@ def f1_score(y_true, y_pred, normalize = True, exclude = None):
     
     return em, f1, precision, recall
 
-def create_padding_mask(seq, seq_len = None, pad_value = 0, dtype = tf.float32):
+def create_padding_mask(seq, seq_len = None, pad_value = 0, maxlen = None, dtype = tf.float32):
     """
         Return padding mask matching attention shape [batch_size, 1, 1, seq_len]
     """
     if seq_len is None:
         mask = tf.cast(tf.math.equal(seq, pad_value), dtype = dtype)
     else:
+        if maxlen is None: maxlen = tf.shape(seq)[1]
         mask = 1. - tf.sequence_mask(
-            seq_len, maxlen = tf.shape(seq)[1], dtype = dtype
+            seq_len, maxlen = maxlen, dtype = dtype
         )
     return tf.reshape(mask, [tf.shape(seq)[0], 1, 1, -1])
 

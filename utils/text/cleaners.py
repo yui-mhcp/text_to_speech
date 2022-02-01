@@ -25,7 +25,7 @@ _whitespace_re = re.compile(r'\s+')
 _punctuation    = '_!?.,’“”‚‘—–()[]{}:;\'"`+-*/^=\\<>&#$%@¿′″·§~'
 _left_punctuation   = '([{'
 _right_punctuation  = ')]},.'
-_accents    = "âàéèêîùç"
+_accents    = "âéèêîçô"
 
 # List of (regular expression, replacement) pairs for abbreviations:
 _english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1])

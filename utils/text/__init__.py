@@ -16,7 +16,7 @@ _special    = '-'
 _maj_letters    = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 _min_letters    = 'abcdefghijklmnopqrstuvwxyz'
 _letters    = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-_accents    = 'àéèêîçôù'
+_accents    = 'éèêîçô'
 _maths      = '+*/'
 _numbers    = '0123456789'
 

@@ -1,7 +1,10 @@
 import time
 import logging
 
-from utils.generic_utils import time_to_string
+try:
+    from utils.generic_utils import time_to_string
+except ImportError as e:
+    from loggers.utils import time_to_string
 
 def format_time(** kwargs):
     if kwargs.get('n_exec', 1) == 1:
@@ -131,6 +134,9 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
     if name is None: name = fn.__name__
     
     def fn_with_timer(* args, ** kwargs):
+        if not logging.getLogger().isEnabledFor(TIME_LEVEL):
+            return fn(* args, ** kwargs)
+        
         timer = logger.start_timer(name)
         result = fn(* args, ** kwargs)
         logger.stop_timer(name)

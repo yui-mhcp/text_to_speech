@@ -81,7 +81,7 @@ class BaseModel(metaclass = ModelInstances):
         self.backend_kwargs = kwargs        
         if restore and _can_restore(restore, self.config_file):
             restore_kwargs  = {} if not isinstance(restore, dict) else restore
-            if isinstance(restore, str): restore = {'directory' : restorre}
+            if isinstance(restore, str): restore_kwargs = {'directory' : restore}
             
             if 'directory' in restore_kwargs:
                 if is_model_name(restore_kwargs['directory']):
@@ -1172,6 +1172,7 @@ class BaseModel(metaclass = ModelInstances):
             dataset   = strategy.experimental_distribute_dataset(dataset)
                         
         # Prepare metrics and logs
+        if metrics is not None and not isinstance(metrics, list): metrics = [metrics]
         self.compiled_metrics    = self.get_compiled_metrics(metrics, add_loss = add_loss)
         
         # Prepare callbacks
@@ -1186,7 +1187,8 @@ class BaseModel(metaclass = ModelInstances):
         
         test_hparams.update({
             'verbose'   : verbose,
-            'epochs'    : self.epochs
+            'epochs'    : self.epochs,
+            'test_prefix'   : prefix
         })
         callbacks.set_params(test_hparams)
         
@@ -1307,11 +1309,11 @@ class BaseModel(metaclass = ModelInstances):
         return self.__class__.clone(pretrained = self.nom, nom = nom)
     
     def restore_models(self, directory = None, checkpoint = None, compile = True):
-        logging.info("Model restoration...")
-        
         if directory is not None:
+            logging.info("Model restoration from {}...".format(directory))
             filename = os.path.join(directory, "config_models.json")
         else:
+            logging.info("Model restoration...")
             filename = self.config_models_file
         
         variables_to_restore = load_json(filename)
@@ -1352,8 +1354,9 @@ class BaseModel(metaclass = ModelInstances):
                 checkpoint = tf.train.latest_checkpoint(directory)
             else:
                 checkpoint = os.path.join(directory, checkpoint)
+            logging.info('Loading checkpoint {}'.format(checkpoint))
 
-        self.checkpoint.restore(checkpoint)
+        return self.checkpoint.restore(checkpoint)
 
     def load_training_checkpoint(self):
         self.load_checkpoint(checkpoint = self.latest_train_checkpoint)
@@ -1549,9 +1552,11 @@ class BaseModel(metaclass = ModelInstances):
         def _rename_in_file(filename):
             if os.path.isdir(filename):
                 for f in os.listdir(filename): _rename_in_file(os.path.join(filename, f))
-            if filename.endswith('.json'):
-                with open(filename, 'r+', encoding = 'utf-8') as file:
-                    file.write(file.read().replace(nom, new_name))
+            elif filename.endswith('.json'):
+                with open(filename, 'r', encoding = 'utf-8') as file:
+                    text = file.read().replace(nom, new_name)
+                with open(filename, 'w', encoding = 'utf-8') as file:
+                    file.write(text)
             
         folder = get_model_dir(nom)
         if not os.path.exists(folder):
@@ -1566,9 +1571,9 @@ class BaseModel(metaclass = ModelInstances):
 def _can_restore(restore, config_file):
     if restore is True: return os.path.exists(config_file)
     elif isinstance(restore, str):
-        return os.path.exists(os.path.join(restore, 'config.json'))
+        return is_model_name(restore) or os.path.exists(os.path.join(restore, 'config.json'))
     elif isinstance(restore, dict):
-        return os.path.exists(os.path.join(restore['directory'], 'config.json'))
+        return is_model_name(restore['directory']) or os.path.exists(os.path.join(restore['directory'], 'config.json'))
     
 def _compile_fn(fn, run_eagerly = False, signature = None, 
                 include_signature = True, ** kwargs):

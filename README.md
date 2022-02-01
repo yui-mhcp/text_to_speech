@@ -176,7 +176,7 @@ The idea behind these tricks is that the only *speaker-specific* part is the `De
 You can contact [me](https://github.com/yui-mhcp) at yui-mhcp@tutanota.com or on [discord](https://discord.com) at `yui#0732`
 
 The objective of these projects is to facilitate the development and deployment of useful application using Deep Learning for solving real-world problems and helping people. 
-For this purpose, all the code is under the [GNU GPL v3 licence](LICENCE)
+For this purpose, all the code is under the [Affero GPL (AGPL) v3 licence](LICENCE)
 
 Furthermore, you **cannot** use any of these projects for commercial purpose without my permission. You can use, modify, distribute and use any of my projects for production as long as you respect the terms of the [licence](LICENCE) and use it for non-commercial purposes (i.e. free applications / research). 
 

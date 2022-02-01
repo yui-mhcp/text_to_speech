@@ -24,7 +24,10 @@ _all_tests     = {}
 _current_test  = None
 
 def _maybe_call(data, * args, ** kwargs):
-    return data if not callable(data) else data(* args, ** kwargs)
+    if callable(data):
+        logging.debug('Calling function {}'.format(data))
+        return data(* args, ** kwargs)
+    return data
 
 def _maybe_save_target(filename, data, overwrite = False):
     if isinstance(data, tf.Tensor): data = data.numpy()
@@ -195,12 +198,15 @@ class TestSuite:
     def __call__(self, ** kwargs):
         return self.run(** kwargs)
     
-    def append(self, compare_fn, target = None, value = None, fn = None, args = [], kwargs = {}):
+    def append(self, compare_fn, target = None, value = None, fn = None, exception = None,
+               args = [], kwargs = {}):
         compare_fn_name = compare_fn if isinstance(compare_fn, str) else compare_fn.__name__
         test = {
             'compare_fn' : compare_fn_name, 'target' : target, 'value' : value, 'fn' : fn,
-            'args' : args, 'kwargs' : kwargs, 'compare_kwargs' : kwargs.pop('compare_kwargs', {})
+            'exception' : exception, 'args' : args, 'kwargs' : kwargs,
+            'compare_kwargs' : kwargs.pop('compare_kwargs', {})
         }
+        logging.debug('Append new test on {} : {}'.format(self.name, test))
             
         if self.__test_idx == len(self.__tests):
             self.__tests.append(test)
@@ -217,16 +223,18 @@ class TestSuite:
         else:
             assert compare_fn in _test_fn, "Unknown comparison fn {}".format(compare_fn)
         
-    def run_test(self, idx, debug = False, ** kwargs):
-        if debug: print("{} run test index {}".format(self.name, idx))
+    def run_test(self, idx, ** kwargs):
+        logging.debug("{} run test index {}".format(self.name, idx))
         test = self[idx]
         
         if test['fn'] is not None:
             test_filename = test['target'] if test['target'] is not None else os.path.join(
                 os.path.join(self.directory, 'test_{}_target'.format(idx))
             )
-            if not isinstance(test_filename, str) or not os.path.exists(test_filename):
-                print("Initializing function consistency test for {} at index {}".format(self.name, idx))
+            if test.get('exception', None) is not None:
+                test['target'] = test['fn']
+            elif not isinstance(test_filename, str) or not os.path.exists(test_filename):
+                logging.info("Initializing function consistency test for {} at index {}".format(self.name, idx))
                 test.update({'target' : self.save_test_result(idx), 'value' : test['fn']})
             else:
                 test.update({'target' : test_filename, 'value' : test['fn']})
@@ -236,14 +244,24 @@ class TestSuite:
         t0 = time.time()
         
         try:
+            logging.debug('target : {} - value : {}'.format(test['target'], test['value']))
             target  = _maybe_call(test['target'], * test['args'], ** test['kwargs'])
             value   = _maybe_call(test['value'], * test['args'], ** test['kwargs'])
-
-            passed, msg = compare_fn(target, value, ** test.get('compare_kwargs', {}))
+            
+            if test.get('exception', None) is None:
+                passed, msg = compare_fn(target, value, ** test.get('compare_kwargs', {}))
+            else:
+                passed, msg = False, 'should throws an exception but did not'
         except Exception as e:
-            passed, msg = False, '{} : {} with inputs {} and {}'.format(
-                e.__class__.__name__, e, test.get('target', None), test.get('value', None)
-            )
+            if test.get('exception', None) is not None:
+                if isinstance(e, test['exception']):
+                    passed, msg = True, ''
+                else:
+                    passed, msg = False, 'the function do not raised the right exception : got {} - expected {}'.format(test['exception'], type(e))
+            else:
+                passed, msg = False, '{} : {} with inputs {} and {}'.format(
+                    e.__class__.__name__, e, test.get('target', None), test.get('value', None)
+                )
         
         self.__infos[idx] = {
             'passed' : passed, 'message' : msg, 'time' : time.time() - t0
@@ -285,7 +303,7 @@ class TestSuite:
             self.__tests    = tests
             self.__infos    = config['infos']
         except Exception as e:
-            print("Failed to restore due to {} : {}".format(e.__class__.__name__, str(e)))
+            logging.error("Failed to restore due to {} : {}".format(e.__class__.__name__, str(e)))
 
     def save(self):
         os.makedirs(self.directory, exist_ok = True)
@@ -308,11 +326,14 @@ class TestSuite:
         
         tests = self.tests.copy()
         for i, test in enumerate(tests):
-            test['target'] = _maybe_call(test['target'], * test['args'], ** test['kwargs'])
-            
-            test['target'] = _maybe_save_target(
-                os.path.join(self.directory, 'test_{}_target'.format(i)), test['target']
-            )
+            if test.get('exception', None) is None:
+                test['target'] = _maybe_call(test['target'], * test['args'], ** test['kwargs'])
+
+                test['target'] = _maybe_save_target(
+                    os.path.join(self.directory, 'test_{}_target'.format(i)), test['target']
+                )
+            else:
+                test['target'] = None
             test.pop('value', None)
             test['fn'] = None
         
@@ -387,7 +408,7 @@ class TestResult:
     
     def assert_succeed(self):
         assert self.succeed, "\n{}".format(self)
-        print("All tests succeed !")
+        logging.info("All tests succeed !")
     
     def save(self):
         for t in self: t.save()
@@ -395,7 +416,7 @@ class TestResult:
 
 def set_sequential():
     _current_test.sequential = True
-    
+        
 def assert_true(value, * args, ** kwargs):
     assert_equal(True, value, * args, ** kwargs)
 
@@ -414,6 +435,9 @@ def assert_model_output(fn, * args, max_err = 0.01, err_mode = 'norm', ** kwargs
     
 def assert_function(fn, * args, ** kwargs):
     _current_test.append(is_equal, fn = fn, args = args, kwargs = kwargs)
+
+def assert_exception(fn, exception, * args, ** kwargs):
+    _current_test.append(is_equal, exception = exception, fn = fn, args = args, kwargs = kwargs)
 
 def assert_smaller(target, value, * args, ** kwargs):
     _current_test.append(is_smaller, target = target, value = value, args = args, kwargs = kwargs)

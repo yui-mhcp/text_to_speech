@@ -65,14 +65,15 @@ class HParams:
     def copy(self):
         return HParams(_prefix = self.__prefix, ** self)
     
-    def extract(self, values, pop = False):
+    def extract(self, values, pop = False, copy = True):
         """ Update self.config without adding new keys """
         keys = list(values.keys())
+        new_values = {}
         for k in keys:
             if k not in self: continue
             v = values.pop(k) if pop else values.get(k)
-            setattr(self, k, v)
-        return self
+            new_values[k] = v
+        return self(** new_values) if copy else self.update(new_values)
     
     def update(self, v):
         """ update self.config and add new keys if any """

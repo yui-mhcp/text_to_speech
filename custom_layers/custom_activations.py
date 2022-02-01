@@ -1,3 +1,4 @@
+import math
 import tensorflow as tf
 
 def log_softmax(x, epsilon = 1e-6):
@@ -14,6 +15,20 @@ def soft_gelu(x):
     cdf = 0.5 * (1.0 + f.tanh((tf.math.sqrt(2. / np.pi) * (x + 0.044715 * tf.pow(x, 3)))))
     return x * cdf
 
+def gelu_new(x):
+    """
+    Gaussian Error Linear Unit. This is a smoother version of the GELU. Original paper: https://arxiv.org/abs/1606.0841
+    Args:
+        x: float Tensor to perform activation
+    Returns:
+        `x` with the GELU activation applied.
+    """
+    pi      = tf.cast(math.pi, tf.float32)
+    coeff   = tf.cast(0.044715, x.dtype)
+    cdf = 0.5 * (1.0 + tf.tanh(tf.sqrt(2.0 / pi) * (x + coeff * tf.pow(x, 3))))
+
+    return x * cdf
+
 def swish(x):
     """ Swish activation """
     return x * tf.sigmoid(x)
@@ -24,6 +39,7 @@ def mish(x):
 LogSoftmax  = log_softmax
 GeLU        = gelu
 SoftGeLU    = soft_gelu
+GeLUNew     = gelu_new
 Swish       = swish
 Mish        = mish
 
@@ -31,6 +47,7 @@ _activations = {
     "log_softmax"   : LogSoftmax,
     "LogSoftmax"    : LogSoftmax,
     "gelu"          : GeLU,
+    "gelu_new"      : gelu_new,
     "smooth_gelu"   : SoftGeLU,
     "swish"         : Swish,
     "mish"          : Mish

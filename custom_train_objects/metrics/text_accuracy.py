@@ -22,14 +22,25 @@ class TextAccuracy(tf.keras.metrics.Metric):
                 - y_pred : predicted values probabilities
                     shape : (batch_size, max_length, vocab_size)
         """
+        skip_length = 0
         if not isinstance(y_true, (list, tuple)):
-            target_length = tf.reduce_sum(tf.cast(tf.math.not_equal(y_true, self.pad_value), tf.int32), axis = -1)
+            target_length = tf.reduce_sum(tf.cast(
+                tf.math.not_equal(y_true, self.pad_value), tf.int32
+            ), axis = -1)
         else:
-            y_true, target_length = y_true
+            if len(y_true) == 3: skip_length = y_true[2]
+            y_true, target_length = y_true[:2]
         
         padding_mask    = tf.sequence_mask(
-            target_length, maxlen = tf.shape(y_pred)[1], dtype = tf.float32
+            skip_length + target_length, maxlen = tf.shape(y_pred)[1], dtype = tf.float32
         )
+        if tf.reduce_any(skip_length > 0):
+            padding_mask    = tf.minimum(
+                padding_mask, 1 - tf.sequence_mask(
+                    skip_length, maxlen = tf.shape(y_pred)[1], dtype = tf.float32
+                )
+            )
+        
         
         n_symbols = tf.reduce_sum(padding_mask, axis = -1, keepdims = True)
         

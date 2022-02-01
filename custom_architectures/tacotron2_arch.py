@@ -852,8 +852,9 @@ class Tacotron2(tf.keras.Model):
                  #    tf.TensorSpec([None], dtype=tf.int32, name="input_lengths")
                  #]
                 )
-    def infer(self, inputs, input_lengths, training = False, ** kwargs):
+    def infer(self, inputs, input_lengths, training = False, max_length = -1, ** kwargs):
         """Call logic."""
+        if max_length <= 0: max_length = self.maximum_iterations
         # create input-mask based on input_lengths
         input_mask = tf.sequence_mask(
             input_lengths,
@@ -893,7 +894,7 @@ class Tacotron2(tf.keras.Model):
             _,
         ) = dynamic_decode(
             self.decoder,
-            maximum_iterations = self.maximum_iterations,
+            maximum_iterations = max_length,
             training = False
         )
 

@@ -1,3 +1,4 @@
+import time
 import logging
 
 from typing import Any
@@ -10,7 +11,9 @@ _queues = {
     'queue' : Queue,
     'stack' : LifoQueue,
     'lifo'  : LifoQueue,
-    'priority' : PriorityQueue
+    'priority'  : PriorityQueue,
+    'max_priority' : PriorityQueue,
+    'min_priority' : PriorityQueue
 }
 
 @dataclass(order = True)
@@ -25,6 +28,7 @@ class ThreadedQueue(Thread):
         Thread.__init__(self)
         
         self.max_workers = max_workers
+        self.is_max_priority    = 'max' in mode
 
         self.__tasks    = _queues[mode](max_size)
         self.__runnings = 0
@@ -84,7 +88,7 @@ class ThreadedQueue(Thread):
                 * data.data.get('args', []),
                 ** {** self.__default_kwargs, ** data.data.get('kwargs', {})}
             )
-        except Error as e:
+        except Exception as e:
             logging.error('Error occured : {}'.format(e))
         finally:
             self.finish_task(data.index, result)
@@ -116,7 +120,10 @@ class ThreadedQueue(Thread):
                 self.__semaphore_running.release()
         
     def run_task(self, data):
-        if data.data is None: return
+        logging.info('Get a new task : {}'.format(data))
+        if data.data is None:
+            self.__semaphore.release()
+            return
         
         if not self.multi_producer: return self(data)
 
@@ -127,7 +134,9 @@ class ThreadedQueue(Thread):
         
         while not self.__stop and not (self.__stop_empty and self.__tasks.empty()):
             if self.multi_producer:
+                logging.debug('Try to get semaphore...')
                 self.__semaphore.acquire()
+                
             self.run_task(self.pop())
 
         self.__semaphore_running.acquire(blocking = not self.__stop)
@@ -144,6 +153,8 @@ class ThreadedQueue(Thread):
         if self.closed: raise ValueError("You cannot add more data !")
         
         logging.debug('Adding new data on the queue !')
+        
+        if self.is_max_priority: priority = -priority
         
         self.__tasks.put(Data(
             priority = priority, index = self.add_index(), data = {'args' : args, 'kwargs' : kwargs}
@@ -162,6 +173,17 @@ class ThreadedQueue(Thread):
             self.join()
         return self.results
 
+    def save(self, filename):
+        from utils.file_utils import dump_pickle
+        dump_pickle(filename, self.__tasks)
+    
+    def load(self, filename):
+        from utils.file_utils import load_pickle
+        tasks   = load_pickle(filename)
+        while not tasks.empty():
+            data = tasks.get()
+            self.append(* data.data['args'], priority = data.priority, ** data.data['kwargs'])
+        
 class ThreadWithReturn(Thread):
     def __init__(self, * args, ** kwargs):
         Thread.__init__(self, * args, ** kwargs)

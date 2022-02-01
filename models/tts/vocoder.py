@@ -116,25 +116,19 @@ class Vocoder(object):
         """
         t0 = time.time()
         
-        mels_pred = self.synthesizer.predict(
-            sentences,
-            batch_size  = batch_size,
-            directory   = directory,
-            overwrite   = overwrite,
-            save        = directory is not None and save_mel,
-            ** kwargs
-        )
-        
         result = vocoder_inference(
-            self.vocoder,
-            mels_pred,
+            sentences,
+            vocoder     = self.vocoder,
+            synthesizer = self.synthesizer,
             rate    = self.rate,
-            batch_size  = vocoder_batch_size,
+            batch_size  = batch_size,
+            vocoder_batch_size  = vocoder_batch_size,
             overwrite   = overwrite,
             directory   = directory,
             silence_time    = silence_time,
             display     = display or directory is None,
             play    = play,
+            save_mel    = directory is not None and save_mel,
             ** kwargs
         )
         total_time = time.time() - t0
@@ -166,16 +160,19 @@ class Vocoder(object):
             self.predict(_end_msg[self.lang], ** predict_kwargs)
 
 @timer
-def vocoder_inference(vocoder,
-                      mels_predictions,
+def vocoder_inference(sentences,
+                      vocoder,
+                      synthesizer,
                       pad_value    = -11.,
                       rate     = 22050,
-                      batch_size   = 1,
+                      batch_size   = 8,
+                      vocoder_batch_size    = 1,
                        
-                      ext      = 'mp3',
-                      concat       = True,
-                      overwrite    = False,
-                      directory    = None,
+                      ext       = 'mp3',
+                      concat        = True,
+                      overwrite     = False,
+                      directory     = None,
+                      save_mel      = True,
                       filename      = 'audio_{}.{}',
                       concat_filename  = 'concat_audios_{}.{}',
                        
@@ -190,11 +187,12 @@ def vocoder_inference(vocoder,
         Compute waveglow inference on a list of Synthesizer predictions
         
         Arguments :
-            - vocoder  : vocoder model to use to transform synthesized mel spectrograms to audio
-            - mels_predictions  : list of tuple [(text, infos), ...]
-                Where infos is a dict with at least key 'mels' or 'mel_filenames'
+            - sentences : list of text to read
+            - vocoder   : vocoder model to use to transform synthesized mel spectrograms to audio
+            - synthesizer   : synthesizer to use to transform text to mel spectrogram
             - rate      : audio rate (typically 22050 for NVIDIA's pretrained model)
-            - batch_size    : batch_size to use for prediction (default 1)
+            - batch_size    : batch_size to use for prediction (synthesizer)
+            - vocoder_batch_size    : batch_size to use for prediction (vocoder)
             
             - ext   : extension for audio file (default mp3)
             - concat    : whether to concat all predictions in a big audio
@@ -217,8 +215,10 @@ def vocoder_inference(vocoder,
     def maybe_load_mel(mel):
         return np.load(mel) if isinstance(mel, str) else mel
     
+    if not isinstance(sentences, (list, tuple)): sentences = [sentences]
+    
     if display: tqdm = lambda x: x
-    if len(mels_predictions) > 1: play = False
+    if len(sentences) > 1: play = False
     # define files / dirs to save results
     audio_dir, map_file = None, None
     if directory is not None:
@@ -231,17 +231,31 @@ def vocoder_inference(vocoder,
     if directory is not None and os.path.exists(map_file):
         infos_pred = load_json(map_file)
     
+    to_synthesize = sentences if overwrite else [
+        s for s in sentences if not infos_pred.get(s, {}).get('audio', None)
+    ]
+    synthesized = synthesizer.predict(
+        to_synthesize,
+        batch_size  = batch_size,
+        directory   = directory,
+        overwrite   = overwrite,
+        save        = directory is not None and save_mel,
+        ** kwargs
+    )
+    for (txt, infos) in synthesized:
+        infos_pred.setdefault(txt, infos)
+    
     # Define variables for batch inference
     uniques = {}
     texts, mels, is_last = [], [], []
-    for text, infos in mels_predictions:
+    for text in sentences:
         # Store processed text to not re-process them
         if text in uniques: continue
         uniques[text] = True
         
         # Skip this text if audio already exists
-        infos_pred.setdefault(text, {})
-        if 'audio' in infos_pred[text] and not overwrite: continue
+        infos = infos_pred[text]
+        if 'audio' in infos and not overwrite: continue
         # Add information to process
         texts   += [text] * len(infos['mels'])
         mels    += infos['mels']
@@ -251,10 +265,10 @@ def vocoder_inference(vocoder,
     silence = np.zeros((int(rate * silence_time),))
     
     audio_parts = {}
-    for start in tqdm(range(0, len(mels), batch_size)):
+    for start in tqdm(range(0, len(mels), vocoder_batch_size)):
         time_logger.start_timer('processing')
         # Load all mels as np.ndarray
-        batch = [maybe_load_mel(m) for m in mels[start : start + batch_size]]
+        batch = [maybe_load_mel(m) for m in mels[start : start + vocoder_batch_size]]
         # Pad batch for inference
         batch = pad_batch(batch, pad_value = pad_value)
         
@@ -262,13 +276,13 @@ def vocoder_inference(vocoder,
         
         # Perform vocoder inference
         audios = vocoder.infer(batch)
-        
+
         # Process each audio individually
         for i in range(len(audios)):
             idx = start + i
             audio, text, mel, last_part = audios[i], texts[idx], mels[idx], is_last[idx]
             # Truncate audio if needed
-            if batch_size > 1: audio = audio[:len(mel) * 1024]
+            if vocoder_batch_size > 1: audio = audio[:len(mel) * 1024]
             # Add audio + silence to the corresponding text
             audio_parts.setdefault(text, [])
             audio_parts[text] += [audio, silence]
@@ -299,22 +313,24 @@ def vocoder_inference(vocoder,
                     'audio' : audio_filename,
                     'duree' : len(audio) / rate
                 })
-                # Display audio (with text) if required
-                if display:
-                    time_logger.start_timer('display')
 
-                    print("Text : {}\n".format(text))
-                    display_audio(audio, rate = rate, play = play)
-                    
-                    time_logger.stop_timer('display')
+    if display:
+        time_logger.start_timer('display')
+        
+        for text in sentences:
+            print("Text : {}\n".format(text))
+            audio = audio_parts.get(text, infos_pred[text]['audio'])
+            display_audio(audio, rate = rate, play = play)
+        
+        time_logger.stop_timer('display')
     
     # Concat all sentences as a big audio (if required)
-    if len(mels_predictions) > 1 and concat and (audio_dir is not None or display):
+    if len(sentences) > 1 and concat and (audio_dir is not None or display):
         # Compute full text / audio by concatenating each sentence 
-        concat_text   = '\n'.join([text for text, _ in mels_predictions])
+        concat_text   = '\n'.join(sentences)
         concat_audio  = np.concatenate([
             audio_parts.get(text, load_audio(infos_pred[text]['audio'], rate))
-            for text, _ in mels_predictions
+            for text in sentences
         ])
         # Save full audio (if required)
         audio_filename = concat_audio
@@ -346,5 +362,5 @@ def vocoder_inference(vocoder,
     if map_file is not None:
         dump_json(map_file, infos_pred, indent = 4)
     
-    return [(text, infos_pred[text]) for text, _ in mels_predictions]
+    return [(text, infos_pred[text]) for text in sentences]
 

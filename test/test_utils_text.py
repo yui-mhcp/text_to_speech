@@ -58,7 +58,7 @@ def test_text_encoder(encoder):
     
     assert_function(encoder.join, * _default_sentences)
     
-@Test
+@Test(overwrite = True)
 def test_cleaners():
     text_en = " HellO WOrld ! "
     text_fr = "Bonjour à tous, comment ça va?"
@@ -76,7 +76,7 @@ def test_cleaners():
     assert_equal( " hello world ! ", lowercase, text_en)
     
     assert_equal("Bonjour a tous, comment ca va?", convert_to_ascii, text_fr)
-    assert_equal(text_fr, fr_convert_to_ascii, text_fr)
+    assert_equal("Bonjour a tous, comment ça va?", fr_convert_to_ascii, text_fr)
 
 @Test
 def test_english_text_encoder():

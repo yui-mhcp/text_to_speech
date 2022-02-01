@@ -71,3 +71,18 @@ def concat_sequences(seq1, seq2, pad_value):
             seq1 = tf.pad(seq1, padding, constant_values = pad_value)
     
     return tf.concat([seq1, seq2], axis = 0)
+
+def pad_to_multiple(seq, multiple, axis = 1, pad_after = True):
+    if axis < 0: axis = len(tf.shape(seq)) + axis
+    rest = tf.shape(seq)[axis] % multiple
+    if rest != 0:
+        pad = (0, multiple - rest) if pad_after else (multiple - rest, 0)
+        padding = [
+            (0, 0) for _ in range(axis)] + [pad] + [
+            (0, 0) for _ in range(axis + 1, len(tf.shape(seq)))
+        ]
+        
+        seq = tf.pad(seq, padding)
+        
+    return seq
+

@@ -11,6 +11,7 @@ from utils.text.text_processing import bytes_to_unicode, bpe, split_and_join
 from utils.distance.distance_method import distance
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
+_potential_sep_token    = ('\n', ' ')
 
 CHAR_LEVEL  = 0
 TOKEN_LEVEL = 1
@@ -163,6 +164,10 @@ class TextEncoder(object):
     @property
     def eos_token_idx(self):
         return self._symbol_to_id[self.eos_token] if self.use_sos_and_eos else -1
+    
+    @property
+    def sep_token_idx(self):
+        return self._symbol_to_id[self.sep_token] if self.sep_token is not None else -1
     
     @property
     def blank_token_idx(self):
@@ -362,7 +367,8 @@ class TextEncoder(object):
                 ('list', 'np', 'tf'), return_type
             ))
 
-    def decode(self, sequence, skip_padding = True, attach_punctuation = True, remove_tokens = False):
+    def decode(self, sequence, skip_padding = True, attach_punctuation = True,
+               remove_tokens = False):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
         if isinstance(sequence, tf.Tensor): sequence = sequence.numpy()
         if hasattr(sequence, 'shape'):
@@ -387,7 +393,7 @@ class TextEncoder(object):
             cleaned = []
             for token in tokens:
                 if token not in _special_tokens: cleaned.append(token)
-                if token == self.eos_token: break
+                if skip_padding and token == self.eos_token and len(cleaned) > 0: break
             tokens = cleaned
         
         if self.byte_encoder is not None:

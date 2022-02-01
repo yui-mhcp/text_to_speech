@@ -1,4 +1,5 @@
 import os
+import glob
 import numpy as np
 import pandas as pd
 
@@ -6,6 +7,17 @@ from utils import load_json
 from custom_train_objects.history import History
 
 _pretrained_models_folder = 'pretrained_models'
+
+def get_models(pattern = None, model_class = None):
+    names = os.listdir(_pretrained_models_folder) if pattern is None else [
+        os.path.basename(f) for f in glob.glob(os.path.join(_pretrained_models_folder, pattern))
+    ]
+    
+    names = [n for n in names if is_model_name(n)]
+    if model_class is not None:
+        if not isinstance(model_class, (list, tuple)): model_class = [model_class]
+        names = [n for n in names if get_model_class(n) in model_class]
+    return names
 
 def get_model_dir(name, * args):
     return os.path.join(_pretrained_models_folder, name, * args)
@@ -19,6 +31,9 @@ def get_model_infos(name):
             'class_name' : name.__class__.__name__, 'config' : name.get_config(with_trackable_variables = False)
         }
     return load_json(get_model_dir(name, 'config.json'), default = {})
+
+def get_model_class(name):
+    return get_model_infos(name).get('class_name', None)
 
 def get_model_history(name):
     return History.load(get_model_dir(name, 'saving', 'historique.json'))

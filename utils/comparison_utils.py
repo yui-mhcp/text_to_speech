@@ -3,6 +3,22 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+def is_in(target, value, nested_test = False, ** kwargs):
+    if nested_test:
+        cmp         = [is_in(target, v, ** kwargs) for v in value]
+        invalids    = [(i, msg) for i, (eq, msg) in enumerate(cmp) if not eq]
+        if len(invalids) == 0: return True, ''
+        
+        return False, "Invalid items ({}) :\n{}".format(
+            len(invalids), '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
+        )
+    try:
+        if not isinstance(target, (list, tuple)): target = [target]
+        missing = [k for k in target if k not in value]
+        return len(missing) == 0, '{} are missing ({})'.format(missing, value)
+    except TypeError as e:
+        return False, str(e)
+
 def is_smaller(target, value):
     try:
         return value < target, 'value is{} smaller than target'.format('' if value < target else ' not')
@@ -17,7 +33,7 @@ def is_greater(target, value):
 
 def is_equal(target, value, ** kwargs):
     try:
-        compare(target, value)
+        compare(target, value, ** kwargs)
         return True, 'Value are equals !'
     except AssertionError as e:
         return False, str(e)
@@ -64,7 +80,8 @@ def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
     else:
         compare_primitive(target, value, ** kwargs)
 
-def compare_list(target, value, ** kwargs):
+def compare_list(target, value, nested_test = False, ** kwargs):
+    if nested_test: target = [target] * len(value)
     assert len(target) == len(value), "Target length {} != value length {}".format(len(target), len(value))
     
     try:
@@ -72,17 +89,21 @@ def compare_list(target, value, ** kwargs):
     except ValueError as e:
         pass
     
-    cmp         = [is_equal(it1, it2) for it1, it2 in zip(target, value)]
+    cmp         = [is_equal(it1, it2, ** kwargs) for it1, it2 in zip(target, value)]
     invalids    = [(i, msg) for i, (eq, msg) in enumerate(cmp) if not eq]
 
     assert len(invalids) == 0, "Invalid items ({}) :\n{}".format(
         len(invalids), '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
     )
     
-def compare_dict(target, value, ** kwargs):
+def compare_dict(target, value, fields = None, ** kwargs):
+    if fields is not None:
+        target = {k : target[k] for k in target if k in fields}
+        value = {k : value[k] for k in value if k in fields}
+
     missing_v_keys  = [k for k in target if k not in value]
     missing_t_keys  = [k for k in value if k not in target]
-    
+        
     assert len(missing_v_keys) + len(missing_t_keys) == 0, "Missing keys in value : {}\nAdditionnal keys in value : {}".format(missing_v_keys, missing_t_keys)
     
     cmp         = {k : is_equal(target[k], value[k]) for k in target}

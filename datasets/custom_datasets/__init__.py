@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import logging
 import pandas as pd
 
@@ -79,7 +91,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
     logging.info('Loading dataset {}...'.format(ds_name))
     
     if 'train'  not in _custom_datasets.get(ds_name, {}):
-        ds_kwargs = {**_custom_datasets.get(ds_name, {}), **kwargs}
+        ds_kwargs = {**_custom_datasets.get(ds_name, {}), ** kwargs}
         ds_kwargs = format_kwargs(ds_kwargs)
 
         datasets = process_fn(** ds_kwargs)
@@ -90,7 +102,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
         datasets = {}
         
         if 'train' in modes:
-            train_kwargs = {**_custom_datasets[ds_name]['train'], **kwargs, **train_kw}
+            train_kwargs = {** _custom_datasets[ds_name]['train'], ** kwargs, ** train_kw}
             train_kwargs = format_kwargs(train_kwargs)
 
             train_dataset = process_fn(** train_kwargs)
@@ -100,7 +112,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
             datasets['train'] = train_dataset
             
         if 'valid' in modes:
-            valid_kwargs = {**_custom_datasets[ds_name]['valid'], **kwargs, **valid_kw}
+            valid_kwargs = {** _custom_datasets[ds_name]['valid'], ** kwargs, ** valid_kw}
             valid_kwargs = format_kwargs(valid_kwargs)
 
             valid_dataset = process_fn(** valid_kwargs)

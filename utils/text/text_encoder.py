@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
 import logging
 import regex as re
@@ -7,7 +19,7 @@ import tensorflow as tf
 
 from utils import dump_json, load_json, flatten
 from utils.text import cleaners as cleaners_module
-from utils.text.text_processing import bytes_to_unicode, bpe, split_and_join
+from utils.text.text_processing import bytes_to_unicode, bpe, split_sentence, split_and_join
 from utils.distance.distance_method import distance
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
@@ -215,19 +227,25 @@ class TextEncoder(object):
             _space = ' ' if self.byte_encoder is None else self.byte_encoder.get(32, ' ')
             return self[token].startswith(_space)
     
-    def clean_text(self, text, tokens = {}):
+    def clean_text(self, text, tokens = {}, ** kwargs):
         """ Apply all cleaners to 'text' """
-        if not isinstance(tokens, dict): tokens = {self.clean_text(token) : token for token in tokens}
+        if not isinstance(tokens, dict):
+            tokens = {self.clean_text(token, ** kwargs) : token for token in tokens}
         
         text = text.strip()
         for cleaner in self.cleaners_fn:
-            kwargs = {}
-            if isinstance(cleaner, tuple): cleaner, kwargs = cleaner
+            cleaner_config = {}
+            if isinstance(cleaner, tuple): cleaner, cleaner_config = cleaner
             
-            text = cleaner(text, ** kwargs)
+            text = cleaner(text, ** {** cleaner_config, ** kwargs})
         
         for cleaned, token in tokens.items():
             text = text.replace(cleaned, token)
+
+        if self.level == CHAR_LEVEL and self.ukn_token_idx == -1:
+            text = ''.join([c for c in text if c in self])
+            text = text.strip()
+
         return text
     
     def split_text(self, text, tokens = None):
@@ -308,8 +326,10 @@ class TextEncoder(object):
         elif self.level == TOKEN_LEVEL and self.bpe_pairs is not None:
             return self._bpe_tokenize(token)
     
-    def tokenize(self, text):
-        text = self.clean_text(text, self._cleaned_tokens)
+    def tokenize(self, text, ** kwargs):
+        text = self.clean_text(text, self._cleaned_tokens, ** kwargs)
+        logging.debug('Cleaned text : {}'.format(text))
+
         splitted = self.split_text(text, self._special_tokens)
         
         tokens = []
@@ -321,7 +341,7 @@ class TextEncoder(object):
                 tokens.append(tok)
         return tokens
     
-    def encode(self, text, add_sos_and_eos = None, return_type = 'np'):
+    def encode(self, text, add_sos_and_eos = None, return_type = 'np', ** kwargs):
         """
             Encode text in np.ndarray
             Arguments :
@@ -337,25 +357,25 @@ class TextEncoder(object):
         """
         if isinstance(text, pd.DataFrame):
             return [self.encode(
-                row, add_sos_and_eos = add_sos_and_eos, return_type = return_type
+                row, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for _, row in text.iterrows()]
         if isinstance(text, (dict, pd.Series)): text = text['text']
         if isinstance(text, tf.Tensor): text = text.numpy()
         if isinstance(text, bytes): text = text.decode('utf-8')
         if isinstance(text, (list, tuple, np.ndarray)):
             return [self.encode(
-                t, add_sos_and_eos = add_sos_and_eos, return_type = return_type
+                t, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for t in text]
         
         if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
         
-        tokens  = self.tokenize(text)
-        
+        tokens  = self.tokenize(text, ** kwargs)
+
         tokens = [
             self._symbol_to_id.get(token, self.ukn_token_idx) for token in tokens
         ]
         tokens = [token for token in tokens if token is not None and token != -1]
-        
+
         if add_sos_and_eos:
             tokens = [self.sos_token_idx] + tokens + [self.eos_token_idx]
         
@@ -372,8 +392,8 @@ class TextEncoder(object):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
         if isinstance(sequence, tf.Tensor): sequence = sequence.numpy()
         if hasattr(sequence, 'shape'):
-            if len(sequence.shape) == 3: sequence = np.argmax(sequence, axis = -1)
-            if len(sequence.shape) == 2:
+            if sequence.dtype in (np.float32, np.float64): sequence = np.argmax(sequence, axis = -1)
+            if len(sequence.shape) > 1:
                 return [self.decode(
                     s, skip_padding = skip_padding, attach_punctuation = attach_punctuation,
                     remove_tokens = remove_tokens
@@ -414,7 +434,7 @@ class TextEncoder(object):
     def invert(self, text, add_sos_and_eos = False, ** kwargs):
         return self.decode(self.encode(text, add_sos_and_eos = add_sos_and_eos, ** kwargs))
     
-    def split(self, text, max_length, prefix = None, suffix = None, split_on_words = False,
+    def split(self, text, max_length, prefix = None, suffix = None, split_mode = 'token',
               add_sos_and_eos = None, sep_token = None, not_split = None, ** kwargs):
         """
             Encode and split `text` such that each splitted part has : 
@@ -435,11 +455,33 @@ class TextEncoder(object):
                         n_prev, n_next = max(n_prev, pos), max(n_prev, len(ns) - pos)
             return n_prev, n_next
         
+        def _split_encoded(encoded, max_length):
+            _decrease   = False
+            splitted    = []
+            start, end = 0, max_length
+            while start < len(encoded):
+                n_prev, n_next = _can_split(encoded, end, encoded_not_split)
+                if end >= len(encoded) or end <= start or (n_prev == 0 and self.is_start_of_word(encoded[end], previous = encoded[end - 1])):
+                    if end <= start: end = start + max_length
+                    splitted.append(encoded[start : end])
+                    start, end, _decrease = end, end + max(max_length, n_next), True
+                else:
+                    if _decrease:
+                        end -= max(1, n_prev)
+                    else:
+                        end += max(1, n_next)
+            return splitted
+            
+        assert split_mode in ('word', 'token', 'sentence')
+
         if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
         if sep_token is None: sep_token = self.sep_token
         if not_split is None: not_split = []
         elif not isinstance(not_split, (list, tuple, np.ndarray)): not_split = [not_split]
-        encoded_not_split = [self.encode(' {} '.format(ns.strip()), add_sos_and_eos = False, return_type = 'list') for ns in not_split]
+        
+        encoded_not_split = [self.encode(
+            ' {} '.format(ns.strip()), add_sos_and_eos = False, return_type = 'list'
+        ) for ns in not_split]
 
         sep_token_idx = self[sep_token] if sep_token else -1
         
@@ -450,35 +492,49 @@ class TextEncoder(object):
         if add_sos_and_eos:
             prefix, suffix = [self.sos_token_idx] + prefix, suffix + [self.eos_token_idx]
         
-        if split_on_words:
+        if split_mode == 'words':
             # split such that each sub-part contains `max_length` words (no matter the final number of tokens)
             text = text.split()
-            splitted = encode(
-                [text[i : i + max_length] for i in range(0, len(text), max_length)],
+            splitted = self.encode(
+                ' '.join([text[i : i + max_length] for i in range(0, len(text), max_length)]),
                 add_sos_and_eos = False, return_type = 'list'
             )
+        elif split_mode == 'sentence':
+            max_length = max(1, max_length - len(prefix) - len(suffix))
+
+            sentences           = split_sentence(text)
+            encoded_sentences   = [
+                self.encode(sent, add_sos_and_eos = False, return_type = 'list')
+                for sent in sentences
+            ]
             
-        else:
+            splitted, sents, length = [], [], 0
+            for i, (sent, enc) in enumerate(zip(sentences, encoded_sentences)):
+                if length + len(enc) > max_length and length > 0:
+                    encoded = self.encode(
+                        ' '.join(sents), add_sos_and_eos = False, return_type = 'list'
+                    ) if length != len(encoded_sentences[i - 1]) else encoded_sentences[i - 1]
+                    if len(encoded) <= max_length: splitted.append(encoded)
+                    else: splitted.extend(_split_encoded(encoded, max_length))
+                    sents, length = [], 0
+                
+                sents.append(sent)
+                length += len(enc)
+            
+            if length > 0:
+                encoded = self.encode(
+                    ' '.join(sents), add_sos_and_eos = False, return_type = 'list'
+                ) if length != len(encoded_sentences[-1]) else encoded_sentences[-1]
+                splitted.append(encoded)
+        
+        else: # split_mode = 'token'
             # split such that each sub-part has at most `max_length` tokens
             # Note : "at most" because it does not split a word
-            _decrease  = True
             max_length = max(1, max_length - len(prefix) - len(suffix))
             
             encoded = self.encode(text, add_sos_and_eos = False, return_type = 'list')
 
-            splitted = []
-            start, end = 0, max_length
-            while start < len(encoded):
-                n_prev, n_next = _can_split(encoded, end, encoded_not_split)
-                if end >= len(encoded) or end <= start or (n_prev == 0 and self.is_start_of_word(encoded[end], previous = encoded[end] - 1)):
-                    if end <= start: end = start + max_length
-                    splitted.append(encoded[start : end])
-                    start, end, _decrease = end, end + max(max_length, n_next), True
-                else:
-                    if _decrease:
-                        end -= max(1, n_prev)
-                    else:
-                        end += max(1, n_next)
+            splitted = _split_encoded(encoded, max_length)
         
         splitted = [np.array(prefix + part + suffix) for part in splitted]
         
@@ -517,6 +573,29 @@ class TextEncoder(object):
         ]
         
         return self.join(* formatted)
+    
+    def split_and_format(self, pattern, split_key, max_length, ** kwargs):
+        def _to_str(x):
+            if isinstance(x, tf.Tensor): x = x.numpy()
+            if isinstance(x, bytes): x = x.decode('utf-8')
+            return x
+        
+        if not isinstance(pattern, (list, tuple)): pattern = [pattern]
+        pattern = '{sep_token}'.join([_to_str(p) for p in pattern])
+        kwargs  = {k : _to_str(v) for k, v in kwargs.items()}
+        
+        assert pattern.count(split_key) <= 1
+        
+        splitted = pattern.split(split_key)
+        assert len(splitted) == 2, '{} splitted on {} gives {} parts'.format(
+            pattern, split_key, len(splitted)
+        )
+        
+        prefix, suffix = splitted[0][:-1], splitted[1][1:]
+        
+        return self.split(
+            kwargs[split_key], max_length, prefix = prefix, suffix = suffix, ** kwargs
+        )
     
     def distance(self, hypothesis, truth, method = 'edit', ** kwargs):
         """ Compute the levenschtein distance between hypothesis and truth """

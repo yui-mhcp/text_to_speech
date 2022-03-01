@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import copy
 import time
@@ -1125,7 +1137,7 @@ class BaseModel(metaclass = ModelInstances):
             }
             
             callbacks.on_test_batch_end(i, logs = val_metrics)
-                     
+        
         callbacks.on_test_end(logs = self.__history.training_logs)
     
     def test(self, 
@@ -1560,9 +1572,9 @@ class BaseModel(metaclass = ModelInstances):
             
         folder = get_model_dir(nom)
         if not os.path.exists(folder):
-            raise ValueError("Pretrained model {} does not exist !".format(pretrained))
+            raise ValueError("Pretrained model {} does not exist !".format(nom))
         
-        if new_name in os.listdir(_pretrained_models_folder):
+        if is_model_name(new_name):
             raise ValueError("Model {} already exist, cannot rename model !".format(new_name))
 
         _rename_in_file(folder)

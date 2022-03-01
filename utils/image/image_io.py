@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import cv2
 import glob
@@ -38,7 +50,7 @@ def get_image_size(image):
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
-def load_image(filename, target_shape = None, mode = None, dtype = tf.float32):
+def load_image(filename, target_shape = None, mode = None, channels = 3, dtype = tf.float32):
     """
         Load an image to a tf.Tensor by supporting different formats
         
@@ -63,7 +75,7 @@ def load_image(filename, target_shape = None, mode = None, dtype = tf.float32):
     
     if filename.dtype == tf.string:
         image = tf.io.read_file(filename)
-        image = tf.image.decode_image(image, channels = 3, expand_animations = False)
+        image = tf.image.decode_image(image, channels = channels, expand_animations = False)
     else:
         image = filename
     

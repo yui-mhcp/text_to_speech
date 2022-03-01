@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import time
 import logging
@@ -215,6 +227,17 @@ def vocoder_inference(sentences,
     def maybe_load_mel(mel):
         return np.load(mel) if isinstance(mel, str) else mel
     
+    def maybe_save_silence():
+        silence_filename = silence
+        if audio_dir is not None:
+            silence_filename = os.path.join(audio_dir, filename.format('silence', ext))
+            if not os.path.exists(silence_filename):
+                write_audio(silence, silence_filename, rate = rate)
+        
+        return {'audio' : silence_filename, 'duree' : silence_time}
+    
+    time_logger.start_timer('initialization')
+    
     if not isinstance(sentences, (list, tuple)): sentences = [sentences]
     
     if display: tqdm = lambda x: x
@@ -234,6 +257,9 @@ def vocoder_inference(sentences,
     to_synthesize = sentences if overwrite else [
         s for s in sentences if not infos_pred.get(s, {}).get('audio', None)
     ]
+
+    time_logger.stop_timer('initialization')
+
     synthesized = synthesizer.predict(
         to_synthesize,
         batch_size  = batch_size,
@@ -242,8 +268,15 @@ def vocoder_inference(sentences,
         save        = directory is not None and save_mel,
         ** kwargs
     )
+    
+    time_logger.start_timer('processing')
+
     for (txt, infos) in synthesized:
-        infos_pred.setdefault(txt, infos)
+        infos_pred.setdefault(txt, {})
+        infos_pred[txt].update(infos)
+    
+    # Define silence waveform
+    silence = np.zeros((int(rate * silence_time),))
     
     # Define variables for batch inference
     uniques = {}
@@ -251,6 +284,10 @@ def vocoder_inference(sentences,
     for text in sentences:
         # Store processed text to not re-process them
         if text in uniques: continue
+        elif 'mels' not in infos_pred.get(text, {}):
+            infos_pred[text] = maybe_save_silence()
+            continue
+        
         uniques[text] = True
         
         # Skip this text if audio already exists
@@ -261,21 +298,23 @@ def vocoder_inference(sentences,
         mels    += infos['mels']
         is_last += [0] * (len(infos['mels']) - 1) + [1]
     
-    # Define silence waveform
-    silence = np.zeros((int(rate * silence_time),))
-    
+    time_logger.stop_timer('processing')
+
     audio_parts = {}
     for start in tqdm(range(0, len(mels), vocoder_batch_size)):
-        time_logger.start_timer('processing')
+        time_logger.start_timer('batching')
         # Load all mels as np.ndarray
         batch = [maybe_load_mel(m) for m in mels[start : start + vocoder_batch_size]]
         # Pad batch for inference
         batch = pad_batch(batch, pad_value = pad_value)
         
-        time_logger.stop_timer('processing')
-        
+        time_logger.stop_timer('batching')
+
         # Perform vocoder inference
-        audios = vocoder.infer(batch)
+        if batch.shape[1] > 0:
+            audios = vocoder.infer(batch)
+        else:
+            audios = [silence] * len(batch)
 
         # Process each audio individually
         for i in range(len(audios)):
@@ -303,6 +342,8 @@ def vocoder_inference(sentences,
                         'audio', 
                         os.path.join(audio_dir, filename.format(num_pred, ext))
                     )
+                    if not save_mel:
+                        infos_pred[text].pop('mels', None)
                     # Save audio to filename
                     write_audio(audio, audio_filename, rate)
                     
@@ -360,7 +401,9 @@ def vocoder_inference(sentences,
             time_logger.stop_timer('display')
     
     if map_file is not None:
+        time_logger.start_timer('saving json')
         dump_json(map_file, infos_pred, indent = 4)
+        time_logger.stop_timer('saving json')
     
-    return [(text, infos_pred[text]) for text in sentences]
+    return [(text, infos_pred.get(text, maybe_save_silence())) for text in sentences]
 

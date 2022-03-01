@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from loggers import timer
 from utils.generic_utils import print_objects
 
@@ -20,7 +32,7 @@ def get_dataset(ds_name, ds_type = 'tf', ** kwargs):
         if all([n in _custom_datasets for n in ds_name]):
             return load_dataset(ds_name, ** kwargs)
         else:
-            return [get_dataset(n, t, **kwargs) for n, t in zip(ds_name, ds_type)]
+            return [get_dataset(n, t, ** kwargs) for n, t in zip(ds_name, ds_type)]
     elif isinstance(ds_name, dict):
         return [get_dataset(n, ** ds_args) for n, ds_args in ds_name.items()]
     

@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import cv2
 import math
 import umap
@@ -73,7 +85,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
             - kwargs    : additional kwargs to the plot function
     """
     def normalize_xy(x, y, config):
-        p_type = plot_type
+        p_type, p_config = plot_type, config.copy()
         if callable(y):
             if x is None:
                 assert xlim is not None, "When y is a callable, you must specify x or xlim"
@@ -84,15 +96,32 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         elif isinstance(y, dict):
             x, yi, p_type = y.pop('x', x), y.pop('y'), y.pop('plot_type', plot_type)
 
-            config, y = {** config, ** y}, yi
+            p_config, y = {** p_config, ** y}, yi
         
         datas = (x, y) if x is not None else (y, )
-        return datas, p_type, config
+        return datas, p_type, p_config
     
     def _plot_data(ax, x, y, config):
         datas, p_type, plot_config = normalize_xy(x, y, config)
-
-        return getattr(ax, p_type)(* datas, ** plot_config)
+        
+        if p_type == 'scatter' and isinstance(plot_config.get('marker', 'o'), (list, tuple, np.ndarray)):
+            markers = plot_config.pop('marker')
+            im = None
+            for m in np.unique(markers):
+                datas_marker = [
+                    [d for i, d in enumerate(datas_i) if markers[i] == m]
+                    for datas_i in datas
+                ]
+                config_marker   = {
+                    k : v if not isinstance(v, (list, tuple, np.ndarray)) else [
+                        v_i for i, v_i in enumerate(v) if markers[i] == m
+                    ] for k, v in plot_config.items()
+                }
+                im = getattr(ax, p_type)(* datas_marker, marker = m, ** config_marker)
+            return im
+        else:
+            if p_type != 'scatter': plot_config.pop('marker', None)
+            return getattr(ax, p_type)(* datas, ** plot_config)
 
     if not hasattr(plt, plot_type):
         raise ValueError("plot_type must be a valid matplotlib.pyplot method (such as plot, scatter, hist, imshow, ...)\n  Got : {}".format(plot_type))
@@ -206,7 +235,9 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
 def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nrows = None,
                   use_subplots = False, horizontal = False,
                   # for pd.DataFrame grouping
-                  by = None, corr = None, color_corr = None, color_order = None,
+                  by = None, corr = None,
+                  color_corr = None, color_order = None,
+                  shape_corr = None, shape_order = None,
                   link_from_to = None, links = [],
                   
                   x = None, vlines = None, hlines = None, vlines_kwargs = {}, hlines_kwargs = {},
@@ -244,7 +275,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                     datas_i.pop(by)
                     datas.append(('{} = {}'.format(by, value), {'x' : datas_i.to_dict('list')}))
             elif corr is not None:
-                corr_config, corr_colors = {}, None
+                corr_config, corr_colors, corr_shapes = {}, None, None
                 if color_corr is not None:
                     if color_corr not in v.columns:
                         logging.error('Color correlation {} is not in data !'.format(color_corr))
@@ -256,9 +287,32 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                         if color_order is not None:
                             if len(color_order) < len(unique_values):
                                 logging.warning('Not enough colors : {} vs {}'.format(len(color_order), len(unique_values)))
+                            elif isinstance(color_order, dict):
+                                corr_colors = [
+                                    color_order[corr_val_i] for corr_val_i in v[color_corr].values
+                                ]
                             else:
                                 corr_colors = [color_order[color_idx] for color_idx in corr_colors]
                         corr_config['c'] = corr_colors
+                
+                if shape_corr is not None:
+                    if shape_corr not in v.columns:
+                        logging.error('Color correlation {} is not in data !'.format(shape_corr))
+                    else:
+                        unique_values = list(v[shape_corr].unique())
+                        corr_shapes = [
+                            unique_values.index(corr_val_i) for corr_val_i in v[shape_corr].values
+                        ]
+                        if shape_order is not None:
+                            if len(shape_order) < len(unique_values):
+                                logging.warning('Not enough colors : {} vs {}'.format(len(shape_order), len(unique_values)))
+                            elif isinstance(shape_order, dict):
+                                corr_shapes = [
+                                    shape_order.get(corr_val_i, 'o') for corr_val_i in v[shape_corr].values
+                                ]
+                            else:
+                                corr_shapes = [shape_order[shape_idx] for shape_idx in corr_shapes]
+                        corr_config['marker'] = corr_shapes
                 
                 link_from, link_to = (None, None) if not link_from_to else link_from_to
                 if link_from is not None:

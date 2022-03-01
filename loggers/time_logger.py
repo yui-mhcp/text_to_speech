@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import time
 import logging
 
@@ -138,8 +150,12 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
             return fn(* args, ** kwargs)
         
         timer = logger.start_timer(name)
-        result = fn(* args, ** kwargs)
-        logger.stop_timer(name)
+        try:
+            result = fn(* args, ** kwargs)
+        except Exception as e:
+            raise e
+        finally:
+            logger.stop_timer(name)
 
         if log_if_root and not logger.timer.running: logger.log_time(name)
         elif force_logging: logger.log_time(timer)

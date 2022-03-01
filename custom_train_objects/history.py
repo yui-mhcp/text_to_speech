@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import logging
 import datetime
@@ -170,6 +182,20 @@ class History(tf.keras.callbacks.Callback):
     def contains(self, metric_name, epoch = -1):
         if len(self) == 0: return False
         return any([metric_name == k for k, _ in self[epoch].items()])
+    
+    def pop(self, test_prefix, epoch = -1):
+        if len(self) == 0: return None
+        if epoch < 0: epoch = epoch + 1 + max(self.__history.keys())
+        metrics = self.__history[epoch]['infos'].get('{}_metrics'.format(test_prefix), [])
+        
+        for k in list(self.__history[epoch]['infos'].keys()):
+            if '_'.join(k.split('_')[:-1]) == test_prefix:
+                print("Pop info {}".format(k))
+                self.__history[epoch]['infos'].pop(k)
+        
+        for metric in metrics:
+            print("Pop metric {}".format(metric))
+            self.__history[epoch]['metrics'].pop(metric)
     
     def set_history(self, history, trainings):
         self.__history      = {int(k) : v for k, v in history.items()}
@@ -431,7 +457,7 @@ class History(tf.keras.callbacks.Callback):
         if isinstance(logs, dict): logs = logs.items()
         
         t = datetime.datetime.now()
-        prefix = 'val' if self.training else 'test'
+        prefix = 'val' if self.training else self.__test_prefix
         for metric, value in logs:
             if metric.startswith('val_') and prefix == 'test':
                 metric = metric.replace('val', prefix)

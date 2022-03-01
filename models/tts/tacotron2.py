@@ -1,3 +1,15 @@
+
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import random
 import logging
@@ -245,12 +257,11 @@ class Tacotron2(BaseModel):
     def compile(self, loss = 'tacotronloss', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
-    def encode_text(self, text):
-        return self.text_encoder.encode(text)
+    def encode_text(self, text, ** kwargs):
+        return self.text_encoder.encode(text, ** kwargs)
     
-    def decode_text(self, encoded):
-        if isinstance(encoded, tf.Tensor): encoded = encoded.numpy()
-        return self.text_encoder.decode(encoded)
+    def decode_text(self, encoded, ** kwargs):
+        return self.text_encoder.decode(encoded, ** kwargs)
         
     def get_mel_input(self, data):
         mel = load_mel(
@@ -400,6 +411,8 @@ class Tacotron2(BaseModel):
                 save    = True,
                 overwrite = False,
                 
+                expand_acronyms = True,
+                
                 tqdm    = lambda x: x,
                 
                 ** kwargs
@@ -422,7 +435,7 @@ class Tacotron2(BaseModel):
         """
         if max_text_length <= 0: max_text_length = self.max_input_length
         
-        time_logger.start_timer('processing')
+        time_logger.start_timer('initialization')
 
         # get saving directory
         if not save:
@@ -457,9 +470,15 @@ class Tacotron2(BaseModel):
             index       += [i] * len(p)
             index_part  += list(range(len(p)))
         # encoded part-sentences 
-        encoded = [self.encode_text(p) for p in flattened]
+        encoded = [self.encode_text(p, to_expand_acronyms = expand_acronyms) for p in flattened]
         
-        time_logger.stop_timer('processing')
+        idx_to_keep = [i for i, enc in enumerate(encoded) if len(enc) > 0]
+        flattened   = [flattened[idx] for idx in idx_to_keep]
+        index       = [index[idx] for idx in idx_to_keep]
+        index_part  = [index_part[idx] for idx in idx_to_keep]
+        encoded     = [encoded[idx] for idx in idx_to_keep]
+        
+        time_logger.stop_timer('initialization')
         
         # for each batch
         num = 0
@@ -468,7 +487,7 @@ class Tacotron2(BaseModel):
             
             batch   = encoded[start_idx : start_idx + batch_size]
             lengths = np.array([len(part) for part in batch])
-            
+
             padded_inputs = pad_batch(batch, 0, dtype = np.int32)
             
             lengths     = tf.cast(lengths, tf.int32)
@@ -483,8 +502,11 @@ class Tacotron2(BaseModel):
             mels, gates, attn_weights = mels.numpy(), gates.numpy(), attn_weights.numpy()
             
             for mel, gate, attn in zip(mels, gates, attn_weights):
+                time_logger.start_timer('post processing')
+                
                 stop_gate   = np.where(gate > 0.5)[0]
                 mel_length  = stop_gate[0] if len(stop_gate) > 0 else len(gate)
+
                 mel         = mel[ : mel_length, :]
                 attn        = attn[ : mel_length, :]
                 
@@ -497,6 +519,8 @@ class Tacotron2(BaseModel):
                     infos_pred[text].setdefault('plots', [])
 
                 infos_pred[text]['splitted'].append(flattened[num])
+                
+                time_logger.stop_timer('post processing')
                 
                 if save:
                     time_logger.start_timer('saving')
@@ -535,10 +559,12 @@ class Tacotron2(BaseModel):
                 num += 1
         
         if save:
+            time_logger.start_timer('json saving')
             dump_json(map_file, infos_pred, indent = 4)
-        
-        return [(p, infos_pred[p]) for p in sentences if p in infos_pred]
-                                    
+            time_logger.stop_timer('json saving')
+
+        return [(p, infos_pred.get(p, {})) for p in sentences if p in infos_pred]
+
     def get_config(self, * args, ** kwargs):
         config = super().get_config(* args, ** kwargs)
         config['lang']      = self.lang

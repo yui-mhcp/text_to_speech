@@ -12,7 +12,6 @@
 
 import numpy as np
 import tensorflow as tf
-import noisereduce as nr
 import librosa.util as librosa_util
 
 from scipy.signal import get_window
@@ -139,14 +138,16 @@ def trim_silence_mel(mel, mode = 'start_end', min_factor = 0.5, ** kwargs):
             frames_amp = tf.reduce_mean(mel, axis = -1)
                     
         start, stop = 0, tf.shape(mel)[0] - 1
-        if 'start' in mode:
-            while frames_amp[start] < min_val: start = start + 1
         if 'end' in mode:
-            while frames_amp[stop] < min_val: stop = stop - 1
+            while stop >= 0 and frames_amp[stop] < min_val: stop = stop - 1
+        if 'start' in mode:
+            while start < stop and frames_amp[start] < min_val: start = start + 1
+        
+        if stop == start: start, stop = 0, tf.shape(mel)[0]
                 
         return mel[start : stop]
     
-def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, ** kwargs):
+def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, use_v1 = True, ** kwargs):
     """
         Use the noisereduce.reduce_noise method in order to reduce audio noise
         It takes as 'noise sample' the 'noise_length' first seconds of the audio
@@ -154,7 +155,12 @@ def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, ** kwarg
     if isinstance(noise_length, float): noise_length = int(noise_length * rate)
     
     if noise is None: noise = audio[: noise_length]
-    return nr.reduce_noise(audio_clip = audio, noise_clip = noise)
+    if use_v1:
+        import noisereduce.noisereducev1 as nr
+        return nr.reduce_noise(audio, noise)
+    else:
+        import noisereduce as nr
+        return nr.reduce_noise(audio, sr = rate, y_noise = noise)
     
 
 def tf_normalize_audio(audio, max_val = 1., dtype = tf.float32):

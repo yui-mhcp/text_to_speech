@@ -20,9 +20,13 @@ _flatten_type   = (None, 'max', 'mean', 'avg', 'average', 'lstm', 'gru', 'bi_lst
 _pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampling')
 
 _str_layers     = {
-    'dense' : Dense, 'conv1d' : Conv1D, 'conv2d' : Conv2D, 'lstm' : LSTM, 'gru' : GRU,
-    'bi_lstm' : lambda * args, ** kwargs: Bidirectional(LSTM(* args, ** kwargs)),
-    'bi_gru'  : lambda * args, ** kwargs: Bidirectional(GRU(* args, ** kwargs))
+    'dense'     : Dense,
+    'conv1d'    : Conv1D,
+    'conv2d'    : Conv2D,
+    'lstm'      : LSTM,
+    'gru'       : GRU,
+    'bi_lstm'   : lambda * args, ** kwargs: Bidirectional(LSTM(* args, ** kwargs)),
+    'bi_gru'    : lambda * args, ** kwargs: Bidirectional(GRU(* args, ** kwargs))
 }
 
 def _get_var(_vars, i):
@@ -112,6 +116,8 @@ def _layer_bn(model, layer_type, n, * args,
               bnorm     = 'after',
               momentum  = 0.99,
               epsilon   = 0.001,
+              bn_axis   = -1,
+              bn_name   = None,
               
               pooling       = None,
               pool_size     = 2,
@@ -133,7 +139,7 @@ def _layer_bn(model, layer_type, n, * args,
     
     if bnorm == 'before':
         x = _add_layer(x, BatchNormalization(
-            momentum = momentum, epsilon = epsilon
+            momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
     
     for i in range(n):
@@ -150,11 +156,11 @@ def _layer_bn(model, layer_type, n, * args,
     
     if bnorm == 'after':
         x = _add_layer(x, BatchNormalization(
-            momentum = momentum, epsilon = epsilon
+            momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
     
     if residual and tuple(x.shape) == tuple(model.shape):
-        x = Add()([x, inputs])
+        x = Add()([x, model])
     elif residual:
         logging.info("Skip connection failed : shape mismatch ({} vs {})".format(
             model.shape, x.shape

@@ -30,7 +30,7 @@ class SV2TTSTacotron2(Tacotron2):
                  speaker_embedding_dim, 
                  use_utterance_embedding    = False,
                  
-                 **kwargs
+                 ** kwargs
                 ):
         self.__embeddings   = None
         self.__speaker_encoder  = None
@@ -39,21 +39,11 @@ class SV2TTSTacotron2(Tacotron2):
         self.use_utterance_embedding    = use_utterance_embedding
         self.speaker_encoder_name       = speaker_encoder_name
         
-        super().__init__(lang = lang, **kwargs)
+        super().__init__(lang = lang, ** kwargs)
     
     def _init_folders(self):
         super()._init_folders()
         os.makedirs(self.embedding_dir, exist_ok=True)
-    
-    def init_train_config(self,
-                          augment_speaker_embedding = False,
-                          use_utterance_embedding = False,
-                          ** kwargs
-                          ):
-        self.augment_speaker_embedding  = augment_speaker_embedding
-        self.use_utterance_embedding    = use_utterance_embedding
-        
-        super().init_train_config(** kwargs)
     
     def _build_model(self, **kwargs):
         super()._build_model(
@@ -75,11 +65,9 @@ class SV2TTSTacotron2(Tacotron2):
     
     @property
     def input_signature(self):
-        return (
-            tf.TensorSpec(shape = (None, None), dtype = tf.int32),
-            tf.TensorSpec(shape = (None,), dtype = tf.int32),
+        return self.text_signature + (
             tf.TensorSpec(shape = (None, self.speaker_embedding_dim), dtype = tf.float32),
-            tf.TensorSpec(shape = (None, None, self.n_mel_channels), dtype = tf.float32),
+            self.audio_signature,
             tf.TensorSpec(shape = (None,), dtype = tf.int32),
         )
     
@@ -87,7 +75,7 @@ class SV2TTSTacotron2(Tacotron2):
     def training_hparams(self):
         return super().training_hparams(
             augment_speaker_embedding  = False,
-            use_utterance_embedding    = False
+            use_utterance_embedding    = None
         )
     
     @property
@@ -224,7 +212,7 @@ class SV2TTSTacotron2(Tacotron2):
         
     def augment_data(self, text, text_length, embedded_speaker, mel_input, 
                      mel_length, mel_output, gate):
-        mel_input = self.augment_mel(mel_input)
+        mel_input = self.augment_audio(mel_input)
         if self.augment_speaker_embedding:
             embedded_speaker    = self.augment_embedding(embedded_speaker)
         
@@ -238,13 +226,9 @@ class SV2TTSTacotron2(Tacotron2):
         
         return (text, text_length, embedded_speaker, mel_input, mel_length), target
                 
-    def get_dataset_config(self, **kwargs):
-        config = super().get_dataset_config(**kwargs)
+    def get_dataset_config(self, ** kwargs):
+        config = super().get_dataset_config(** kwargs)
         config['pad_kwargs']    = {
-            'padded_shapes'     : (
-                (None,), (), (self.speaker_embedding_dim,), (None, self.n_mel_channels), (),
-                (None, self.n_mel_channels), (None,)
-            ),
             'padding_values'    : (self.blank_token_idx, 0, 0., 0., 0, 0., 1.)
         }
         
@@ -256,22 +240,13 @@ class SV2TTSTacotron2(Tacotron2):
         
         return super().train(x, * args, ** kwargs)
     
-    def embed_and_predict(self,
-                          audios,
-                          sentences,                
-                          ** kwargs
-                         ):
+    def embed_and_predict(self, audios, sentences, ** kwargs):
         embeddings = self.embed(audios)
         
         return self.predict(sentences, embeddings = embeddings, ** kwargs)
     
-    def predict(self,
-                * args,
-                embeddings  = None,
-                embedding_mode  = {},
-                overwrite   = True,
-                ** kwargs
-               ):
+    def predict(self, * args, embeddings = None, embedding_mode = {}, overwrite = True,
+                ** kwargs):
         """
             Perform Tacotron-2 inference on all phrases
             Arguments :
@@ -302,7 +277,7 @@ class SV2TTSTacotron2(Tacotron2):
         )
     
     def get_config(self, * args, ** kwargs):
-        config = super().get_config(*args, **kwargs)
+        config = super().get_config(* args, ** kwargs)
         config['speaker_embedding_dim'] = self.speaker_embedding_dim
         config['use_utterance_embedding']   = self.use_utterance_embedding
         config['speaker_encoder_name']      = self.speaker_encoder_name

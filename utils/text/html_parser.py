@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import re
+import logging
 
 _wiki_cleaner = r'(\[edit\]|\[[0-9]\])'
 
@@ -20,6 +21,13 @@ def parse_html(text,
                tag_title    = 'h1',
                title_separator  = ' - ',
                p_separator      = '\n\n',
+               tags_to_keep     = ['p', 'li'],
+               
+               skip_header      = False,
+               skip_footer      = False,
+               skip_aside       = False,
+               skip_hrefs       = False,
+               links_threshold  = 0.1,
                
                is_sub_document  = False,
                remove_pattern   = None,
@@ -35,7 +43,7 @@ def parse_html(text,
         return separator.join([p for p in text if len(p) > 0])
     
     def should_skip_list(title_levels, current_text):
-        if len(title_levels) == 1 and not is_sub_document: return True
+        if len(title_levels) <= 1 and not is_sub_document: return True
         for t in title_levels[1:]:
             for pat in skip_list_section_keywords:
                 if pat.lower() in t.lower():
@@ -56,14 +64,33 @@ def parse_html(text,
 
         return {'text' : []}, formatted
     
+    def _is_list_of_links(tag, text):
+        links = tag.find_all('a')
+        if not links: return False
+        links_text = '\n'.join([l.text for l in links])
+        if len(text) - len(links_text) <= links_threshold * len(text):
+            logging.debug('Skipping tag {} because it is a list of links ! (text : {})'.format(
+                tag.name, text
+            ))
+            return True
+        return False
+    
+    if not isinstance(tags_to_keep, (list, tuple)): tags_to_keep = [tags_to_keep]
     _remove_regex = None if not remove_pattern else re.compile(remove_pattern)
     
     parser = BeautifulSoup(text)
+
+    to_skip_tags    = []
+    if skip_header: to_skip_tags.append('header')
+    if skip_footer: to_skip_tags.append('footer')
+    if skip_aside:  to_skip_tags.append('aside')
     
     tag_titles = [tag_title] + ['h{}'.format(i+2) for i in range(level)]
-    tags = ['p', 'li'] + tag_titles
+    tags = tags_to_keep + tag_titles + to_skip_tags
     
     title_levels = []
+    
+    to_skip = []
     
     paragraphs = []
     current_paragraph = {'text' : []}
@@ -78,7 +105,20 @@ def parse_html(text,
             
             continue
         
+        if any([skip_tag in tag.name for skip_tag in to_skip_tags]):
+            _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
+            logging.debug('Adding {} for skiping (text {})'.format(tag.name, _cleaned_text))
+            to_skip.append(tag)
+            continue
+        
+        if any([tag in skip.find_all(tag.name) for skip in to_skip]):
+            _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
+            logging.debug('Skipping tag {} with text {}'.format(tag.name, _cleaned_text))
+            continue
+        
         text = tag.text.strip()
+        if skip_hrefs and _is_list_of_links(tag, text):
+            continue
         if 'p' in tag.name:
             if text:
                 current_paragraph['text'].append(text)
@@ -95,7 +135,9 @@ def parse_html(text,
                 current_paragraph['text'][-1] += '\n- ' + text
         
     
-    current_paragraph, parsed = normalize_paragraph(title_levels, current_paragraph_idx, current_paragraph)
+    current_paragraph, parsed = normalize_paragraph(
+        title_levels, current_paragraph_idx, current_paragraph
+    )
     if parsed: paragraphs.append(parsed)
     
     return paragraphs

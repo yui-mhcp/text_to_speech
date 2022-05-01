@@ -16,7 +16,7 @@ from utils.audio import load_audio, read_audio, write_audio, trim_silence
 
 from unitest import Test, assert_function, assert_equal, assert_smaller
 
-_filename = os.path.join('test', '__datas', 'audio_en.wav')
+_filename = os.path.join('unitest', '__datas', 'audio_en.wav')
 
 @Test
 def test_audio_io():
@@ -24,6 +24,11 @@ def test_audio_io():
     
     assert_equal(16000, rate)
     assert_equal(64880, len(audio))
+    
+    assert_function(load_audio, _filename, rate = 22050)
+    assert_function(load_audio, _filename, rate = rate, reduce_noise = True)
+    assert_function(load_audio, _filename, rate = rate, trim_silence = True)
+    assert_function(load_audio, _filename, rate = rate, trim_silence = True, method = 'window')
     
     trimmed = trim_silence(audio, rate = rate, method = 'window')
     
@@ -57,7 +62,7 @@ def test_stft():
     assert_equal(original, load_mel, _filename, stft)
     assert_equal(trimmed, load_mel, _filename, stft, trim_silence = True)
     
-    stft_filename = os.path.join('test', '__outputs',  'stft_config.json')
+    stft_filename = os.path.join('unitest', '__outputs',  'stft_config.json')
 
     stft.save_to_file(stft_filename)
     restored = TacotronSTFT.load_from_file(stft_filename)

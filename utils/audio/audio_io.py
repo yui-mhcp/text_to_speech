@@ -87,9 +87,8 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
     if len(mel.shape) == 3: mel = tf.squeeze(mel, 0)
     
     if trim_mode is not None:
-        mel = audio_processing.trim_silence(
-            mel, method = 'mel', mode = trim_mode, ** kwargs
-        )
+        kwargs.update({'method' : trim_mode, 'rate' : stft_fn.rate})
+        mel = audio_processing.trim_silence(mel, ** kwargs)
     
     return mel
 
@@ -213,19 +212,22 @@ def read_librosa(filename):
     audio, rate = librosa.load(filename, sr = None)
     return rate, audio
 
-def read_mp4(filename):
+def read_video_audio(filename):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
         logging.error("You must install moviepy : pip install moviepy")
         return None
 
-    video = VideoFileClip(filename)
-    audio = video.audio
-    array = audio.to_soundarray()
+    with VideoFileClip(filename) as video:
+        audio = video.audio
+
+        fps     = audio.fps
+        array   = audio.to_soundarray()
+    
     if len(array.shape) > 1: array = array[:,0]
-        
-    return audio.fps, array
+    
+    return fps, array
 
 """ 
     Méthodes pour sauver de l'audio 
@@ -262,13 +264,15 @@ def write_pydub(audio_np, filename, rate):
     file = audio.export(filename, format = filename.split('.')[-1])
     file.close()
     
-""" Fonction de processing de l'audio """
+""" Processing functions to read / write audios depending of the extension """
+
+_video_ext  = ('mp4', 'mov', 'ovg', 'avi')
 
 _supported_audio_formats = {
+    ** {ext : {'read' : read_video_audio} for ext in _video_ext},
     'wav'   : {'read' : read_wav, 'write' : write_wav},
     'mp3'   : {'read' : read_pydub, 'write' : write_pydub},
     'm4a'   : {'read' : read_pydub, 'write' : write_pydub},
-    'mp4'   : {'read' : read_mp4},
     'flac'  : {'read' : read_librosa},
     'opus'  : {'read' : read_librosa}
 }

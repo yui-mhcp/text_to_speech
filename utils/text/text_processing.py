@@ -241,6 +241,10 @@ def create_transformer_masks(inp, target, input_pad_value = 0, target_pad_value 
     
     return padding_mask, combined_mask
     
+def extract_sentence(text, pattern):
+    pattern = pattern.lower()
+    return [sent for sent in split_sentence(text) if pattern in sent.lower()]
+    
 def split_and_join(text, pattern):
     splitted = text.split(pattern)
     for i in reversed(range(1, len(splitted))):

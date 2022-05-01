@@ -28,6 +28,13 @@ from sklearn.manifold import TSNE
 
 _tick_label_limit = 20
 
+_data_iterable  = (list, tuple, np.ndarray)
+
+_keys_to_propagate  = (
+    'x', 'hlines', 'vlines', 'hlines_kwargs', 'vlines_kwargs',
+    'xtick_labels', 'ytick_labels', 'tick_labels'
+)
+
 def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = None,
 
          title = None, xlabel = None, ylabel = None, 
@@ -104,7 +111,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     def _plot_data(ax, x, y, config):
         datas, p_type, plot_config = normalize_xy(x, y, config)
         
-        if p_type == 'scatter' and isinstance(plot_config.get('marker', 'o'), (list, tuple, np.ndarray)):
+        if p_type == 'scatter' and isinstance(plot_config.get('marker', 'o'), _data_iterable):
             markers = plot_config.pop('marker')
             im = None
             for m in np.unique(markers):
@@ -113,7 +120,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
                     for datas_i in datas
                 ]
                 config_marker   = {
-                    k : v if not isinstance(v, (list, tuple, np.ndarray)) else [
+                    k : v if not isinstance(v, _data_iterable) else [
                         v_i for i, v_i in enumerate(v) if markers[i] == m
                     ] for k, v in plot_config.items()
                 }
@@ -180,28 +187,28 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         im = _plot_data(ax, x, y, kwargs)
     
     if hlines is not None:
+        hlines_kwargs.setdefault('colors', color)
         if xlim is None:
-            if x is None: xmin, xmax = 0, len(y)
-            else: xmin, xmax = min(x), max(x)
+            h_colors = hlines_kwargs.pop('colors')
+            if not isinstance(hlines, _data_iterable): hlines = [hlines]
+            if not isinstance(h_colors, _data_iterable): h_colors = [h_colors]
+            if len(h_colors) < len(hlines): h_colors = h_colors * len(hlines)
+            for line, lc in zip(hlines, h_colors): ax.axhline(line, color = lc, ** hlines_kwargs)
         else:
             xmin, xmax = xlim
-        hlines_kwargs.setdefault('colors', color)
-        ax.hlines(hlines, xmin, xmax, ** hlines_kwargs)
+            ax.hlines(hlines, xmin, xmax, ** hlines_kwargs)
     
     if vlines is not None:
+        vlines_kwargs.setdefault('colors', color)
         if ylim is None:
-            if not isinstance(y, dict):
-                all_y = y
-            else:
-                all_y = []
-                for _, y_i in y.items(): all_y.extend(y_i)
-            
-            all_y = [y_i for y_i in all_y if y_i is not None]
-            ymin, ymax = min(all_y), max(all_y)
+            v_colors = vlines_kwargs.pop('colors')
+            if not isinstance(vlines, _data_iterable): vlines = [vlines]
+            if not isinstance(v_colors, _data_iterable): v_colors = [v_colors]
+            if len(v_colors) < len(vlines): v_colors = v_colors * len(vlines)
+            for line, lc in zip(vlines, v_colors): ax.axvline(line, color = lc, ** vlines_kwargs)
         else:
             ymin, ymax = ylim
-        vlines_kwargs.setdefault('colors', color)
-        ax.vlines(vlines, ymin, ymax, ** vlines_kwargs)
+            ax.vlines(vlines, ymin, ymax, ** vlines_kwargs)
     
     if with_colorbar and plot_type == 'imshow': 
         ax.figure.colorbar(im, orientation = orientation, ax = ax)
@@ -239,8 +246,6 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                   color_corr = None, color_order = None,
                   shape_corr = None, shape_order = None,
                   link_from_to = None, links = [],
-                  
-                  x = None, vlines = None, hlines = None, vlines_kwargs = {}, hlines_kwargs = {},
                   
                   title = None, filename = None, show = False, close = True,
                   ** kwargs
@@ -358,7 +363,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
             datas.append((None, v))
     data_names = [
         k for k, v in kwargs.items()
-        if isinstance(v, (list, dict, np.ndarray, tf.Tensor)) or callable(v)
+        if (isinstance(v, (list, dict, np.ndarray, tf.Tensor)) or callable(v)) and k not in _keys_to_propagate
     ]
     datas += [(k, kwargs.pop(k)) for k in data_names]
     
@@ -406,10 +411,6 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
         'close'     : False,
         'new_fig'   : False
     }
-    
-    if x is not None: kwargs['x'] = x
-    if vlines is not None: kwargs.update({'vlines' : vlines, 'vlines_kwargs' : vlines_kwargs})
-    if hlines is not None: kwargs.update({'hlines' : hlines, 'hlines_kwargs' : hlines_kwargs})
 
     for i, (name, val) in enumerate(datas):
         ax = fig.add_subplot(nrows, ncols, i+1) if use_subplots else None

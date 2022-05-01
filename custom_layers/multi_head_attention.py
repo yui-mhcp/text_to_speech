@@ -156,6 +156,14 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         if return_attention:    output = output + (attention_weights, )
         return output[0] if len(output) == 1 else output
     
+    def get_output_shape(self, q, k, v, return_attention = True, return_state = False):
+        _attn_shape = (q[0], self.num_heads, q[1], k[1])
+        _out_shape  = tuple(q[:-1]) + (self.attention_dim, )
+        out_shape = (_out_shape, )
+        if return_state:        out_shape = out_shape + ((k, v), )
+        if return_attention:    out_shape = out_shape + (_attn_shape, )
+        return out_shape[0] if len(out_shape) == 1 else out_shape
+    
     def get_config(self):
         config = super().get_config()
         return (self.hparams + config).get_config()

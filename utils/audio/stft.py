@@ -13,7 +13,6 @@
 import os
 import json
 import librosa
-import python_speech_features
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.backend as K
@@ -157,8 +156,7 @@ class MelSTFT(object):
         elif os.path.isfile(class_name):
             return MelSTFT.load_from_file(class_name)
         else:
-            raise ValueError("Mel class name inconnue !\n  Reçu : {}\n  Accepté : {}".format(class_name, list(_mel_classes.keys())))
-        
+            raise ValueError("Unknown Mel STFT class !\n  Accepted : {}\n  Got : {}".format(tuple(_mel_classes.keys()), class_name))
     
     @classmethod
     def load_from_file(cls, filename):
@@ -204,7 +202,7 @@ class STFT(object):
             assert(filter_length >= win_length)
             # get window and zero center pad it to filter_length
             fft_window = get_window(window, win_length, fftbins=True)
-            fft_window = pad_center(fft_window, filter_length)
+            fft_window = pad_center(fft_window, size = filter_length)
             fft_window = tf.cast(fft_window, tf.float32)
 
             # window the bases
@@ -356,6 +354,8 @@ class SpeechNetSTFT(MelSTFT):
     
 class DeepSpeechSTFT(MelSTFT):
     def make_features(self, audio):
+        import python_speech_features
+        
         audio = np.array(audio.numpy() * np.iinfo(np.int16).max, dtype = np.int16)
         frames = python_speech_features.sigproc.framesig(
             audio, self.win_length, self.hop_length, np.hanning

@@ -416,12 +416,16 @@ class TextEncoder(object):
                 if skip_padding and token == self.eos_token and len(cleaned) > 0: break
             tokens = cleaned
         
-        if self.byte_encoder is not None:
-            tokens = [''.join([
-                chr(self.byte_encoder_inv[c]) if c in self.byte_encoder_inv else c for c in token
-            ]) for token in tokens]
-        
         text = sep.join(tokens)
+
+        if self.byte_encoder is not None:
+            text_bytes = [
+                self.byte_encoder_inv.get(c, c) for c in text
+            ]
+            try:
+                text = bytearray(text_bytes).decode('utf-8')
+            except UnicodeDecodeError as e:
+                pass
         
         if self.level == TOKEN_LEVEL and self.sub_word_prefix:
             text = text.replace(' ' + self.sub_word_prefix, '')
@@ -597,6 +601,26 @@ class TextEncoder(object):
             kwargs[split_key], max_length, prefix = prefix, suffix = suffix, ** kwargs
         )
     
+    def extract_sentence(self, tokens, idx, punct = '.?!', ** kwargs):
+        def _is_start_of_sentence(tok):
+            if tok == self.sos_token_idx: return True
+            return any([final_punct in self._id_to_symbol.get(tok, None) for final_punct in punct])
+
+        def _is_end_of_sentence(tok):
+            if tok == self.eos_token_idx: return True
+            return any([final_punct in self._id_to_symbol.get(tok, None) for final_punct in punct])
+
+        if isinstance(tokens, tf.Tensor): tokens = tokens.numpy()
+
+        start, end = idx, idx + 1
+
+        while start >= 0 and not _is_start_of_sentence(tokens[start]): start -= 1
+        while end < len(tokens) and not _is_end_of_sentence(tokens[end]): end += 1
+        start += 1
+        end += 1
+
+        return self.decode(tokens[start : end], ** kwargs).strip(), start, end
+
     def distance(self, hypothesis, truth, method = 'edit', ** kwargs):
         """ Compute the levenschtein distance between hypothesis and truth """
         if isinstance(hypothesis, str) and not isinstance(truth, str):

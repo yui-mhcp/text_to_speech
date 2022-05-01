@@ -21,7 +21,7 @@ from utils.image import load_image, augment_image
 from utils.image.mask_utils import create_color_mask
 from utils.image.box_utils import *
 
-_filename = os.path.join('test', '__datas', 'lena.jpg')
+_filename = os.path.join('unitest', '__datas', 'lena.jpg')
 
 _image = None
 
@@ -48,7 +48,7 @@ def test_image_augmentation():
     image = maybe_load_image()
     
     for i, transform in enumerate(['color', 'flip_horizontal', 'flip_vertical', 'noise', 'hue', 'saturation', 'brightness', 'contrast']):
-        assert_function(augment_image, image, transform, 1., seed = i)
+        assert_function(augment_image, image, transform, 1., seed = i, name = transform)
 
 @Test
 def test_image_mask():

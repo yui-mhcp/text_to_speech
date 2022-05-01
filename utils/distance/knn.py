@@ -29,7 +29,7 @@ class KNN(object):
         * A `centroid` is the mean point of all points belonging to a given label
     """
     def __init__(self, embeddings, ids = None, k = 5, use_mean = False, 
-                 method = 'euclidian', ** kwargs):
+                 method = 'euclidian', weighted = False, ** kwargs):
         """
             Constructor for the KNN class
             
@@ -57,6 +57,7 @@ class KNN(object):
         self.k          = tf.cast(k, dtype = tf.int32)
         self.use_mean   = use_mean
         self.method     = method
+        self.weighted   = weighted
         
         self.__mean_ids         = None
         self.__mean_embeddings  = None
@@ -105,8 +106,8 @@ class KNN(object):
         embeddings, ids = self.get_embeddings(** kwargs)
         return distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
     
-    def predict(self, query, possible_ids = None, k = None, use_mean = None,
-                plot = False, tqdm = lambda x: x, ** kwargs):
+    def predict(self, query, possible_ids = None, k = None, use_mean = None, weighted = None,
+                plot = False, tqdm = lambda x: x, plot_kwargs = {}, ** kwargs):
         """
             Predict ids for each `x` vector based on the `k-nn` decision procedure
             
@@ -124,6 +125,7 @@ class KNN(object):
         if use_mean: k = 1
         elif k is None: k = self.k
         else: k = tf.cast(k, tf.int32)
+        if weighted is None: weighted = self.weighted
         
         if possible_ids is not None and not isinstance(possible_ids, (list, tuple, np.ndarray, tf.Tensor)):
             possible_ids = [possible_ids]
@@ -132,10 +134,10 @@ class KNN(object):
 
         embeddings, ids = self.get_embeddings(possible_ids, use_mean)
         
-        pred = knn(query, embeddings, ids, k, self.method)
+        pred = knn(query, embeddings, ids, k, self.method, weighted = weighted)
         
         if plot:
-            self.plot(query, pred, ** kwargs)
+            self.plot(query, pred, ** plot_kwargs)
         
         return pred
         
@@ -187,7 +189,8 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-def knn(query, embeddings, ids, k, distance_metric, return_index = False, ** kwargs):
+def knn(query, embeddings, ids, k, distance_metric, return_index = False, weighted = False,
+        ** kwargs):
     """
         Compute the k-nn decision procedure for a given x based on a list of labelled embeddings
         
@@ -196,7 +199,7 @@ def knn(query, embeddings, ids, k, distance_metric, return_index = False, ** kwa
     """
     distances = distance(query, embeddings, method = distance_metric, as_matrix = True, ** kwargs)
 
-    _, k_nearest_idx = tf.nn.top_k(- distances, tf.minimum(tf.shape(distances)[1], k))
+    k_nearest_dists, k_nearest_idx = tf.nn.top_k(- distances, tf.minimum(tf.shape(distances)[1], k))
     
     if ids is None:
         if return_index:
@@ -205,8 +208,18 @@ def knn(query, embeddings, ids, k, distance_metric, return_index = False, ** kwa
     
     nearest_ids = tf.cast(tf.gather(tf.reshape(ids, [-1]), k_nearest_idx), tf.int32)
 
-    counts = tf.math.bincount(nearest_ids, axis = -1)
-
+    if not weighted:
+        counts = tf.cast(tf.math.bincount(nearest_ids, axis = -1), tf.float32)
+    else:
+        indices = tf.reshape(tf.range(tf.reduce_max(nearest_ids + 1), dtype = tf.int32), [1, 1, -1])
+        expanded_nearest = tf.expand_dims(nearest_ids, axis = -1)
+        
+        mask = tf.cast(indices == expanded_nearest, tf.float32)
+        
+        counts = tf.reduce_sum(
+            mask * tf.expand_dims(1. / tf.maximum(-k_nearest_dists, 1e-9), axis = -1), axis = 1
+        )
+    
     max_counts = tf.reduce_max(counts, axis = -1, keepdims = True)
     
     max_idx = tf.cast(counts == max_counts, tf.int32)

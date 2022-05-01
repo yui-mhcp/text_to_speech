@@ -199,7 +199,7 @@ def _is_box_list(box):
     
 def get_box_pos(box, image = None, image_h = None, image_w = None,
                 box_mode = 0, dezoom_factor = 1., 
-                with_label = False, labels = None, normalize_mode = NORMALIZE_NONE):
+                with_label = False, labels = None, normalize_mode = NORMALIZE_NONE, ** kwargs):
     """
         arg : 
             - box : soit BoundBox, dict (avec 'xmin', 'ymin', 'xmax', 'ymax') ou liste
@@ -277,11 +277,15 @@ def get_box_area(box, **kwargs):
 
 def crop_box(filename, box, show = False, **kwargs):
     image = load_image(filename)
+    
+    if _is_box_list(box):
+        return [crop_box(image, b, ** kwargs) for b in box]
+    
     image_h, image_w = get_image_size(image)
     
     x, y, w, h, label, score = get_box_pos(
         box, image = image, with_label = True, 
-        normalize_mode = NORMALIZE_WH, **kwargs
+        normalize_mode = NORMALIZE_WH, ** kwargs
     )
     
     box_image = image[y : y + h, x : x + w]

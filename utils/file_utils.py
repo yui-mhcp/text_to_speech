@@ -51,7 +51,7 @@ def normalize_filename(filename, invalid_mode = 'error'):
         
     return [o for o in outputs if o is not None]
 
-def load_file(filename, ** kwargs):
+def load_data(filename, ** kwargs):
     ext = os.path.splitext(filename)[1][1:]
     
     if ext not in _load_file_fn:
@@ -77,6 +77,34 @@ def load_txt(filename, encoding = 'utf-8', ** kwargs):
     with open(filename, 'r', encoding = encoding) as file:
         return file.read()
 
+def _load_image(filename, ** kwargs):
+    from utils.image import load_image
+    
+    return load_image(filename, ** kwargs)
+
+def _load_audio(filename, rate = None, ** kwargs):
+    from utils.audio import load_audio
+    
+    return load_audio(filename, rate = rate, ** kwargs)
+
+def dump_data(filename, data, overwrite = False, ** kwargs):
+    if isinstance(data, tf.Tensor): data = data.numpy()
+    if isinstance(data, np.ndarray): filename += '.npy'
+    elif isinstance(data, pd.DataFrame): filename += '.csv'
+    elif isinstance(data, str): filename += '.txt'
+    else: filename += '.pkl'
+    
+    if overwrite or not os.path.exists(filename):
+        if isinstance(data, pd.DataFrame):
+            data.to_csv(filename)
+        elif isinstance(data, np.ndarray):
+            np.save(filename, data)
+        elif isinstance(data, str):
+            dump_txt(filename, data)
+        else:
+            dump_pickle(filename, data)
+    
+    return filename
 
 def dump_json(filename, data, ** kwargs):
     """ Safely save data to a json file """
@@ -89,8 +117,17 @@ def dump_json(filename, data, ** kwargs):
 def dump_pickle(filename, data, ** kwargs):
     with open(filename, 'wb') as file:
         pickle.dump(data, file)
-        
+
+def dump_txt(filename, data, ** kwargs):
+    with open(filename, 'w', encoding = 'utf-8') as file:
+        file.write(data)
+
+_image_ext      = ('jpg', 'png', 'gif')
+_audio_ext      = ('m4a', 'mp3', 'wav', 'flac', 'opus')
+
 _load_file_fn   = {
+    ** {ext : _load_image for ext in _image_ext},
+    ** {ext : _load_audio for ext in _audio_ext},
     'json'  : load_json,
     'txt'   : load_txt,
     'pkl'   : load_pickle,

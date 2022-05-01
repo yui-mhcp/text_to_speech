@@ -18,7 +18,7 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from loggers import timer
-from models.base_model import BaseModel
+from models.interfaces import BaseModel
 from custom_architectures import get_architecture
 from models.weights_converter import pt_convert_model_weights
 from utils.generic_utils import limit_gpu_memory

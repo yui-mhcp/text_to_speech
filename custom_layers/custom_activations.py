@@ -13,6 +13,9 @@
 import math
 import tensorflow as tf
 
+def l2_norm(x, axis = -1):
+    return tf.math.l2_normalize(x, axis = axis)
+
 def log_softmax(x, epsilon = 1e-6, axis = -1):
     """ Log softmax (inspired from pytorch version) """
     return tf.math.log(tf.nn.softmax(x, axis = axis) + epsilon)
@@ -21,6 +24,11 @@ def gelu(x):
     """ Gaussian Error Linear Unit """
     cdf = 0.5 * (1.0 + tf.math.erf(x / tf.math.sqrt(2.0)))
     return x * cdf
+
+def glu(x, axis = -1):
+    """ Gated Linear Unit activation function (equivalent to torch.nn.functional.glu) """
+    a, b = tf.split(x, 2, axis = axis)
+    return a * tf.sigmoid(b)
 
 def soft_gelu(x):
     """ Smoother Gaussian Error Linear Unit"""
@@ -49,15 +57,20 @@ def mish(x):
     return x * tf.math.tanh(tf.math.softplus(x))
 
 LogSoftmax  = log_softmax
+GLU         = glu
 GeLU        = gelu
 SoftGeLU    = soft_gelu
 GeLUNew     = gelu_new
 Swish       = swish
 Mish        = mish
+L2Norm      = l2_norm
 
-_activations = {    
+_activations = {
     "log_softmax"   : LogSoftmax,
     "LogSoftmax"    : LogSoftmax,
+    "L2Norm"        : L2Norm,
+    "l2_norm"       : L2Norm,
+    "glu"           : GLU,
     "gelu"          : GeLU,
     "gelu_new"      : gelu_new,
     "smooth_gelu"   : SoftGeLU,
@@ -65,10 +78,12 @@ _activations = {
     "mish"          : Mish
 }
 
-def get_activation(activation, ** kwargs):
+def get_activation(activation, return_layer = True, ** kwargs):
     if activation is None or isinstance(activation, tf.keras.layers.Layer): return activation
     elif isinstance(activation, str):
         if activation == 'leaky': return tf.keras.layers.LeakyReLU(** kwargs)
-        return tf.keras.layers.Activation(_activations.get(activation, activation))
+        activation_fn = _activations.get(activation, activation)
+        if not isinstance(activation_fn, str) and not return_layer: return activation_fn
+        return tf.keras.layers.Activation(activation_fn)
     else:
         return tf.keras.layers.Activation(activation)

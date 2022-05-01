@@ -12,7 +12,6 @@
 
 import os
 import cv2
-import imageio
 import logging
 import subprocess
 import numpy as np
@@ -32,7 +31,7 @@ def load_youtube_playlist(url, directory = 'youtube_playlist',
     try:
         from pytube import Playlist
     except ImportError:
-        logging.error("You must install pytube : pip install pytube3")
+        logging.error("You must install pytube : `pip install pytube3`")
         return None
     os.makedirs(directory, exist_ok = True)
     
@@ -54,7 +53,7 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
     try:
         from pytube import YouTube
     except ImportError:
-        logging.error("You must install pytube : pip install pytube3")
+        logging.error("You must install pytube : `pip install pytube3`")
         return None
 
     video = YouTube(url)
@@ -86,11 +85,25 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
     return filename
 
 def copy_audio(video_source, video_target):
+    """ Copy audio from one video (`video_source`) to another (`video_target`) """
     audio_file = extract_audio(video_source, filename = 'audio_tmp.mp3')
-    subprocess.run(['ffmpeg', '-i', video_target, '-i', audio_file, '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', video_target[:-4] + '_audio.mp4'])
+    res = set_video_audio(audio_file, video_target)
     os.remove(audio_file)
+    return res
 
+def set_video_audio(audio_filename, video_filename):
+    """ Set the audio in `audio_filename` to `video_filename` """
+    return subprocess.run([
+        'ffmpeg', '-i', video_target, '-i', audio_file, '-c', 'copy', '-map', '0:v:0',
+        '-map', '1:a:0', video_target[:-4] + '_audio.mp4'
+    ])
+
+    
 def extract_audio(video_filename, filename = None):
+    """
+        Extract audio from `video_filename` and copy it to `filename` (require `moviepy` library)
+        Note that if you want the audio np.ndarray, you can use the `read_audio` from `utils.audio` instead
+    """
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:

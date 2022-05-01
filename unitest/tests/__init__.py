@@ -9,3 +9,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import os
+import glob
+
+def __load():
+    for test_filename in glob.glob('unitest/tests/*.py'):
+        if '__init__' in test_filename: continue
+            
+        module_name = test_filename.replace(os.path.sep, '.').replace('/', '.')[: -3]
+
+        module = __import__(module_name)
+
+__load()

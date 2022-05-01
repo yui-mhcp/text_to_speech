@@ -13,8 +13,8 @@
 import os
 import cv2
 import glob
+import math
 import time
-import imageio
 import logging
 import numpy as np
 import pandas as pd
@@ -50,7 +50,8 @@ def get_image_size(image):
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
-def load_image(filename, target_shape = None, mode = None, channels = 3, dtype = tf.float32):
+def load_image(filename, target_shape = None, mode = None, channels = 3, bbox = None,
+               dezoom_factor = 1., dtype = tf.float32, preserve_aspect_ratio = False):
     """
         Load an image to a tf.Tensor by supporting different formats
         
@@ -59,6 +60,8 @@ def load_image(filename, target_shape = None, mode = None, channels = 3, dtype =
             - target_shape  : reshape the image to this shape (if provided)
             - mode      : 'rgb', 'gray' or None, convert the image to the appropriate output type
                 If gray, the last dimension will be 1 and if 'rgb' will be 3. If 'None' the last dimension will be either 1 or 3 depending on the original image format
+            - bbox      : [x, y, w, h] position to extract
+            - dezoom_factor : the factor to multiply w and h
             - dtype     : tensorflow.dtype for the output image (automatically rescaled)
         Return :
             - image : 3-D tf.Tensor
@@ -79,16 +82,41 @@ def load_image(filename, target_shape = None, mode = None, channels = 3, dtype =
     else:
         image = filename
     
+    if bbox is not None:
+        x, y, w, h = bbox[0], bbox[1], bbox[2], bbox[3]
+        if dezoom_factor != 1.:
+            new_h = tf.cast(tf.math.round(tf.cast(h, tf.float32) * dezoom_factor), tf.int32)
+            new_w = tf.cast(tf.math.round(tf.cast(w, tf.float32) * dezoom_factor), tf.int32)
+            y = y - (new_h - h) / 2
+            x = x - (new_w - w) / 2
+            h, w = new_h, new_w
+        
+        x, y = tf.cast(tf.maximum(x, 0), tf.int32), tf.cast(tf.maximum(y, 0), tf.int32)
+        w, h = tf.minimum(w, tf.shape(image)[1] - x), tf.minimum(h, tf.shape(image)[0] - y)
+        
+        if w <= 0 or h <= 0:
+            tf.print("Error with bbox :", bbox, ":", [x, y, w, h], "-", tf.shape(image))
+        else:
+            image = tf.image.crop_to_bounding_box(image, y, x, h, w)
+    
     if image.dtype != dtype:
         image = tf.image.convert_image_dtype(image, dtype)
     
-    if mode == 'gray' and tf.shape(image)[2] == 3:
+    if mode == 'gray' and image.shape[2] == 3:
         image = tf.image.rgb_to_grayscale(image)
-    elif mode == 'rgb' and tf.shape(image)[2] == 1:
+    elif mode == 'rgb' and image.shape[2] == 1:
         image = tf.image.grayscale_to_rgb(image)
     
     if target_shape is not None:
-        image = tf.image.resize(image, target_shape[:2])
+        image = tf.image.resize(
+            image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio
+        )
+        if preserve_aspect_ratio:
+            pad_h = tf.cast(target_shape[0] - tf.shape(image)[0], tf.int32)
+            pad_w = tf.cast(target_shape[1] - tf.shape(image)[1], tf.int32)
+            
+            padding = [(pad_h // 2, pad_h - pad_h // 2), (pad_w // 2, pad_w - pad_w // 2), (0, 0)]
+            image   = tf.pad(image, padding)
     
     return image
 
@@ -132,7 +160,7 @@ def stream_camera(cam_id = 0, max_time = 60, transform_fn = None, ** kwargs):
 
             cv2.imshow("Camera {}".format(cam_id), frame)
 
-        if cv2.waitKey(10) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
                 
     total_time = time.time() - start
@@ -160,6 +188,12 @@ def build_gif(directory,
         Return :
             - filename  : the .gif output file
     """
+    try:
+        import imageio
+    except ImportError as e:
+        logging.error('`imageio` is not installed : run `pip install imageio`')
+        return None
+    
     image_names = os.path.join(directory, img_name)
     
     with imageio.get_writer(filename, mode = 'I') as writer:
@@ -173,3 +207,21 @@ def build_gif(directory,
                 writer.append_data(image)
                     
     return filename
+
+def build_sprite(images, directory = None, filename = 'sprite.jpg', image_size = 128):
+    if directory is not None: filename = os.path.join(directory, filename)
+    n = math.ceil(math.sqrt(len(images)))
+    
+    sprite = np.zeros((n * image_size, n * image_size, 3), dtype = np.float32)
+    
+    for i, img in enumerate(images):
+        img = load_image(img, target_shape = (image_size, image_size, 3), dtype = tf.float32)
+        
+        row, col = i // n, i % n
+        
+        sprite[
+            row * image_size : (row + 1) * image_size,
+            col * image_size : (col + 1) * image_size
+        ] = img
+    
+    return save_image(filename = filename, image = sprite)

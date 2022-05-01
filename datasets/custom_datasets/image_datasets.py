@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import glob
 import logging
 import numpy as np
 import pandas as pd
@@ -21,7 +22,7 @@ from tqdm import tqdm
 from PIL import Image
 
 from loggers import timer
-from utils import ThreadedQueue, load_json
+from utils import ThreadedQueue, load_json, dump_json
 
 def _add_image_size(dataset):
     from utils.image import get_image_size
@@ -54,7 +55,7 @@ def _rectangularize_boxes(dataset):
 def preprocess_image_directory(directory, ** kwargs):
     metadata = []
     for filename in os.listdir(directory):
-        if os.path.isdir(filename):
+        if os.path.isdir(os.path.join(directory, filename)):
             metadata += [
                 {'filename' : os.path.join(directory, filename, f), 'label' : filename}
                 for f in os.listdir(os.path.join(directory, filename))
@@ -135,6 +136,151 @@ def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0,
             metadata_df.at[idx, 'n_box'] = len(box) if not one_line_per_box else 1
             
     return metadata_df
+
+@timer(name = 'CelebA loading')
+def preprocess_celeba_annots(directory, img_dir, subset, ** kwargs):
+    if subset == 'train':   subset = '0'
+    elif subset == 'valid': subset = '1'
+    elif subset == 'test':  subset = '2'
+    metadata = {}
+    
+    identity_filename = os.path.join(directory, 'identity_CelebA.txt')
+    with open(identity_filename, 'r', encoding = 'utf-8') as file:
+        lines = file.read().split('\n')
+    
+    for line in lines:
+        if len(line) == 0: continue
+        img, celeb_id = line.split()
+        
+        metadata[img] = {'filename' : os.path.join(directory, img_dir, img), 'id' : celeb_id}
+    
+    with open(os.path.join(directory, 'list_eval_partition.txt'), 'r', encoding = 'utf-8') as file:
+        lines = file.read().split('\n')
+    
+    eval_split = {}
+    for line in lines:
+        if len(line) == 0: continue
+        img, mode = line.split()
+        
+        eval_split[img] = mode
+    
+    metadata = [v for k, v in metadata.items() if eval_split.get(k, -1) == subset]
+
+    return pd.DataFrame(metadata)
+
+@timer(name = 'TDFace loading')
+def preprocess_td_face_annots(directory, subsets, acquisition, ** kwargs):
+    """
+        Dataset with the following structure :
+            {directory}/
+                TD_{subset}_Set{sets}/
+                    <id>/
+                        image_1.jpg
+                        ...
+        
+        The `subset` argument refers to the type of acquisition (typically RGB_E, RGB_A, ...) and `sets` refer to (a list of) set number (from 1 to 4 in general)
+        By default, sets [1, 2, 3] are used as "train set" and set 4 is used for validation
+    """
+    if isinstance(acquisition, (list, tuple)):
+        return pd.concat([
+            preprocess_td_face_annots(directory, subsets = subsets, acquisition = acq, ** kwargs)
+            for acq in acquisition
+        ], axis = 0, ignore_index = True)
+    if isinstance(subsets, (list, tuple)):
+        return pd.concat([
+            preprocess_td_face_annots(directory, subsets = s, acquisition = acquisition, ** kwargs)
+            for s in subsets
+        ], axis = 0, ignore_index = True)
+    
+    set_dir = os.path.join(directory, 'TD_{}_Set{}'.format(acquisition, subsets))
+    metadata = preprocess_image_directory(set_dir)
+    metadata = metadata.rename(columns = {'label' : 'id'})
+    
+    if 'E' in acquisition:
+        metadata['expression'] = metadata['filename'].apply(
+            lambda f: f[:-4].split('_')[-1]
+        )
+    elif 'A' in acquisition:
+        metadata['position'] = metadata['filename'].apply(
+            lambda f: f[:-4].split('_')[-1]
+        )
+        metadata['expression'] = metadata['filename'].apply(
+            lambda f: f.split('_')[-2]
+        )
+
+    
+    return metadata
+
+@timer(name = 'Youtube Faces with keypoints loading')
+def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
+                                    skip_frames = -1, frames_per_video = -1,
+                                    tqdm = lambda x: x, ** kwargs):
+    @timer(name = 'frame extraction')
+    def extract_frames(video_id, person_id, ** kwargs):
+        video_dir = os.path.join(extracted_dir, video_id)
+        metadata_filename = os.path.join(video_dir, 'metadata.json')
+        if os.path.exists(metadata_filename) and not overwrite:
+            return load_json(metadata_filename)
+
+        filename = glob.glob('{}/**/**/{}.npz'.format(directory, video_id))
+        if len(filename) != 1:
+            logging.error('No / multiple result(s) for video ID {} : {}'.format(video_id, filename))
+            return []
+
+        from utils.image import save_image
+
+        subset = int(os.path.dirname(filename[0])[-1:])
+        video = np.load(filename[0])
+
+        os.makedirs(video_dir, exist_ok = True)
+
+        infos = []
+        for i, img in enumerate(np.transpose(video['colorImages'], [3, 0, 1, 2])):
+            img_name = os.path.join(video_dir, 'frame_{}.jpg'.format(i))
+            save_image(filename = img_name, image = img)
+
+            infos.append({
+                'id'       : person_id,
+                'video_id' : video_id,
+                'frame'    : i,
+                'subset'   : subset,
+                'filename' : img_name,
+                'bbox'     : video['boundingBox'][:,0,i],
+                ** kwargs
+            })
+
+        video.close()
+
+        dump_json(metadata_filename, infos)
+        return infos
+    
+    def convert_bbox_format(box):
+        x1, y1, x2, y2 = [int(c) for c in box]
+        return np.array([x1, y1, x2 - x1, y2 - y1])
+    
+    if not isinstance(subsets, (list, tuple)): subsets = [subsets]
+    
+    extracted_dir = os.path.join(directory, 'extracted')
+    os.makedirs(extracted_dir, exist_ok = True)
+
+    infos = pd.read_csv('{}/youtube_faces_with_keypoints_full.csv'.format(directory))
+    
+    metadata = []
+    for idx, row in tqdm(infos.iterrows()):
+        frames = extract_frames(
+            row['videoID'], person_id = row['personName'], height = row['imageHeight'], width = row['imageWidth']
+        )
+        step = skip_frames
+        if step <= 1 and frames_per_video > 0: step = max(1, len(frames) // frames_per_video)
+        if step > 1: frames = frames[::step]
+        if frames_per_video > 0: frames = frames[:frames_per_video]
+        metadata.extend(frames)
+    
+    metadata = pd.DataFrame(metadata)
+    metadata = metadata[metadata['subset'].isin(subsets)]
+    metadata['bbox'] = metadata['bbox'].apply(lambda b: convert_bbox_format(b))
+    
+    return metadata
 
 @timer(name = 'yolo output loading')
 def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False, 
@@ -499,6 +645,14 @@ _custom_image_datasets = {
         'type_annots'   : 'directory',
         'directory'     : '{}/anime_faces/images'
     },
+    'celeba'   : {
+        'train' : {
+            'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba',  'subset' : 'train'
+        },
+        'valid' : {
+            'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba',  'subset' : 'valid'
+        }
+    },
     'coco'      : {
         'train' : {
             'filename'  : '{}/COCO/annotations/instances_train2017.json',
@@ -533,7 +687,14 @@ _custom_image_datasets = {
         'annotation_dir'    : '{}/raccoon-master/annots',
         'img_dir'       : '{}/raccoon-master/images'
     },
-    'yolo_output'   : {},
+    'td_face'   : {
+        'train' : {
+            'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : [1, 2, 3]
+        },
+        'valid' : {
+            'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : 4
+        }
+    },
     'voc'       : {
         'annotation_dir'   : '{}/VOC2012/Annotations',
         'img_dir'   : '{}/VOC2012/JPEGImages'
@@ -547,14 +708,26 @@ _custom_image_datasets = {
             'filename'  : '{}/Wider_Face/wider_face_split/wider_face_val_bbx_gt.txt', 
             'img_dir'   : '{}/Wider_Face/WIDER_val/images'
         }
+    },
+    'yolo_output'   : {},
+    'youtube_faces' : {
+        'train' : {
+            'directory'  : '{}/YoutubeFaces', 'subsets' : [1, 2, 3]
+        },
+        'valid' : {
+            'directory'  : '{}/YoutubeFaces', 'subsets' :  4
+        }
     }
 }
 
 _image_dataset_processing  = {
     'coco'          : preprocess_COCO_annots,
+    'celeba'        : preprocess_celeba_annots,
     'directory'     : preprocess_image_directory,
     'essex'         : preprocess_essex_annots,
-    'yolo_output'   : preprocess_yolo_output_annots,
+    'td_face'       : preprocess_td_face_annots,
     'voc'           : preprocess_VOC_annots,
-    'wider'         : preprocess_wider_annots
+    'wider'         : preprocess_wider_annots,
+    'yolo_output'   : preprocess_yolo_output_annots,
+    'youtube_faces' : preprocess_youtube_faces_annots
 }

@@ -19,7 +19,7 @@ from custom_architectures.current_blocks import *
 from custom_architectures.current_blocks import _get_var, _add_layer, _get_flatten_layer
 
 from hparams import HParams
-from custom_layers import SimilarityLayer
+from custom_layers import get_activation, SimilarityLayer
 
 HParamsDenseBN  = HParams(
     units       = [32, 32], 
@@ -52,6 +52,7 @@ HParamsConvBN   = HParams(
 
 HParamsPerceptron = HParams(
     ** HParamsDenseBN,
+    pooling     = None,
     n_dense     = 2,
     dense_name  = 'dense_{}',
     
@@ -89,22 +90,28 @@ HParamsCNN = HParams(
     name = 'simple_cnn'
 )
 
-def perceptron(input_shape, output_shape, ** kwargs):
-    if isinstance(input_shape, int): input_shape = (input_shape,)
+def perceptron(input_shape = None, output_shape = None, inputs = None, return_output = False,
+               ** kwargs):
+    assert (input_shape is not None or inputs is not None) and output_shape is not None
+    hparams = HParamsPerceptron(** kwargs)
 
     use_sequential = not isinstance(output_shape, (list, tuple))
-    
-    hparams = HParamsPerceptron(** kwargs)
-    
-    if use_sequential:
-        inputs = tf.keras.Sequential(name = hparams.name)
+    if inputs is None:
+        if isinstance(input_shape, int): input_shape = (input_shape,)
+        if use_sequential:
+            inputs = tf.keras.Sequential(name = hparams.name)
+        else:
+            inputs = Input(shape = input_shape, name = "inputs")
     else:
-        inputs = Input(shape = input_shape, name = "inputs")
+        use_sequential = False
+        input_shape = tuple(inputs.shape)[1:]
     
     x = inputs
     if len(input_shape) > 1:
-        x = _add_layer(x, Flatten())
-            
+        x = _add_layer(x, _get_flatten_layer(
+            hparams.pooling, dim = '2d' if len(input_shape) == 3 else '1d'
+        ))
+    
     for i in range(hparams.n_dense):
         config = HParamsDenseBN.extract(hparams)
         config = {k : _get_var(v, i) for k, v in config.items()}
@@ -116,36 +123,55 @@ def perceptron(input_shape, output_shape, ** kwargs):
         x.add(Dense(
             output_shape,
             use_bias    = hparams.final_bias,
-            activation  = hparams.final_activation, 
             name        = hparams.final_name
         ))
+        if hparams.final_activation:
+            x.add(get_activation(hparams.final_activation))
         
         x.build((None,) + input_shape)
         
         return x
     else:
+        if not isinstance(output_shape, (list, tuple)): output_shape = [output_shape]
         outputs = [Dense(
             output_shape_i,
             use_bias    = _get_var(hparams.final_bias, i),
-            activation  = _get_var(hparams.final_activation, i),
             name        = '{}_{}'.format(hparams.final_name, i)
         )(x) for i, output_shape_i in enumerate(output_shape)]
-    
+        
+        if hparams.final_activation:
+            outputs = [
+                get_activation(_get_var(hparams.final_activation, i))(xi)
+                for i, xi in enumerate(outputs)
+            ]
+        
+        if len(outputs) == 1: outputs = outputs[0]
+        
+        if return_output: return outputs
+        
         return tf.keras.Model(inputs = inputs, outputs = outputs, name = hparams.name)
 
-def simple_cnn(input_shape, output_shape, **kwargs):
+def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_output = False,
+               ** kwargs):
+    assert (input_shape is not None or inputs is not None) and output_shape is not None
     hparams = HParamsCNN(** kwargs)
+    
+    use_sequential = not isinstance(output_shape, (list, tuple)) and not hparams.residual and not hparams.final_conv_residual
+    if inputs is None:
+        if isinstance(input_shape, int): input_shape = (input_shape,)
+        if use_sequential:
+            inputs = tf.keras.Sequential(name = hparams.name)
+        else:
+            inputs = Input(shape = input_shape, name = "inputs")
+    else:
+        assert isinstance(inputs, tf.Tensor)
+        use_sequential = False
+        input_shape = tuple(inputs.shape)[1:]
 
     conv_type = hparams.conv_type.lower()
     assert conv_type in _conv_layer_fn, "Unknown conv type : {}".format(conv_type)
     
     conv_layer_fn = _conv_layer_fn[conv_type]
-    
-    use_sequential = not isinstance(output_shape, (list, tuple)) and not hparams.residual and not hparams.final_conv_residual
-    if use_sequential:
-        inputs = tf.keras.Sequential(name = hparams.name)
-    else:
-        inputs = Input(shape = input_shape, name = "inputs")
     
     ########################################
     #     Conv (with pooling / strides)    #
@@ -221,9 +247,20 @@ def simple_cnn(input_shape, output_shape, **kwargs):
             )
         
         outputs = _add_layer(outputs, output_layer)
+        if hparams.final_activation:
+            if isinstance(outputs, (list, tuple)):
+                outputs = [
+                    get_activation(_get_var(hparams.final_activation, i))(xi)
+                    for i, xi in enumerate(outputs)
+                ]
+            else:
+                outputs = _add_layer(outputs, get_activation(hparams.final_activation))
+
     
     if use_sequential:
         outputs.build((None,) + input_shape)
+        return outputs
+    elif return_output:
         return outputs
     else:
         return tf.keras.Model(inputs = inputs, outputs = outputs, name = hparams.name)
@@ -273,13 +310,53 @@ def comparator(encoder_a,
     
     return tf.keras.Model(inputs = inputs, outputs = output, name = name)
 
-def siamese(model, input_signature = None, activation = 'sigmoid', name = 'SiameseNetwork', ** kwargs):
+def siamese(model, input_signature = None, activation = 'sigmoid',
+            name = 'SiameseNetwork', ** kwargs):
     """ Special case of `Comparator` where both `encoder_a` and `encoder_b` are the same model """
     kwargs.update({'input_signature_a' : input_signature, 'input_signature_b' : input_signature})
     
     return comparator(
         encoder_a = model, encoder_b = model, activation = activation, name = name, ** kwargs
     )
+
+def classifier(feature_extractor,
+               input_shape  = None,
+               output_shape = None,
+               
+               include_top  = True,
+               weights      = 'imagenet',
+               pooling      = None,
+               ** kwargs
+              ):
+    is_imagenet_model = False
+    if callable(feature_extractor):
+        is_imagenet_model = True
+        feature_extractor = feature_extractor(
+            input_shape = input_shape,
+            include_top = include_top,
+            weights     = weights,
+            pooling     = pooling
+        )
+    elif isinstance(feature_extractor, str):
+        assert feature_extractor != 'classifier'
+        
+        from custom_architectures import get_architecture
+        feature_extractor = get_architecture(feature_extractor, input_shape = input_shape, ** kwargs)
+
+    assert isinstance(feature_extractor, tf.keras.Model), "Invalid feature_extractor type : {}".format(type(feature_extractor))
+    
+    if output_shape is not None:
+        kwargs.setdefault('n_dense', 0)
+        
+        features = feature_extractor.layers[-2].output if is_imagenet_model and include_top else feature_extractor.output
+        output = perceptron(
+            inputs = features, output_shape = output_shape, return_output = True,
+            pooling = pooling, ** kwargs
+        )
+        
+        return tf.keras.Model(feature_extractor.input, output, name = feature_extractor.name)
+    
+    return feature_extractor
 
 _distance_fn = {
     'dp'        : lambda inputs: tf.matmul(inputs[0], inputs[1]),
@@ -301,6 +378,7 @@ _conv_layer_fn = {
 }
 
 custom_functions   = {
+    'classifier'    : classifier,
     'perceptron'    : perceptron,
     'simple_cnn'    : simple_cnn,
     'comparator'    : comparator,

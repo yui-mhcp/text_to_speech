@@ -22,7 +22,7 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from loggers import timer
-from models.base_model import BaseModel
+from models.interfaces import BaseModel
 from utils.distance import distance, KNN
 from utils.embeddings import load_embedding, save_embeddings, embed_dataset, embeddings_to_np
 from utils import normalize_filename, plot_embedding, pad_batch, sample_df
@@ -389,7 +389,7 @@ class SiameseNetwork(BaseModel):
         raise NotImplementedError()
     
     @timer
-    def embed(self, data, batch_size = 128, tqdm = lambda x: x):
+    def embed(self, data, batch_size = 128, tqdm = lambda x: x, ** kwargs):
         """
             Embed a list of data
             
@@ -405,11 +405,11 @@ class SiameseNetwork(BaseModel):
         """
         time_logger.start_timer('processing')
 
-        inputs = self.get_input(data)
+        inputs = self.get_input(data, ** kwargs)
         
         time_logger.stop_timer('processing')
         
-        if not isinstance(inputs, list): inputs = [inputs]
+        if not isinstance(inputs, (list, tf.Tensor)): inputs = [inputs]
         
         encoder = self.encoder
         
@@ -608,6 +608,9 @@ class SiameseNetwork(BaseModel):
         
         return dropped
     
+    def predict(self, * args, ** kwargs):
+        return self.recognize(* args, ** kwargs)
+    
     @timer
     def recognize(self,
                   datas     = None,
@@ -643,7 +646,7 @@ class SiameseNetwork(BaseModel):
             samples = load_embedding(samples)
         
         if embedded is None:
-            embedded = self.embed(datas, batch_size = batch_size)
+            embedded = self.embed(datas, batch_size = batch_size, ** kwargs)
 
         # Apply K-NN to find best id for each embedded audio
         knn = KNN(samples, ids)

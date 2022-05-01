@@ -19,16 +19,15 @@ import tensorflow as tf
 from tqdm import tqdm
 
 from loggers import timer
-from models.siamese.siamese_network import SiameseNetwork
 from custom_architectures import get_architecture
+from models.siamese.siamese_network import SiameseNetwork
+from models.interfaces.base_audio_model import BaseAudioModel
 from utils import load_json, dump_json, normalize_filename
-from utils.audio import MelSTFT, load_audio, load_mel, AudioAnnotation
-from utils.audio import random_pad, random_shift, random_noise
+from utils.audio import load_audio, AudioAnnotation
 from utils.distance import KPropagation
 
 time_logger = logging.getLogger('timer')
 
-_supported_input_types      = ('raw', 'audio', 'mel', 'spect', 'spectrogram')
 _supported_encoder_types    = ('rnn', 'conv1d', 'conv2d', 'transformer', 'prenet_transformer')
 
 MIN_AUDIO_TIME      = 0.1 # below 0.1sec the encoding is not really relevant
@@ -37,53 +36,27 @@ DEFAULT_MEL_FRAMES      = 80
 DEFAULT_AUDIO_RATE      = 16000
 DEFAULT_MAX_AUDIO_TIME  = 3
 
-DEFAULT_MEL_FN_CONFIG  = {
-    'filter_length'    : 1024,
-    'hop_length'       : 256, 
-    'win_length'       : 1024,
-    'n_mel_channels'   : 80, 
-    'mel_fmin'         : 0.0,
-    'mel_fmax'         : 8000.0,
-    'normalize_mode'   : None,
-}
-
-class AudioSiamese(SiameseNetwork):
+class AudioSiamese(BaseAudioModel, SiameseNetwork):
     def __init__(self,
                  audio_rate     = DEFAULT_AUDIO_RATE,
-                 input_type     = 'mel',
                  
                  encoder_type       = 'conv1d',
                  max_audio_time     = DEFAULT_MAX_AUDIO_TIME,
                  use_fixed_length_input = False,
                  
-                 mel_fn_type        = 'TacotronSTFT',
-                 mel_fn_config      = DEFAULT_MEL_FN_CONFIG,
-                 
                  ** kwargs
-                ):        
+                ):
         encoder_type = encoder_type.lower()
-        assert input_type in _supported_input_types
         assert encoder_type in _supported_encoder_types
         
-        self.audio_rate = audio_rate
-        self.input_type = input_type
+        self._init_audio(audio_rate = audio_rate, ** kwargs)
+        
         self.encoder_type   = encoder_type
         
         self.max_audio_time     = max_audio_time
         self.use_fixed_length_input = use_fixed_length_input
         
-        self.mel_fn = None
-        if self.use_mel_fn:
-            if isinstance(mel_fn_type, MelSTFT):
-                self.mel_fn = mel_fn_type
-            else:
-                mel_fn_config['sampling_rate'] = audio_rate
-                self.mel_fn    = MelSTFT.create(mel_fn_type, ** mel_fn_config)
-        
-        super().__init__(**kwargs)
-        
-        if self.use_mel_fn and not os.path.exists(self.mel_fn_file):
-            self.mel_fn.save_to_file(self.mel_fn_file)
+        super().__init__(** kwargs)
     
     def _init_folders(self):
         super()._init_folders()
@@ -184,10 +157,6 @@ class AudioSiamese(SiameseNetwork):
         return os.path.join(self.folder, 'identification')
     
     @property
-    def mel_fn_file(self):
-        return os.path.join(self.save_dir, 'mel_fn.json')
-
-    @property
     def encoder_input_shape(self):
         length = None if not self.use_fixed_length_input else self.max_input_length
         
@@ -214,48 +183,22 @@ class AudioSiamese(SiameseNetwork):
             return int(self.max_audio_time * self.audio_rate)
                 
     @property
-    def use_mel_fn(self):
-        return self.input_type not in ('audio', 'raw')
-    
-    @property
-    def mel_as_image(self):
-        return self.encoder_type in ('conv2d', 'prenet_transformer') and self.use_mel_fn
+    def training_hparams(self):
+        return super().training_hparams(** self.training_hparams_audio)
         
-    @property
-    def n_mel_channels(self):
-        return self.mel_fn.n_mel_channels if self.use_mel_fn else -1
-                
     def __str__(self):
         des = super().__str__()
-        des += "Audio rate : {}\n".format(self.audio_rate)
-        des += "Input type : {}\n".format(self.input_type)
-        if self.use_mel_fn:
-            des += "N mel channels : {}\n".format(self.n_mel_channels)
+        des += self._str_audio()
+
         return des
     
-    def get_audio_input(self, data):
-        audio = load_audio(data, self.audio_rate)
+    def get_input(self, data, ** kwargs):
+        if isinstance(data, list):
+            return [self.get_input(data_i, ** kwargs) for data_i in data]
+        elif isinstance(data, pd.DataFrame):
+            return [self.get_input(row, ** kwargs) for idx, row in data.iterrows()]
         
-        return tf.expand_dims(audio, 1)
-    
-    def get_mel_input(self, data):
-        mel = load_mel(data, self.mel_fn)
-        
-        if self.mel_as_image:
-            mel = tf.expand_dims(mel, axis = -1)
-        
-        return mel
-    
-    def get_input(self, data):
-        if isinstance(data, pd.DataFrame):
-            return [self.get_input(row) for idx, row in data.iterrows()]
-        elif isinstance(data, list):
-            return [self.get_input(data_i) for data_i in data]
-        
-        if self.use_mel_fn:
-            input_data = self.get_mel_input(data)
-        else:
-            input_data = self.get_audio_input(data)
+        input_data = self.get_audio(data)
         
         if tf.shape(input_data)[0] > self.max_input_length:
             start = tf.random.uniform(
@@ -267,59 +210,9 @@ class AudioSiamese(SiameseNetwork):
         
         return input_data
     
-    def augment_audio(self, audio):
-        audio = random_shift(audio, min_length = self.max_input_length)
-        audio = random_pad(audio, self.max_input_length)
-        audio = tf.cond(
-            tf.random.uniform(()) < self.augment_prct,
-            lambda: random_noise(audio),
-            lambda: audio
-        )
-        
-        return audio
-    
-    def augment_mel(self, inp):
-        maxval = self.max_input_length - tf.shape(inp)[0]
-        if maxval > 0:
-            padding_left = tf.random.uniform(
-                (), minval = 0, 
-                maxval = maxval,
-                dtype = tf.int32
-            )
-            
-            if maxval - padding_left > 0:
-                padding_right = tf.random.uniform(
-                    (), minval = 0, 
-                    maxval = maxval - padding_left,
-                    dtype = tf.int32
-                )
-            else:
-                padding_right = 0
-            
-            if self.mel_as_image:
-                padding = [(padding_left, padding_right), (0, 0), (0, 0)]
-            else:
-                padding = [(padding_left, padding_right), (0, 0)]
-            
-            inp = tf.pad(inp, padding)
-        
-        
-        inp = tf.cond(
-            tf.random.uniform(()) < self.augment_prct,
-            lambda: inp + tf.random.uniform(
-                tf.shape(inp), 
-                minval = -1., maxval = 1.,
-                dtype = inp.dtype),
-            lambda: inp
-        )
-        
-        return inp
     
     def augment_input(self, inp):
-        if self.use_mel_fn:
-            return self.augment_mel(inp)
-        else:
-            return self.augment_audio(inp)
+        return self.augment_audio(inp, max_length = self.max_input_length)
     
     def concat(self, x_same, x_not_same):
         seq_1, seq_2 = tf.shape(x_same)[1], tf.shape(x_not_same)[1]
@@ -333,8 +226,8 @@ class AudioSiamese(SiameseNetwork):
                 
         return tf.concat([x_same, x_not_same], axis = 0)
         
-    def get_dataset_config(self, **kwargs):
-        kwargs['pad_kwargs']    = {}
+    def get_dataset_config(self, ** kwargs):
+        kwargs.update({'pad_kwargs' : {}, 'padded_batch' : True})
         if self.use_fixed_length_input:
             input_shape = self.encoder_input_shape
             kwargs['pad_kwargs'] = {
@@ -343,7 +236,6 @@ class AudioSiamese(SiameseNetwork):
                     ((input_shape[1:], input_shape[1:]), ()),
                 )
             }
-        kwargs['padded_batch']  = True
         
         return super().get_dataset_config(** kwargs)
                         
@@ -480,14 +372,12 @@ class AudioSiamese(SiameseNetwork):
         return outputs
     
     def get_config(self, *args, ** kwargs):
-        config = super().get_config(*args, **kwargs)
-        config['audio_rate']        = self.audio_rate
-        config['input_type']        = self.input_type
-        config['max_audio_time']    = self.max_audio_time
-        config['encoder_type']      = self.encoder_type
-        config['use_fixed_length_input']    = self.use_fixed_length_input
-        
-        if self.use_mel_fn:
-            config['mel_fn_type']       = self.mel_fn_file
+        config = super().get_config(* args, ** kwargs)
+        config.update({
+            ** self.get_config_audio(),
+            'max_audio_time'    : self.max_audio_time,
+            'encoder_type'      : self.encoder_type,
+            'use_fixed_length_input'    : self.use_fixed_length_input
+        })
             
         return config

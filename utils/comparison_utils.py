@@ -61,7 +61,7 @@ def compare(target, value, ** kwargs):
             return
 
     if hasattr(target, 'get_config'):
-        compare(target.get_config(), value.get_config())
+        compare(target.get_config(), value.get_config(), ** kwargs)
         return
     
     compare_primitive(target, value, ** kwargs)
@@ -72,7 +72,7 @@ def compare_types(value, allowed_types, ** kwargs):
     )
     
 def compare_primitive(target, value, ** kwargs):
-    assert target == value, "'{}' != '{}'".format(target, value, target == value)
+    assert target == value, "Target ({}) != value ({})".format(target, value)
 
 def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
     try:
@@ -94,7 +94,9 @@ def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
 
 def compare_list(target, value, nested_test = False, ** kwargs):
     if nested_test: target = [target] * len(value)
-    assert len(target) == len(value), "Target length {} != value length {}".format(len(target), len(value))
+    assert len(target) == len(value), "Target length {} != value length {}".format(
+        len(target), len(value)
+    )
     
     try:
         if target == value: return
@@ -104,44 +106,61 @@ def compare_list(target, value, nested_test = False, ** kwargs):
     cmp         = [is_equal(it1, it2, ** kwargs) for it1, it2 in zip(target, value)]
     invalids    = [(i, msg) for i, (eq, msg) in enumerate(cmp) if not eq]
 
-    assert len(invalids) == 0, "Invalid items ({}) :\n{}".format(
-        len(invalids), '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
+    assert len(invalids) == 0, "Invalid items ({}) :{}{}".format(
+        len(invalids), '\n' if len(invalids) > 1 else ' ',
+        '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
     )
     
-def compare_dict(target, value, fields = None, ** kwargs):
-    if fields is not None:
-        target = {k : target[k] for k in target if k in fields}
-        value = {k : value[k] for k in value if k in fields}
-
+def compare_dict(target, value, keys = None, skip_keys = None, skip_missing_keys = False,
+                 ** kwargs):
+    if skip_missing_keys: keys = [k for k in target if k in value]
+    
+    if keys is not None:
+        if not isinstance(keys, (list, tuple)): keys = [keys]
+        target  = {k : target[k] for k in target if k in keys}
+        value   = {k : value[k] for k in target if k in keys}
+    
+    if skip_keys is not None:
+        if not isinstance(skip_keys, (list, tuple)): skip_keys = [skip_keys]
+        target  = {k : target[k] for k in target if k not in skip_keys}
+        value   = {k : value[k] for k in target if k not in skip_keys}
+    
     missing_v_keys  = [k for k in target if k not in value]
     missing_t_keys  = [k for k in value if k not in target]
         
     assert len(missing_v_keys) + len(missing_t_keys) == 0, "Missing keys in value : {}\nAdditionnal keys in value : {}".format(missing_v_keys, missing_t_keys)
     
-    cmp         = {k : is_equal(target[k], value[k]) for k in target}
+    cmp         = {k : is_equal(target[k], value[k], ** kwargs) for k in target}
     invalids    = {k : msg for k, (eq, msg) in cmp.items() if not eq}
     
-    assert len(invalids) == 0, "Invalid items ({}) :\n{}".format(
-        len(invalids), '\n'.join(['Key {} : {}'.format(k, msg) for k, msg in invalids.items()])
+    assert len(invalids) == 0, "Invalid items ({}) :{}{}".format(
+        len(invalids), '\n' if len(invalids) > 1 else ' ',
+        '\n'.join(['Key {} : {}'.format(k, msg) for k, msg in invalids.items()])
     )
 
 def compare_array(target, value, max_err = 1e-5, err_mode = 'abs', ** kwargs):
     if isinstance(target, tf.Tensor): target = target.numpy()
     if not isinstance(value, np.ndarray): value = np.array(value)
-    assert target.shape == value.shape, "Target shape {} != value shape {}".format(target.shape, value.shape)
+    assert target.shape == value.shape, "Target shape {} != value shape {}".format(
+        target.shape, value.shape
+    )
     
-    assert target.dtype == value.dtype, "Target dtype {} != value dtype {}".format(target.dtype, value.dtype)
+    assert target.dtype == value.dtype, "Target dtype {} != value dtype {}".format(
+        target.dtype, value.dtype
+    )
     
     if target.dtype in (np.bool, np.object):
-        assert np.all(target == value), "Vallue differ for target with dtype {}".format(target.dtype)
+        assert np.all(target == value), "Vallue differ for target with dtype {} ({} / {} diff)".format(
+            target.dtype, np.sum(target != value), np.prod(target.shape)
+        )
     else:
         err = np.abs(target - value)
         
         if err_mode == 'norm':
-            err = err / (np.abs(target) + 1e-6)
+            err = err / (np.abs(target) + 1e-9)
 
-        assert np.all(err <= max_err), "Values differ : max {} - mean {} - min {}".format(
-            np.max(err), np.mean(err), np.min(err)
+        assert np.all(err <= max_err), "Values differ ({} / {} diff) : max {} - mean {} - min {}".format(
+            np.sum(err > max_err), np.prod(err.shape), np.max(err), np.mean(err), np.min(err)
         )
 
 def compare_dataframe(target, value, ignore_index = True, ** kwargs):
@@ -164,30 +183,9 @@ def compare_dataframe(target, value, ignore_index = True, ** kwargs):
         if not np.any(np.all((row == target).values, axis = -1)):
             invalids.append(idx)
     
-    assert len(invalids) == 0, "Some columns are not in target ({}) :\n{}".format(
+    assert len(invalids) == 0, "Some rows are not in target ({}) :\n{}".format(
         len(invalids), value.iloc[invalids]
     )
-
-def _load_file(filename):
-    assert os.path.exists(filename), "Filename {} does not exist !".format(filename)
-    
-    global _file_loading_fn
-    if _file_loading_fn is None:
-        from utils.file_utils import _load_file_fn
-        from utils.audio import _audio_formats, read_audio
-        from utils.image import _image_formats, load_image
-
-        _file_loading_fn    = {
-            ** {audio_ext : read_audio for audio_ext in _audio_formats},
-            ** {image_ext : load_image for image_ext in _image_formats},
-            ** _load_file_fn
-        }
-
-    ext = os.path.splitext(filename)[1][1:]
-
-    assert ext in _file_loading_fn, "Extension {} unhandled, cannot load data from file {}".format(ext, filename)
-    
-    return _file_loading_fn[ext](filename)
 
 def compare_file(target, value, ** kwargs):
     assert os.path.exists(target), "Target file {} does not exist !".format(target)
@@ -201,7 +199,7 @@ def compare_file(target, value, ** kwargs):
     t_data = _load_file(target)
     v_data = _load_file(value)
     
-    eq, msg = is_equal(t_data, v_data, raw_compare_if_filename = True)
+    eq, msg = is_equal(t_data, v_data, raw_compare_if_filename = True, ** kwargs)
     
     assert eq, 'Data of files {} and {} differ : {}'.format(target, value, msg)
 
@@ -214,7 +212,20 @@ def compare_base_model(target, value, ** kwargs):
     t_infos = get_model_infos(target)
     v_infos = get_model_infos(value)
     
-    compare(t_infos, v_infos)
+    eq, msg = is_equal(t_infos, v_infos, ** kwargs)
+    
+    assert eq, 'Models {} and {} differ : {}'.format(target, value, msg)
+
+def _load_file(filename):
+    from utils.file_utils import load_data, _load_file_fn
+    
+    assert os.path.exists(filename), "Filename {} does not exist !".format(filename)
+
+    ext = os.path.splitext(filename)[1][1:]
+
+    assert ext in _load_file_fn, "Extension {} unhandled, cannot load data from file {}".format(ext, filename)
+    
+    return load_data(filename)
 
 _comparisons    = {
     str     : compare_str,
@@ -223,5 +234,3 @@ _comparisons    = {
     (np.ndarray, tf.Tensor) : compare_array,
     pd.DataFrame    : compare_dataframe
 }
-
-_file_loading_fn    = None

@@ -141,6 +141,7 @@ def to_json(data):
 
 def var_from_str(v):
     """ Try to get the value interpreted as json-notation """
+    if not isinstance(v, str): return v
     try:
         v = json.loads(v)
     except:
@@ -203,14 +204,6 @@ def map_output_names(values, names):
         mapping.update(v)
 
     return mapping
-
-def map_output_names_old(values, names):
-    flattened_values    = unstack_and_flatten(values)
-    flattened_names     = tf.nest.flatten(names)
-    
-    if len(flattened_values) != len(flattened_names):
-        raise ValueError("Try to associate {} values with {} names !\n  Values : {}\n  Names : {}".format(len(flattened_values), len(flattened_names), flattened_values, flattened_names))
-    return {n : v for n, v in zip(flattened_names, flattened_values)}
 
 def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
     """

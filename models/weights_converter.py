@@ -60,7 +60,7 @@ def pt_convert_layer_weights(layer_weights):
     
     return [transpose_weights(w) for w in new_weights]
 
-def pt_convert_model_weights(pt_model, tf_model, verbose = False):
+def get_pt_variables(pt_model, verbose = False):
     pt_layers = get_pt_layers(pt_model)
     converted_weights = []
     for layer_name, layer_variables in pt_layers.items():
@@ -72,6 +72,10 @@ def pt_convert_model_weights(pt_model, tf_model, verbose = False):
             [tuple(v.shape) for v in layer_variables],
             [tuple(v.shape) for v in converted_variables],
         ))
+    return converted_weights
+
+def pt_convert_model_weights(pt_model, tf_model, verbose = False):
+    converted_weights = get_pt_variables(pt_model, verbose = verbose)
     
     partial_transfer_learning(tf_model, converted_weights, verbose = verbose)
     logging.info("Weights converted successfully !")
@@ -234,9 +238,13 @@ def partial_transfer_learning(target_model,
         new_weights.append(new_v)
         idx_a, idx_b = idx_a + 1, idx_b + 1
     
-    if idx_a != len(target_variables) or idx_b != len(pretrained_variables):
+    if idx_a != len(target_variables) and idx_b == len(pretrained_variables):
+        logging.warning('All variables of pretrained model have been consumed but some variables remain in the new model !\n  Model A : length : {} - variables consummed : {}\n  Model B (pretrained) : length : {} - variables consummed : {}'.format(len(target_variables), idx_a, len(pretrained_variables), idx_b))
+        new_weights.extend([
+            v.numpy() if hasattr(v, 'numpy') else v for v in target_variables[idx_a:]
+        ])
+    elif idx_a != len(target_variables) and idx_b != len(pretrained_variables):
         raise ValueError("All variables of a model have not been consummed\n  Model A : length : {} - variables consummed : {}\n  Model B (pretrained) : length : {} - variables consummed : {}".format(len(target_variables), idx_a, len(pretrained_variables), idx_b))
-            
     
     target_model.set_weights(new_weights)
     logging.info("Weights transfered successfully !")

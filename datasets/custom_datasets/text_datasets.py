@@ -224,7 +224,7 @@ def preprocess_paws_annots(directory, subset = 'train', rename_siamese = True, *
     return dataset
 
 @timer(name = 'QAngaroo loading')
-def preprocess_qangaroo_annots(directory, subset, mode = 'wiki', ** kwargs):
+def preprocess_qangaroo_annots(directory, subset, mode = 'wiki', keep_mode = 'longest', ** kwargs):
     assert mode in ('wiki', 'med')
     assert subset in ('train', 'dev'), "Unknown subset : {}".format(subset)
     

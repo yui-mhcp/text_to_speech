@@ -55,20 +55,23 @@ def test_transformers_encoder(name):
     
     set_sequential()
     for sent in sentences:
-        tokens_1, tokens_2 = text_encoder.tokenize(sent), transformers_encoder.tokenize(sent)
+        sent = sent.strip()
         
-        assert_equal(text_encoder.tokenize, transformers_encoder.tokenize, sent)
+        assert_equal(transformers_encoder.tokenize, text_encoder.tokenize, sent, name = 'tokenize')
         
-        assert_equal(text_encoder.encode, lambda txt: transformers_encoder(txt)['input_ids'], sent)
+        assert_equal(
+            lambda txt: transformers_encoder(txt)['input_ids'],
+            text_encoder.encode, sent, name = 'encode'
+        )
 
 def test_text_encoder(encoder):
     set_sequential()
     for sent in _default_sentences:
-        assert_function(encoder.encode, sent)
-        assert_function(lambda text: encoder.decode(encoder.encode(text)), sent)
-        assert_function(encoder.split, sent, max_length = 150)
+        assert_function(encoder.encode, sent, name = 'encode')
+        assert_function(lambda text: encoder.decode(encoder.encode(text)), sent, name = 'decode')
+        assert_function(encoder.split, sent, max_length = 150, name = 'split')
     
-    assert_function(encoder.join, * _default_sentences)
+    assert_function(encoder.join, * _default_sentences, name = 'join')
     
 @Test
 def test_cleaners():
@@ -116,7 +119,7 @@ def test_bart_encoder():
 
 @Test
 def test_f1():
-    from utils.text import TextEncoder, f1_score
+    from utils.text import f1_score
     
     assert_equal([1, 1, 1, 1], f1_score("Hello World !", "Hello ! World"))
     assert_equal([0, 1, 1, 1], f1_score("Hello World !", "Hello ! World", normalize = False))

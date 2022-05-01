@@ -48,8 +48,11 @@ You can check the `text_to_speech` notebook for a concrete demonstration
 Available architectures : 
 - `Synthesizer` :
     - [Tacotron2](https://arxiv.org/abs/1712.05884) with extensions for multi-speaker (by ID or `SV2TTS`)
+    - [SV2TTS](https://papers.nips.cc/paper/2018/file/6832a7b24bc06775d02b7406880b93fc-Paper.pdf) extension of the Tacotron2 architecture for multi-speaker based on speaker's embeddings\*
 - `Vocoder` :
     - [Waveglow](https://arxiv.org/abs/1811.00002)
+
+\* The speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture.
 
 ### Model weights
 
@@ -64,7 +67,7 @@ You can download the `tensorflow` version of `WaveGlow` at [this link](https://d
 
 Models must be unzipped in the `pretrained_models/` directory !
 
-**Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :)
+**Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :)
 
 
 ## Usage and demonstration
@@ -81,6 +84,8 @@ You can also find some audio generated in `example_outputs/` or directly in the 
 2. Go to the root of this repository : `cd text_to_speech`
 3. Install requirements : `pip install -r requirements.txt`
 4. Open `text_to_speech` notebook and follow the instruction !
+
+You also have to install `ffmpeg` for audio loading / saving.
 
 ## TO-DO list :
 

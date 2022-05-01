@@ -12,6 +12,7 @@
 
 import time
 import logging
+import collections
 
 try:
     from utils.generic_utils import time_to_string
@@ -32,12 +33,11 @@ class Timer:
     def __init__(self, name, format = _default_format, parent = None):
         self.name = name
         self.start_time = -1
-        self.time   = []
         self._format = format
         
         self.parent     = parent
         self.children   = {}
-        self._timers    = []
+        self.runs   = collections.deque()
     
     @property
     def is_root(self):
@@ -49,18 +49,19 @@ class Timer:
     
     @property
     def total_time(self):
-        return 0. if len(self.time) == 0 else sum(self.time)
+        return 0. if len(self.runs) == 0 else sum(self.runs)
     
     @property
     def mean_time(self):
-        return 0. if len(self.time) == 0 else sum(self.time) / len(self.time)
+        return 0. if len(self.runs) == 0 else sum(self.runs) / len(self.runs)
     
     @property
     def infos(self):
         return {
-            'name' : self.name, 'n_exec' : len(self.time),
-            'total_time' : time_to_string(self.total_time),
-            'mean_time' : time_to_string(self.mean_time)
+            'name'      : self.name,
+            'n_exec'    : len(self.runs),
+            'mean_time' : time_to_string(self.mean_time),
+            'total_time'    : time_to_string(self.total_time)
         }
     
     def __str__(self, indent = 0):
@@ -87,13 +88,13 @@ class Timer:
         self.start_time = time.time()
     
     def stop(self):
-        self.time.append(time.time() - self.start_time)
+        self.runs.append(time.time() - self.start_time)
         self.start_time = -1
     
 class RootTimer(Timer):
     def __init__(self, name):
         super().__init__(name = name, parent = None)
-        self._timers = []
+        self._timers = collections.deque()
     
     @property
     def running(self):
@@ -139,17 +140,20 @@ class RootTimer(Timer):
     
 def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_logging = False):
     if fn is None:
-        return lambda fn: timer(fn, name = name, logger = logger, log_if_root = log_if_root, force_logging = force_logging)
+        return lambda fn: timer(
+            fn, name = name, logger = logger, log_if_root = log_if_root,
+            force_logging = force_logging
+        )
     
     if isinstance(logger, str): logger = logging.getLogger(logger)
     elif logger is None: logger = logging.getLogger()
     if name is None: name = fn.__name__
     
     def fn_with_timer(* args, ** kwargs):
-        if not logging.getLogger().isEnabledFor(TIME_LEVEL):
+        if not logger.isEnabledFor(TIME_LEVEL):
             return fn(* args, ** kwargs)
         
-        timer = logger.start_timer(name)
+        logger.start_timer(name)
         try:
             result = fn(* args, ** kwargs)
         except Exception as e:
@@ -160,18 +164,25 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
         if log_if_root and not logger.timer.running: logger.log_time(name)
         elif force_logging: logger.log_time(timer)
         return result
-        
-    return fn_with_timer
+    
+    wrapper = fn_with_timer
+    wrapper.__doc__     = fn.__doc__
+    wrapper.__name__    = fn.__name__
+    
+    return wrapper
 
 def start_timer(self, name, * args, ** kwargs):
+    if not self.isEnabledFor(TIME_LEVEL): return
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     self.timer.start_timer(name)
     
 def stop_timer(self, name, * args, ** kwargs):
+    if not self.isEnabledFor(TIME_LEVEL): return
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     self.timer.stop_timer(name)
 
 def log_time(self, names = None, * args, ** kwargs):
+    if not self.isEnabledFor(TIME_LEVEL): return
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     des = self.timer.__str__(names) if not isinstance(names, Timer) else str(names)
     self.log(TIME_LEVEL, des, * args, ** kwargs)

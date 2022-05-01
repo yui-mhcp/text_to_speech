@@ -232,7 +232,11 @@ class Prenet(tf.keras.Model):
             ) for i, size in enumerate(sizes)
         ]
         self.dropout = Dropout(drop_rate)
-        
+    
+    def set_deterministic(self, deterministic, seed = 0):
+        self.deterministic = deterministic
+        #self.dropout = Dropout(self.drop_rate, seed = seed if deterministic else None)
+    
     def call(self, inputs, training = False):
         x = inputs
         for layer in self.denses:
@@ -746,8 +750,8 @@ class Tacotron2(tf.keras.Model):
         """ Call only for inference. """
         self.maximum_iterations = maximum_iterations
 
-    def set_deterministic(self, deterministic):
-        self.decoder.cell.prenet.deterministic = deterministic
+    def set_deterministic(self, deterministic, seed = 0):
+        self.decoder.cell.prenet.set_deterministic(deterministic, seed = seed)
         
     def _build(self):
         input_text = np.array([[1, 2, 3, 4, 5, 6, 7, 8, 9]])

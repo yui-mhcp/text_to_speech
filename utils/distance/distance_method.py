@@ -50,12 +50,6 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
 
     if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
     if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
-    
-    if as_matrix:
-        if len(tf.shape(x)) == 2: x = tf.expand_dims(x, axis = 1)
-        if len(tf.shape(y)) == 2: y = tf.expand_dims(y, 0)
-    elif len(tf.shape(x)) == 2 and len(tf.shape(y)) == 3:
-        x = tf.expand_dims(x, axis = 1)
 
     max_x, max_y = -1, -1
     if max_matrix_size > 0:
@@ -67,28 +61,43 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
         distances = []
         for i in range(0, tf.shape(x)[0], max_x):
             distances.append(tf.concat([
-                distance_fn(x[i : i + max_x], y[:, j : j + max_y], ** kwargs)
+                distance_fn(x[i : i + max_x], y[:, j : j + max_y], as_matrix = as_matrix, ** kwargs)
                 for j in range(0, tf.shape(y)[1], max_y)
             ], axis = -1))
         distances = tf.concat(distances, axis = 0)
     else:
-        distances = distance_fn(x, y, ** kwargs)
+        distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
         
     return distances if method != 'dp' else -distances # dot_product is a similarity metric
 
-def dot_product(x, y, ** kwargs):
-    return tf.squeeze(tf.matmul(x, y, transpose_b = True), axis = 1)
+def _maybe_expand_for_matrix(x, y, as_matrix = False):
+    if as_matrix:
+        if len(tf.shape(x)) == 2: x = tf.expand_dims(x, axis = 1)
+        if len(tf.shape(y)) == 2: y = tf.expand_dims(y, 0)
+    elif len(tf.shape(x)) == 2 and len(tf.shape(y)) == 3:
+        x = tf.expand_dims(x, axis = 1)
 
-def l1_distance(x, y, ** kwargs):
+    return x, y
+
+def dot_product(x, y, as_matrix = False, ** kwargs):
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = not as_matrix)
+    dp = tf.matmum(x, y, transpose_b = True)
+    return dp if not as_matrix else tf.squeeze(dp, axis = 1)
+
+def l1_distance(x, y, as_matrix = False, ** kwargs):
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
     return tf.abs(x - y)
 
-def l2_distance(x, y, ** kwargs):
+def l2_distance(x, y, as_matrix = False, ** kwargs):
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
     return tf.square(x, y)
 
-def manhattan_distance(x, y, ** kwargs):
+def manhattan_distance(x, y, as_matrix = False, ** kwargs):
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
     return tf.reduce_sum(tf.abs(x - y), axis = -1)
 
-def euclidian_distance(x, y, ** kwargs):
+def euclidian_distance(x, y, as_matrix = False, ** kwargs):
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
     return tf.math.sqrt(tf.reduce_sum(tf.square(x - y), axis = -1))
 
 def edit_distance(hypothesis,

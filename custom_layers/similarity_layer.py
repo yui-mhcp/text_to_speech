@@ -58,7 +58,9 @@ class SimilarityLayer(tf.keras.layers.Layer):
             embedded_1, embedded_2, method = self.distance_metric,
             as_matrix = pred_matrix, max_matrix_size = max_matrix_size
         )
-        if len(tf.shape(distances)) < len(tf.shape(embedded_2)): distances = tf.expand_dims(distances, -1)
+
+        if len(tf.shape(distances)) < len(tf.shape(embedded_2)):
+            distances = tf.expand_dims(distances, -1)
 
         if not pred_matrix:
             output = self.decision_layer(distances)

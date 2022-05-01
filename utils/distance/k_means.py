@@ -13,8 +13,6 @@
 import numpy as np
 import tensorflow as tf
 
-from kneed import KneeLocator
-
 from utils.distance.clustering import Clustering, get_assignment, compute_score
 
 class KMeans(Clustering):
@@ -29,6 +27,8 @@ class KMeans(Clustering):
 
 def kmeans(points, k, max_iter = 100, init_method = 'normal', method = 'euclidian',
            threshold = 1e-6, n_init = 5, seed = None, plot = False):
+    from kneed import KneeLocator
+    
     if not isinstance(points, tf.Tensor): points = tf.cast(points, tf.float32)
     if isinstance(k, (list, tuple)):
         scores = {}

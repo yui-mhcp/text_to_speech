@@ -21,6 +21,9 @@ from custom_train_objects.history import History
 _pretrained_models_folder = 'pretrained_models'
 
 def get_models(pattern = None, model_class = None):
+    """
+        Return all models with `pattern` (unix-style) in their name and / or `model_class` (str) as `class_name`
+    """
     names = os.listdir(_pretrained_models_folder) if pattern is None else [
         os.path.basename(f) for f in glob.glob(os.path.join(_pretrained_models_folder, pattern))
     ]
@@ -35,9 +38,11 @@ def get_model_dir(name, * args):
     return os.path.join(_pretrained_models_folder, name, * args)
 
 def is_model_name(name):
-    return os.path.exists(get_model_dir(name))
+    """ Check if the model `name` has a directory with `config.json` file """
+    return os.path.exists(get_model_dir(name, 'config.json'))
 
 def get_model_infos(name):
+    if name is None: return {}
     if not isinstance(name, str):
         return {
             'class_name' : name.__class__.__name__, 'config' : name.get_config(with_trackable_variables = False)
@@ -45,15 +50,20 @@ def get_model_infos(name):
     return load_json(get_model_dir(name, 'config.json'), default = {})
 
 def get_model_class(name):
+    """ Return the (str) class of model named `name` """
     return get_model_infos(name).get('class_name', None)
 
 def get_model_history(name):
+    """ Return the `History` class for model `name` """
     return History.load(get_model_dir(name, 'saving', 'historique.json'))
 
 def get_model_config(name):
     return get_model_infos(name).get('config', {})
 
 def infer_model_class(name, possible_class):
+    """
+        Return the `class` object of model `name` given a dict of possible classes {class_name : class_object}
+    """
     if name is None or not isinstance(name, str): return None
     
     config = get_model_infos(name)
@@ -61,6 +71,7 @@ def infer_model_class(name, possible_class):
     return possible_class.get(config.get('class_name', ''), None)
 
 def remove_training_checkpoint(name):
+    """ Remove checkpoints in `{model}/training-logs/checkpoints/*` """
     training_ckpt_dir = get_model_dir(name, 'training-logs', 'checkpoints')
     for file in os.listdir(training_ckpt_dir):
         os.remove(os.path.join(training_ckpt_dir, file))
@@ -74,6 +85,12 @@ def compare_models(names,
                    metric       = 'val_loss', # Only relevant if `epoch == 'best'`
                    criteria_fn  = np.argmin
                   ):
+    """
+        Given a list of names, put all their configuration with their metrics for the selected epoch, in a pd.DataFrame to compare all models
+        If `add_training_config`, it will also add the training configuration of the kept epoch
+        The selected epoch depends on `epoch` (last or best) and `metric` (if best epoch)
+        The `order_by_unique` sorts the DataFrame columns in the increasing order of unique values such that the left-most column will have the less unique values (then the most common between all models)
+    """
     def n_unique(c):
         try:
             return len(infos[c].dropna().unique())

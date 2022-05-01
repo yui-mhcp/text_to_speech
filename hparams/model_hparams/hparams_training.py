@@ -36,6 +36,6 @@ HParamsTraining = HParams(
 )
 
 HParamsTesting  = HParams(
-    ** _dataset_config
+    batch_size  = _dataset_config['batch_size']
 )
 

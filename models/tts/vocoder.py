@@ -21,8 +21,7 @@ from tqdm import tqdm
 from loggers import timer
 from utils import time_to_string, load_json, dump_json, pad_batch
 from utils.audio import display_audio, load_audio, write_audio
-from models.base_model import BaseModel
-from models.tts.tacotron2 import Tacotron2
+from models.interfaces import BaseModel
 from models.tts.waveglow import PtWaveGlow
 
 time_logger = logging.getLogger('timer')
@@ -179,7 +178,7 @@ def vocoder_inference(sentences,
                       rate     = 22050,
                       batch_size   = 8,
                       vocoder_batch_size    = 1,
-                       
+                      
                       ext       = 'mp3',
                       concat        = True,
                       overwrite     = False,

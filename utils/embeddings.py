@@ -313,3 +313,45 @@ def compute_mean_embeddings(embeddings, ids):
         )
         for unique_id in uniques
     ], axis = 0)
+def visualize_embeddings(embeddings,
+                         metadata,
+                         log_dir    = 'embedding_visualization',
+                         images     = None,
+                         image_size = 128,
+                         label_col  = 'id',
+                         metadata_filename = 'metadata.tsv'
+                        ):
+    from tensorboard.plugins import projector
+    
+    os.makedirs(log_dir, exist_ok = True)
+    
+    embeddings_var = embeddings
+    if not isinstance(embeddings, tf.Variable):
+        embeddings_var = tf.Variable(embeddings)
+    
+    ckpt = tf.train.Checkpoint(embedding = embeddings_var)
+    ckpt.save(os.path.join(log_dir, 'embedding.ckpt'))
+    
+    if isinstance(metadata, pd.DataFrame):
+        metadata = metadata[[label_col] + [c for c in metadata.columns if c != label_col]]
+
+        metadata.to_csv(os.path.join(log_dir, metadata_filename), sep = '\t', index = False)
+    else:
+        with open(os.path.join(log_dir, metadata_filename), 'w', encoding = 'utf-8') as file:
+            file.write(''.join([str(v) + '\n' for v in metadata]))
+    
+    config      = projector.ProjectorConfig()
+    embedding   = config.embeddings.add()
+    embedding.tensor_name   =  'embedding/.ATTRIBUTES/VARIABLE_VALUE'
+    
+    embedding.metadata_path = metadata_filename
+    
+    if images is not None:
+        from utils.image import build_sprite
+        
+        build_sprite(images, directory = log_dir, image_size = image_size, filename = 'sprite.jpg')
+        embedding.sprite.image_path = 'sprite.jpg'
+        embedding.sprite.single_image_dim.extend([image_size, image_size])
+    
+    projector.visualize_embeddings(log_dir, config)
+    

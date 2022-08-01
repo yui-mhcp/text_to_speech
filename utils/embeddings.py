@@ -11,7 +11,6 @@
 # limitations under the License.
 
 import os
-import pickle
 import random
 import logging
 import numpy as np
@@ -20,28 +19,33 @@ import tensorflow as tf
 
 from tqdm import tqdm
 
+from utils.file_utils import load_data, dump_pickle
 from utils.sequence_utils import pad_batch
 from utils.pandas_utils import filter_df, aggregate_df
 from utils.thread_utils import ThreadedQueue
 
 _allowed_embeddings_ext = ('.csv', '.npy', '.pkl')
-_embedding_filename = 'embeddings_{}.csv'
+_embedding_filename = 'embeddings_{}'
 _accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')
 
 def get_embedding_file_ext(filename):
+    """ Return the extension for a supported embedding extension based on a filename without ext """
     for ext in _allowed_embeddings_ext:
         if os.path.exists(filename + ext): return ext
     return None
 
 def embeddings_to_np(embeddings, col = 'embedding'):
     """ Return a numpy matrix of embeddings from a dataframe column """
+    # if it is a string representation of a numpy matrix
     if isinstance(embeddings, str):
+        # if it is a 2D-matrix
         if embeddings.startswith('['):
             if embeddings.startswith('[['):
                 logging.debug(embeddings[1 : -1].split(']')[0][1:])
                 return np.array([
                     np.fromstring(xi[1 :]) for xi in embeddings[1:-1].split(']')
                 ])
+            # if it is a 1D-vector
             return np.fromstring(embeddings[1:-1], dtype = float, sep = '\t').astype(np.float32)
         else:
             if not os.path.isfile(embeddings):
@@ -54,7 +58,7 @@ def embeddings_to_np(embeddings, col = 'embedding'):
         if len(embeddings[0].shape) == 1: return np.array(embeddings)
         return pad_batch(embeddings)
     else:
-        raise ValueError("Invalid type of embeddings : {}".format(type(embeddings)))
+        raise ValueError("Invalid type of embeddings : {}\n{}".format(type(embeddings), embeddings))
 
 def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
                   overwrite = False, embedding_name = _embedding_filename, 
@@ -173,19 +177,21 @@ def save_embeddings(directory, embeddings, embedding_name = _embedding_filename)
         embedding_file = os.path.join(directory, embedding_name)
     
     if '{}' in embedding_file:
-        embedding_dim = embeddings_to_np(embeddings).shape[-1]
-        embedding_file = os.path.splitext(embedding_file.format(embedding_dim))[0]
+        embedding_dim   = embeddings_to_np(embeddings).shape[-1]
+        embedding_file  = embedding_file.format(embedding_dim)
     
     if embedding_file.endswith('.pkl'):
-        with open(embedding_file, 'wb') as file:
-            pickle.dump(embeddings, file)
-    elif isinstance(embeddings, pd.DataFrame):
-        if not embedding_file.endswith('.csv'): embedding_file += '.csv'
-        embeddings.to_csv(embedding_file, index = False)
-    elif isinstance(embeddings, (np.ndarray, tf.Tensor)):
+        dump_pickle(embedding_file, embeddings)
+    elif embedding_file.endswith('.npy') or isinstance(embeddings, (np.ndarray, tf.Tensor)):
         if not embedding_file.endswith('.npy'): embedding_file += '.npy'
         embeddings = embeddings_to_np(embeddings)
         np.save(embedding_file, embeddings)
+        
+    elif isinstance(embeddings, pd.DataFrame):
+        if not embedding_file.endswith('.csv'): embedding_file += '.csv'
+        embeddings.to_csv(embedding_file, index = False)
+    else:
+        raise ValueError('Embeddings\' type ({}) and filename ({}) are not compatible !'.format(type(embeddings), embedding_file))
     
     return embedding_file
     
@@ -200,12 +206,12 @@ def load_embedding(directory,
                    ** kwargs
                   ):
     """
-        Load embeddings from .csv file and create an aggregation version
+        Load embeddings from file (csv / npy / pkl) and create an aggregation version
         
         Arguments : 
-            - directory : directory on which embeddings are stored (must be 'embeddings' or have a sub-directory named 'embeddings')
-            - embedding_dim : dimension of the embedding (will format embedding_name with it)
-            - dataset   : the dataset on which to merge embeddings
+            - directory     : directory on which embeddings are stored (must be 'embeddings' or have a sub-directory named 'embeddings')
+            - embedding_dim : dimension of the embedding (will format `embedding_name` with it)
+            - dataset       : the dataset on which to merge embeddings
             - embedding_name    : name for the filename
             - embedding_col / embedding_mode    : args to compute the 'speaker_embedding' col which is an aggregated version of 'embedding'
         Return :
@@ -230,13 +236,8 @@ def load_embedding(directory,
         
         emb_file += ext
     
-    if emb_file.endswith('.npy'):
-        return np.load(emb_file)
-    elif emb_file.endswith('.pkl'):
-        with open(emb_file, 'rb') as file:
-            embeddings = pickle.load(file)
-    elif emb_file.endswith('.csv'):
-        embeddings = pd.read_csv(emb_file)
+    embeddings  = load_data(emb_file)
+    if not isinstance(embeddings, pd.DataFrame): return embeddings
 
     for embedding_col_name in [col for col in embeddings.columns if col.endswith('embedding')]:
         embeddings[embedding_col_name] = embeddings[embedding_col_name].apply(
@@ -263,6 +264,9 @@ def load_embedding(directory,
     return dataset
 
 def pad_dataset_embedding(dataset, columns = None):
+    """
+        Pad columns' embeddings to have matrices with same dimensions and add a n_{col} column with the current number of embeddings (to allow to retrieve the original embeddings' matrix)
+    """
     if columns is None: columns = [c for c in dataset.columns if c.endswith('_embedding')]
     if not isinstance(columns, (list, tuple)): columns = [columns]
     
@@ -305,7 +309,16 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
         raise ValueError("Mode to compute speaker embedding unknown\n  Get : {}\n  Accepted : {}".format(mode, _accepted_modes))
     
 def compute_mean_embeddings(embeddings, ids):
-    """ Compute the mean embeddings for each id """
+    """
+        Compute the mean embeddings for each id
+        Arguments :
+            - embeddings    : 2D matrix of embeddings
+            - ids   : array of ids where embeddings[i] has ids[i]
+        Return :
+            - (unique_ids, centroids)
+                - unique_ids    : vector of unique ids
+                - centroids     : centroids[i] is the centroid associated to embeddings of ids[i]
+    """
     uniques = tf.unique(ids)[0]
     return uniques, tf.concat([
         tf.reduce_mean(
@@ -313,6 +326,7 @@ def compute_mean_embeddings(embeddings, ids):
         )
         for unique_id in uniques
     ], axis = 0)
+
 def visualize_embeddings(embeddings,
                          metadata,
                          log_dir    = 'embedding_visualization',

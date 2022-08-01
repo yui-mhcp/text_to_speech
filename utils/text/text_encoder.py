@@ -23,7 +23,6 @@ from utils.text.text_processing import bytes_to_unicode, bpe, split_sentence, sp
 from utils.distance.distance_method import distance
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
-_potential_sep_token    = ('\n', ' ')
 
 CHAR_LEVEL  = 0
 TOKEN_LEVEL = 1
@@ -672,6 +671,10 @@ class TextEncoder(object):
         if 'word_level' in config:  # for retro-compatibility
             config['level'] = CHAR_LEVEL if not config.pop('word_level') else WORD_LEVEL
             _update = True
+        
+        if 'tokenizer' in config:
+            from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
+            cls = SentencePieceTextEncoder
         
         instance = cls(** config)
         if _update: instance.save_to_file(filename) # re-save encoder with updated config

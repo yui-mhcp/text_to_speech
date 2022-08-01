@@ -16,11 +16,12 @@ import logging
 from utils.text import cmudict
 
 from utils.text.text_encoder import TextEncoder, CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL
+from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
 from utils.text.text_decoder import decode
 from utils.text.text_processing import *
 from utils.text.text_augmentation import random_mask
 
-from utils.text.html_parser import _wiki_cleaner, parse_html
+from utils.text.document_parser import _wiki_cleaner, parse_document, parse_pdf, parse_docx, parse_html
 
 _pad            = '_'
 _punctuation    = '!\'(),.:;? '

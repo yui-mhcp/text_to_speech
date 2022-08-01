@@ -10,6 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 import collections
 import numpy as np
 import tensorflow as tf
@@ -19,7 +20,7 @@ from utils.text.cleaners import collapse_whitespace, remove_tokens, remove_punct
 
 _max_length = 150
 
-_end_sentence = ('...', '.', ' ?', ' !', '?', '!')
+_eos_chars = ('...', '.', ' ?', ' !', '?', '!')
 
 def _normalize_text_f1(text, exclude = []):
     return collapse_whitespace(remove_tokens(remove_punctuation(lowercase(text)), exclude)).strip()
@@ -61,6 +62,7 @@ def bytes_to_unicode():
     return dict(zip(bs, cs))
 
 def get_pairs(text, n = 2):
+    """ Creates a n-gram """
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
 def bpe(token, bpe_ranks):
@@ -208,6 +210,7 @@ def create_padding_mask(seq, seq_len = None, pad_value = 0, maxlen = None, dtype
     return tf.reshape(mask, [tf.shape(seq)[0], 1, 1, -1])
 
 def create_look_ahead_mask(batch_size, size, dtype = tf.float32):
+    """ Creates a `look ahead` mask with shape [batch_size, 1, size, size] """
     mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
     mask = tf.tile(tf.reshape(mask, [1, 1, size, size]), [batch_size, 1, 1, 1])
     
@@ -220,51 +223,41 @@ def create_combined_mask(target, seq_len, pad_value = 0):
     )
     
     return tf.maximum(look_ahead_mask, padding_mask)
-
-def create_transformer_masks(inp, target, input_pad_value = 0, target_pad_value = 0):
-    """
-        Return 2 masks used in Transformer (Encoder + Decoder) architecture
-        
-        Arguments : 
-            - inp       : input sequence (encoder input)
-            - target    : target sequence (decoder input)
-            - {input / target}_pad_value    : padding value for input / target sequence
-        Return : [enc_padding_mask, combined_mask]
-            - enc_padding_mask  : padding mask for encoder attention blocks
-            - combined_mask     : combination of look_ahead_mask + padding mask on decoder input (target) for the 1st attention block of decoder layer
-        
-        Note : enc_padding_mask is used in encoder's MHA but also in the 2nd block of MHA in decoders layers
-    """
-    padding_mask    = create_padding_mask(inp, pad_value = input_pad_value)
-    
-    combined_mask   = create_combined_mask(target, target_pad_value)
-    
-    return padding_mask, combined_mask
     
 def extract_sentence(text, pattern):
     pattern = pattern.lower()
     return [sent for sent in split_sentence(text) if pattern in sent.lower()]
-    
+
+def split_sentence(text):
+    patterns = [pat + ' ' for pat in _eos_chars]
+    return [
+        part.strip() + end_char for part, end_char in multi_split(text, * patterns)
+        if len(part.strip()) > 0
+    ]
+
 def split_and_join(text, pattern):
     splitted = text.split(pattern)
     for i in reversed(range(1, len(splitted))):
         splitted.insert(i, pattern)
     return splitted
-
+        
 def multi_split(text, * separators):
     """
-        Split a text (str) based on multiple separators and return a list of tuple (part, separator) 
+        Split `text` based on multiple separators and returns a list of tuple (sub_text, sep)
+        Note that the last part is a tuple with an empty `sep` and a possibly empty `sub_text` (depending if `text` ends with a separator or not)
     """
-    liste = [(text, '')]
+    result = [(text, '')]
     for sep in separators:
-        new_liste = []
-        for text, end_c in liste:
+        if sep not in text: continue
+        
+        new_result = []
+        for text, end_c in result:
             parts = text.split(sep)
             for sub_part in parts[:-1]:
-                new_liste.append((sub_part, sep))
-            new_liste.append((parts[-1], end_c))
-        liste = new_liste
-    return liste
+                new_result.append((sub_part, sep))
+            new_result.append((parts[-1], end_c))
+        result = new_result
+    return result
     
 def simple_text_split(text, max_length = _max_length):
     """
@@ -285,18 +278,11 @@ def simple_text_split(text, max_length = _max_length):
     
     return text_parts
 
-def split_sentence(text):
-    patterns = [pat + ' ' for pat in _end_sentence]
-    return [
-        part.strip() + end_char for part, end_char in multi_split(text, * patterns)
-        if len(part.strip()) > 0
-    ]
-
 def split_text(text, max_length = _max_length):
     """
         Split a text such that each parts have at most 'max_length' caracters. 
         The split is based on different criteria : 
-        1) Split based on sentence ('_end_sentence' used as delimiters)
+        1) Split based on sentence ('_eos_chars' used as delimiters)
         2) If sentences are longer than 'max_length', split them based on comma
         3) If parts are still too long, split them on words
     """
@@ -307,10 +293,10 @@ def split_text(text, max_length = _max_length):
     if len(text) == 0: return []
     elif len(text) <= max_length: return [text]
     
-    if text[-1] in _end_sentence: text += ' '
+    if text[-1] in _eos_chars: text += ' '
 
     parts = []
-    for part, end_char in multi_split(text, *_end_sentence):
+    for part, end_char in multi_split(text, * _eos_chars):
         part = part.strip()
         # Skip empty parts
         if len(part) == 0: continue

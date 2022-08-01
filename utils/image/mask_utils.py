@@ -21,40 +21,50 @@ def create_color_mask(image, color, threshold = 0.1, mask = None):
         Create a mask where `image == color (+/- threshold)`
         
         Arguments :
-            - image     : the raw image
+            - image     : the raw image (3D tensor)
             - color     : a color (either 3-value tuple / single value), the color to mask
             - threshold : the accepted variation around `color`
             - mask      : a mask to apply on the produced color mask
         Return :
-            - array of boolean with same shape as `image` (with 3rd channel == 1)
+            - tf.Tensor of boolean with same shape as `image` (with 3rd channel == 1)
         
         Note that the threshold is the accepted variation around `color` for the 3 channels (not independentely). 
         i.e. a variation of 75 allows a mean variation of 25 per channels (and not 75 per channel).
     """
     color = _normalize_color(color, image = image)
     
-    if threshold < 1. and np.max(color) > 1.: threshold = threshold * 255
-    if threshold > 1. and np.max(color) <= 1.: threshold = threshold / 255.
+    if not isinstance(image, tf.Tensor): image = tf.convert_to_tensor(image)
     
-    color_mask = np.abs(image - color) < threshold
-    color_mask = np.sum(color_mask, axis = -1, keepdims = True) == 3
+    if threshold < 1. and image.dtype != tf.float32: threshold = threshold * 255
+    if threshold > 1. and image.dtype == tf.float32: threshold = threshold / 255.
     
-    if mask is not None: color_mask = color_mask * mask
+    color_mask = tf.reduce_all(
+        tf.abs(image - color) <= threshold, axis = -1, keepdims = True
+    )
+    
+    if mask is not None:
+        if mask.dtype != tf.bool: mask = tf.cast(mask, tf.bool)
+        color_mask = tf.math.logical_and(color_mask, mask)
     
     return color_mask
 
 def smooth_mask(mask, smooth_size = 0.5, divide_factor = 2., ** kwargs):
-    """ Smooth a mask to have not have a 0-1 mask but smooth boundaries """
+    """ Smooth a mask to not have a 0-1 mask but smooth boundaries """
     if isinstance(smooth_size, float): smooth_size = int(smooth_size * len(mask))
     
-    filters = tf.ones([smooth_size, smooth_size, 1, 1]) / (smooth_size * smooth_size / divide_factor)
-    expanded = tf.expand_dims(tf.cast(mask, tf.float32), axis = 0)
+    filters     = tf.ones([smooth_size, smooth_size, 1, 1]) / (smooth_size ** 2 / divide_factor)
+    expanded    = tf.expand_dims(tf.cast(mask, tf.float32), axis = 0)
     
     smoothed = tf.nn.conv2d(expanded, filters, 1, 'SAME')
     return tf.clip_by_value(tf.squeeze(smoothed, axis = 0), 0., 1.)
 
-def apply_mask(image, mask, on_background = False,
-               smooth = False, transform = 'keep', **kwargs):
+def apply_mask(image,
+               mask,
+               transform        = 'keep',
+               on_background    = False,
+               smooth   = False,
+               ** kwargs
+              ):
     """
         Apply a mask on the `image` with the given transformation
         
@@ -64,14 +74,18 @@ def apply_mask(image, mask, on_background = False,
             - on_background : whether to apply transformation on the mask or on itsbackground
             - smooth    : whether to smooth the mask or not
             - transform : the transformation's name or a callable, the transformation to apply
+                Note that some transformations will keep the image where `mask == 1` (such as `keep`) while others will modify the mask (such as blur / replace)
+                e.g. keep + on_background will keep the background while blur + on_background will blur the background
         Return :
             - the masked image with same shape as `image`
     """
     if image.shape[:2] != mask.shape[:2]:
-        raise ValueError("Le mask n'a pas la bonne dimension !\n  Image shape : {}\n  Mask shape : {}".format(image.shape, mask.shape))
+        raise ValueError("The image and the mask have different shapes !\n  Image shape : {}\n  Mask shape : {}".format(image.shape, mask.shape))
     
     if transform not in _transformations and not callable(transform):
-        raise ValueError("Mask transformation inconnue !\n  Reçu : {}\n  Acceptés : {}".format(transform, list(_transformations.keys())))
+        raise ValueError("Unknown mask transformation !\n  Accepted : {}\n  Got : {}".format(
+            tuple(_transformations.keys()), transform
+        ))
     
     if not isinstance(mask, tf.Tensor) or mask.dtype != tf.float32:
         mask = tf.cast(mask, tf.float32)
@@ -82,24 +96,26 @@ def apply_mask(image, mask, on_background = False,
     
     if callable(transform):
         return transform(image, mask, ** kwargs)
-    return _transformations[transform](image, mask, **kwargs)
+    return _transformations[transform](image, mask, ** kwargs)
 
 def blur_mask(image, mask, filter_size = (21, 21), ** kwargs):
+    """ Blurs `image` where `mask == 1` """
     if hasattr(image, 'numpy'): image = image.numpy()
     blurred = cv2.blur(image, filter_size)
     
     return replace_mask(image, mask, blurred)
 
 def replace_mask(image, mask, background, ** kwargs):
-    if not isinstance(background, np.ndarray) or background.shape != image.shape:
+    """ Replaces `image` by `background` where `mask == 1`"""
+    if not isinstance(background, (np.ndarray, tf.Tensor)) or background.shape != image.shape:
         background_image = np.zeros_like(image)
         
         color = _normalize_color(background, image = image)
-            
+        
         background_image[...,:] = color
     else:
         background_image = background
-    
+
     return image * (1. - mask) + mask * background_image
 
     

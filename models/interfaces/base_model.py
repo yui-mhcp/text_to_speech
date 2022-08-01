@@ -62,6 +62,12 @@ class ModelInstances(type):
         return cls._instances[nom]
 
 class BaseModel(metaclass = ModelInstances):
+    """
+        Abstract class defining methods to track some variables (such as `tf.keras.Model`), save and load checkpoints, train and evaluate, ... 
+        There are some methods to define in sub-classes to allow the processing pipeline / model construction to be complete : these methods are specific to the models. 
+        
+        You can also check other interfaces (such as `BaseAudioModel`) that define dedicated methods for a specific domain (audio / image / text). 
+    """
     def __init__(self,
                  nom    = None,
                  restore    = True,

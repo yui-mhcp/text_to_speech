@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import cv2
+import enum
 import logging
 import numpy as np
 import tensorflow as tf
@@ -19,19 +20,27 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from matplotlib import colors
 
-from utils.generic_utils import to_json
+from utils.generic_utils import to_json, get_enum_item
 from utils.plot_utils import plot, plot_multiple
 from utils.image.mask_utils import apply_mask
 from utils.image.image_utils import _normalize_color
 from utils.image.image_io import load_image, get_image_size
 
+_numeric_types  = (int, float, np.integer, np.floating)
+
+MAX_01_VALUE    = 1.1
+
 NORMALIZE_NONE  = 0
 NORMALIZE_01    = 1
 NORMALIZE_WH    = 2
 
-CIRCLE      = CERCLE    = 0
-ELLIPSE     = OVALE     = 1
-RECTANGLE   = RECT      = 2
+class Shape(enum.IntEnum):
+    CERCLE  = 0
+    CIRCLE  = 0
+    OVALE   = 1
+    ELLIPSE = 1
+    RECT    = 2
+    RECTANGLE   = 2
 
 class BoundingBox:
     def __init__(self, x1, y1, x2 = None, y2 = None, w = None, h = None, 
@@ -45,8 +54,8 @@ class BoundingBox:
         self.x2 = x2 if x2 is not None else x1 + w
         self.y2 = y2 if y2 is not None else y1 + h
         
-        self.w  = self.x2 - self.x1
-        self.h  = self.y2 - self.y1
+        self.w  = max(self.x2 - self.x1, 0)
+        self.h  = max(self.y2 - self.y1, 0)
         
         self.conf   = conf
         self.classes = classes
@@ -80,6 +89,9 @@ class BoundingBox:
     def __str__(self):
         return "{:.4f} {:.4f} {:.4f} {:.4f} {} {:.4f}".format(*self.box, self.score)
     
+    def __repr__(self):
+        return str(tuple(self.box))
+    
     def get_config(self):
         return self.json()
     
@@ -99,8 +111,10 @@ class BoundingBox:
         return [self.x1 * image_w, self.y1 * image_h, self.x2 * image_w, self.y2 * image_h]
         
 def bbox_iou(box1, box2):
+    """ Computes the Intersect Over Union (IOU) of 2 bounding boxes """
     xmin1, ymin1, w1, h1 = get_box_pos(box1)
     xmax1, ymax1 = xmin1 + w1, ymin1 + h1
+    
     xmin2, ymin2, w2, h2 = get_box_pos(box2)
     xmax2, ymax2 = xmin2 + w2, ymin2 + h2
     
@@ -185,67 +199,109 @@ def _interval_overlap(interval_a, interval_b):
 def _is_box_list(box):
     if isinstance(box, (BoundingBox, dict)): return False
     if isinstance(box, (tuple, list)):
-        if len(box) not in (4, 6): return True
-        if isinstance(box[0], (int, float, np.integer, np.floating)): return False
-        elif isinstance(box[0], (list, dict, BoundingBox)): return True
-    elif isinstance(box, np.ndarray):
-        if box.ndim == 1: return False
-        elif box.ndim == 2: return True
+        if len(box) not in (4, 5, 6): return True
+        if isinstance(box[0], _numeric_types): return False
+        return True
+    elif hasattr(box, 'shape'):
+        if len(box.shape) == 1: return False
+        elif len(box.shape) == 2: return True
         else:
-            raise ValueError("Invalid box shape : {}".format(box.shape))
+            raise ValueError('Invalid box shape : {}'.format(box.shape))
     else:
-        raise ValueError("Type de box inconnu : {}\n{}".format(type(box), box))
+        raise ValueError("Unknown box type ({}) : {}".format(type(box), box))
         
+def _is_01_box(x1, y1, x2, y2):
+    return all(
+        isinstance(coord, (float, np.floating)) and coord <= MAX_01_VALUE
+        for coord in [x1, y1, x2, y2]
+    )
     
-def get_box_pos(box, image = None, image_h = None, image_w = None,
-                box_mode = 0, dezoom_factor = 1., 
-                with_label = False, labels = None, normalize_mode = NORMALIZE_NONE, ** kwargs):
+def dezoom_box(x, y, w, h, factor, image_h = None, image_w = None):
+    if factor == 1.: return (x, y, w, h)
+    
+    is_01 = _is_01_box(x, y, x + w, y + h)
+    if not is_01:
+        assert image_h and image_w, "You must provide image dimensions to avoid overruns"
+        MAX_Y, MAX_X    = image_h, image_w
+    else:
+        MAX_Y, MAX_X    = 1., 1.
+    
+    new_h, new_w = h * factor, w * factor
+    x   = max(0, x - ((new_w - w) / 2.))
+    y   = max(0, y - ((new_h - h) / 2.))
+    w   = min(new_w, MAX_X - x)
+    h   = min(new_h, MAX_Y - y)
+
+    return (x, y, w, h)
+    
+    
+def get_box_pos(box,
+                box_mode    = 0,
+                dezoom_factor   = 1., 
+                
+                image   = None,
+                image_h = None,
+                image_w = None,
+                
+                labels  = None,
+                with_label  = False,
+                normalize_mode  = NORMALIZE_NONE,
+                ** kwargs
+               ):
     """
-        arg : 
-            - box : soit BoundBox, dict (avec 'xmin', 'ymin', 'xmax', 'ymax') ou liste
-            - box_mode : Seulement utile si box est de type 'list'
-                Si box_mode == 0: box = [x, y, w, h]
-                Si box_mode == 1: box = [x0, y0, x1, y1]
-        return : 
-            tuple (x, y, w, h) si with_label == False
-            tuple (x, y, w, h, label, score) si with_label == True
+        Return the bbox position in a normalized way, supporting multiple box formats
+        
+        Arguments :
+            - box   : the bounding box (BoundingBox, dict, list / tuple, np.ndarray / tf.Tensor)
+            - image / (image_h, image_w)    : to get the image dimension (for box normalization)
+            - box_mode  : the box format (ignored for `dict / BoundingBox` types)
+                - mode 0    : [x, y, w, h]
+                - mode 1    : [x0, y0, x1, y1]
+            - dezoom_factor : the factor to multiply the width / height
+            - with_label    : whether to return the label or not
+            - labels    : a mappable of labels to map numerical values labels
+            - normalize_mode    : how to normalize the positions
+                - NORMALIZE_NONE    : returns the given bbox
+                - NORMALIZE_WH      : normalizes on the image's w / h
+                - NORMALIZE_01      : normalizes in the range [0, 1]
+                Note : for the 2 last modes, the image's dimensions must be provided
+        return :
+            If `with_label == True` : (x, y, w, h, label, score)
+            else    : (x, y, w, h)
     """
-    if image is not None:
-        image_h, image_w = get_image_size(image)
+    if image is not None: image_h, image_w = get_image_size(image)
+    
     if isinstance(box, BoundingBox):
         x1, y1, x2, y2 = box.rectangle
         w, h = x2 - x1, y2 - y1
         score = box.score
         label = box.label
-    elif isinstance(box, (list, tuple)):
+    elif isinstance(box, (list, tuple, np.ndarray, tf.Tensor)):
         if box_mode == 0:
             x1, y1, w, h = box[:4]
+            y2, x2 = y1 + h, x1 + w
         else:
             x1, y1, x2, y2 = box[:4]
             w, h = x2 - x1, y2 - y1
+        
         label = box[4] if len(box) > 4 else None
         score = 1.
     elif isinstance(box, dict):
-        x1, y1 = box['xmin'], box['ymin']
-        x2, y2 = box['xmax'], box['ymax']
-        w, h = x2 - x1, y2 - y1
-        label = box['name'] if 'name' in label else box['label']
-        score = 1
+        x1, y1  = box['xmin'], box['ymin']
+        x2, y2  = box['xmax'], box['ymax']
+        w, h    = x2 - x1, y2 - y1
+        label   = box['name'] if 'name' in box else box['label']
+        score   = 1
     else:
-        logging.error("Box {} n'est pas du bon format ! ".format(box))
+        logging.error("Unsupported box format (type {}) : {} ".format(type(box), box))
         return 0, 0, 0, 0
     
-    new_w = w * dezoom_factor
-    new_h = h * dezoom_factor
-    x1 = x1 - ((new_w - w) / 2.)
-    y1 = y1 - ((new_h - h) / 2.)
-    w, h = new_w, new_h
+    x1, y1, w, h    = dezoom_box(x1, y1, w, h, dezoom_factor, image_h = image_h, image_w = image_w)
+    x2, y2          = x1 + w, y1 + h
     
-    x2, y2 = x1 + w, y1 + h
-        
     if image_h is not None and image_w is not None and normalize_mode != NORMALIZE_NONE:
-        is_01 = x1 <= 1.1 and x2 <= 1.1 and y1 <= 1.1 and y2 <= 1.1
-        
+        is_01 = _is_01_box(x1, y1, x2, y2)
+
         if normalize_mode == NORMALIZE_01 and not is_01:
             x1 = max(0., x1 / image_w)
             x2 = min(1., x2 / image_w)
@@ -271,33 +327,38 @@ def get_box_pos(box, image = None, image_h = None, image_w = None,
         return x1, y1, w, h, label, float(score)
     return x1, y1, w, h
     
-def get_box_area(box, **kwargs):
-    _, _, w, h = get_box_pos(box, **kwargs)
+def get_box_area(box, ** kwargs):
+    _, _, w, h = get_box_pos(box, ** kwargs)
     return w * h
 
-def crop_box(filename, box, show = False, **kwargs):
+def crop_box(filename, box, show = False, ** kwargs):
+    """
+        Returns a tuple `(box_image, box_pos)` box `box_pos` is a tuple (x, y, w, h, label, score)
+        `box` can be a list of boxes then the result will be a list of the above (single) result
+    """
     image = load_image(filename)
     
     if _is_box_list(box):
-        return [crop_box(image, b, ** kwargs) for b in box]
+        box_images = [crop_box(image, b, ** kwargs) for b in box]
+        if show:
+            plot_multiple(** {'box_{}'.format(i) : box_img for i, (box_img, _) in enumerate(boxes)})
+        return box_images
     
     image_h, image_w = get_image_size(image)
     
     x, y, w, h, label, score = get_box_pos(
-        box, image = image, with_label = True, 
-        normalize_mode = NORMALIZE_WH, ** kwargs
+        box, image = image, with_label = True, normalize_mode = NORMALIZE_WH, ** kwargs
     )
     
     box_image = image[y : y + h, x : x + w]
     
-    if show:
-        plot(box_image)
+    if show: plot(box_image)
         
-    return box_image, [x, y, w, h, label, score]
+    return box_image, (x, y, w, h, label, score)
 
 def draw_boxes(filename,
                boxes,
-               shape    = RECTANGLE,
+               shape    = Shape.RECTANGLE,
                color    = 'r',
                thickness    = 3, 
                use_label    = False,
@@ -305,8 +366,8 @@ def draw_boxes(filename,
                vertical = True,
                ** kwargs
               ):
-    assert shape in (CERCLE, ELLIPSE, RECTANGLE)
-
+    shape = get_enum_item(shape, Shape)
+    
     image = load_image(filename).numpy()
     image_h, image_w, _ = image.shape
     
@@ -323,7 +384,7 @@ def draw_boxes(filename,
         )
         
         x, y, w, h = normalized_box[:4]
-        center_x, center_y = int(x + w/2), int(y + h/2)
+        center_x, center_y = int(x + w / 2), int(y + h / 2)
         c = color[i % len(color)]
         
         if use_label:
@@ -338,11 +399,11 @@ def draw_boxes(filename,
                 1e-3 * image_h, c, 3
             )
         
-        if shape == RECTANGLE:
-            image = cv2.rectangle(image, (x,y), (x+w, y+h), c, thickness)
-        elif shape == CERCLE:
-            image = cv2.circle(image, (center_x, center_y), min(w, h)//2, c, thickness)
-        elif shape == ELLIPSE:
+        if shape == Shape.RECTANGLE:
+            image = cv2.rectangle(image, (x, y), (x + w, y + h), c, thickness)
+        elif shape == Shape.CIRCLE:
+            image = cv2.circle(image, (center_x, center_y), min(w, h) // 2, c, thickness)
+        elif shape == Shape.ELLIPSE:
             axes = (w // 2, int(h / 1.5)) if vertical else (int(w / 1.5), h // 2)
             image = cv2.ellipse(
                 image, angle = 0, startAngle = 0, endAngle = 360, 
@@ -366,12 +427,12 @@ def box_as_mask(filename, boxes, mask_background = False, ** kwargs):
     
     return mask
 
-def mask_boxes(filename, boxes, shape = RECTANGLE, dezoom_factor = 1., **kwargs):
-    image = load_image(filename)
+def mask_boxes(filename, boxes, shape = Shape.RECTANGLE, dezoom_factor = 1., ** kwargs):
+    image   = load_image(filename)
     
-    mask = box_as_mask(image, boxes, shape = shape, dezoom_factor = dezoom_factor)
+    mask    = box_as_mask(image, boxes, shape = shape, dezoom_factor = dezoom_factor)
     
-    return apply_mask(image, mask, **kwargs)
+    return apply_mask(image, mask, ** kwargs)
 
 def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
     image = load_image(filename).numpy()
@@ -397,7 +458,7 @@ def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
         
         pairs.append((box_name, box_img))
     
-    plot_multiple(* pairs, use_subplots = True, plot_type='imshow', **kwargs)
+    plot_multiple(* pairs, plot_type = 'imshow', ** kwargs)
 
 def save_boxes(filename, boxes, labels, append = True, ** kwargs):
     """
@@ -425,3 +486,4 @@ def save_boxes(filename, boxes, labels, append = True, ** kwargs):
 
     with open(filename, open_mode) as fichier:
         fichier.write(description)
+

@@ -60,12 +60,12 @@ def test_image_mask():
     assert_function(create_color_mask, image, color, threshold = 50)
     
     assert_function(draw_boxes, image, box)
-    assert_function(draw_boxes, image, box, shape = ELLIPSE)
-    assert_function(draw_boxes, image, box, shape = CIRCLE)
+    assert_function(draw_boxes, image, box, shape = 'ellipse')
+    assert_function(draw_boxes, image, box, shape = 'circle')
 
-    assert_function(box_as_mask, image, box, shape = OVALE, dezoom_factor = 1.)
+    assert_function(box_as_mask, image, box, shape = 'ovale', dezoom_factor = 1.)
 
-    mask = box_as_mask(image, box, shape = OVALE, dezoom_factor = 1)
+    mask = box_as_mask(image, box, shape = 'ovale', dezoom_factor = 1)
     
     assert_function(apply_mask, image, mask, transform = 'keep')
     assert_function(apply_mask, image, mask, transform = 'remove', on_background = True)

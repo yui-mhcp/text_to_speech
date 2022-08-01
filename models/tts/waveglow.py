@@ -90,7 +90,7 @@ class WaveGlow(BaseModel):
         if isinstance(spect, str): spect = np.load(spect)
         if len(spect.shape) == 2: spect = tf.expand_dims(spect, axis = 0)
             
-        return self.vocoder.infer(spect, * args, ** kwargs)
+        return self.vocoder.infer(spect, * args, ** kwargs).numpy()
     
     def compile(self, loss = 'mse', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)

@@ -10,17 +10,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
+import logging
 import collections
 import numpy as np
 import tensorflow as tf
 
 from tensorflow.keras.layers import *
 
-from utils import plot
+from utils import plot, get_enum_item
 from hparams import HParamsTacotron2, HParamsTacotron2Decoder
 from custom_layers import LocationSensitiveAttention, FasterEmbedding
 from custom_architectures.current_blocks import Conv1DBN
 from custom_architectures.dynamic_decoder import BaseDecoder, dynamic_decode
+
+class ConcatMode(enum.IntEnum):
+    CONCAT  = 0
+    ADD     = 1
+    SUB     = 2
+    MUL     = 3
+    DIV     = 4
 
 _rnn_impl = 2
 
@@ -236,7 +245,7 @@ class Prenet(tf.keras.Model):
     def set_deterministic(self, deterministic, seed = 0):
         self.deterministic = deterministic
         #self.dropout = Dropout(self.drop_rate, seed = seed if deterministic else None)
-    
+
     def call(self, inputs, training = False):
         x = inputs
         for layer in self.denses:
@@ -322,13 +331,13 @@ class Tacotron2Encoder(tf.keras.Model):
                     
                  n_speaker       = 1,
                  speaker_embedding_dim   = None,
-                 concat_mode         = 'concat',
+                 concat_mode         = ConcatMode.CONCAT,
                  linear_projection   = False,
                     
                  name    = "encoder"
                 ):
         if n_speaker > 1 and not speaker_embedding_dim:
-            raise ValueError("If n_speaker > 1, you must specify speaker_embedding_dim")
+            raise ValueError("If `n_speaker > 1`, you must specify `speaker_embedding_dim`")
         
         super().__init__(name = name)
         self.vocab_size     = vocab_size
@@ -347,7 +356,7 @@ class Tacotron2Encoder(tf.keras.Model):
         
         self.n_speaker  = n_speaker
         self.speaker_embedding_dim  = speaker_embedding_dim
-        self.concat_mode        = concat_mode
+        self.concat_mode        = get_enum_item(concat_mode, ConcatMode)
         self.linear_projection  = linear_projection
         
         self.embedding_layer = FasterEmbedding(
@@ -383,7 +392,7 @@ class Tacotron2Encoder(tf.keras.Model):
             )
         
         self.expand_embedding_layer = None
-        if speaker_embedding_dim and speaker_embedding_dim != embedding_dims and concat_mode != 'concat':
+        if speaker_embedding_dim and speaker_embedding_dim != embedding_dims and self.concat_mode != ConcatMode.CONCAT:
             self.expand_embedding_layer = Dense(
                 embedding_dims, name = '{}_expand_spk_embedding'.format(name)
             )
@@ -409,21 +418,21 @@ class Tacotron2Encoder(tf.keras.Model):
         return self.embedding_dims + self.speaker_embedding_dim
     
     def _concat(self, rnn_out, speaker_embedding):
-        if self.concat_mode == 'add':
-            return rnn_out + speaker_embedding
-        elif self.concat_mode == 'sub':
-            return rnn_out - speaker_embedding
-        elif self.concat_mode == 'mul':
-            return rnn_out * speaker_embedding
-        elif self.concat_mode == 'div':
-            return rnn_out / speaker_embedding
-        else:
+        if self.concat_mode == ConcatMode.CONCAT:
             sequence_length = tf.shape(rnn_out)[1]
 
             speaker_embedding = tf.expand_dims(speaker_embedding, 1)
             speaker_embedding = tf.tile(speaker_embedding, [1, sequence_length, 1])
 
             return tf.concat([rnn_out, speaker_embedding], axis = -1)
+        elif self.concat_mode == ConcatMode.ADD:
+            return rnn_out + speaker_embedding
+        elif self.concat_mode == ConcatMode.SUB:
+            return rnn_out - speaker_embedding
+        elif self.concat_mode == ConcatMode.MUL:
+            return rnn_out * speaker_embedding
+        elif self.concat_mode == ConcatMode.DIV:
+            return rnn_out / speaker_embedding
     
     def call(self, inputs, mask = None, training = False):
         if self.use_speaker_embedding:
@@ -446,7 +455,7 @@ class Tacotron2Encoder(tf.keras.Model):
                 speaker_embedding = input_speaker
             
             if self.expand_embedding_layer is not None:
-                speaker_embedding = self.expand_embedding_layer(speaker_ids)
+                speaker_embedding = self.expand_embedding_layer(speaker_embedding)
         
             output = self._concat(output, speaker_embedding)
         
@@ -862,12 +871,7 @@ class Tacotron2(tf.keras.Model):
         
         return decoder_outputs, mel_outputs, stop_token_prediction, alignment_history
 
-    @tf.function(experimental_relax_shapes = True
-                 #input_signature = [
-                 #    tf.TensorSpec([None, None], dtype=tf.int32, name="input_text"),
-                 #    tf.TensorSpec([None], dtype=tf.int32, name="input_lengths")
-                 #]
-                )
+    @tf.function(experimental_relax_shapes = True)
     def infer(self, inputs, input_lengths, training = False, max_length = -1, ** kwargs):
         """Call logic."""
         if max_length <= 0: max_length = self.maximum_iterations

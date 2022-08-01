@@ -40,12 +40,12 @@ class BaseImageModel(BaseModel):
         )
 
     def _str_image(self):
-        des = "Image size : {}\n".format(self.input_size)
-        des += 'Normalization mode : {}\n'.format(self.image_normalization)
+        des = "- Image size : {}\n".format(self.input_size)
+        des += '- Normalization mode : {}\n'.format(self.image_normalization)
         return des
     
     def get_image(self, filename):
-        if isinstance(filename, list):
+        if isinstance(filename, (list, tuple)):
             return tf.stack([self.get_image(f) for f in filename])
         elif isinstance(filename, pd.DataFrame):
             return tf.stack([self.get_image(row) for idx, row in filename.iterrows()])

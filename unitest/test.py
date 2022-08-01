@@ -535,8 +535,8 @@ def assert_none(value, * args, ** kwargs):
 def assert_not_none(value, * args, ** kwargs):
     assert_not_equal(None, value, * args, ** kwargs)
     
-def assert_model_output(fn, * args, max_err = 0.01, err_mode = 'norm', ** kwargs):
-    kwargs.setdefault('compare_kwargs', {'max_eer' : max_err, 'err_mode' : err_mode})
+def assert_model_output(fn, * args, max_err = 0.01, normalize = True, ** kwargs):
+    kwargs.setdefault('compare_kwargs', {'max_eer' : max_err, 'normalize' : normalize})
     assert_function(fn, * args, ** kwargs)
     
 def assert_function(fn, * args, ** kwargs):

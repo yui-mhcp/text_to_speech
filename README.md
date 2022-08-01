@@ -56,12 +56,12 @@ Available architectures :
 
 ### Model weights
 
-| Language  | Dataset   | Synthesizer   | Vocoder   | Speaker Encoder   | Trainer   | Weights   |
-| :-------: | :-------: | :-----------: | :-------: | :---------------: | :-------: | :-------: |
-| `en`      | [LJSpeech](https://keithito.com/LJ-Speech-Dataset/)   | `Tacotron2`   | `WaveGlow`    | / | [NVIDIA](https://github.com/NVIDIA)   | [Google Drive](https://drive.google.com/file/d/1mnhPgOE8IrQ3cTtfwOScZEn3aFZvaZG7/view?usp=sharing)  |
-| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `Tacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/file/d/1r3Dzu5V1A34-StUeKPt0Fl_RoQohu8t_/view?usp=sharing)  |
-| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `SV2TTSTacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/file/d/1GESyvKozvWEj7nfC7Qin2xuMJrL4pqTS/view?usp=sharing)  |
-| `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1at9bYsAoazqMccDBXW089DjivMS1Nb2x/view?usp=sharing)  |
+| Name      | Language  | Dataset   | Synthesizer   | Vocoder   | Speaker Encoder   | Trainer   | Weights   |
+| :-------: | :-------: | :-------: | :-----------: | :-------: | :---------------: | :-------: | :-------: |
+| pretrained_tacotron2  | `en`      | [LJSpeech](https://keithito.com/LJ-Speech-Dataset/)   | `Tacotron2`   | `WaveGlow`    | / | [NVIDIA](https://github.com/NVIDIA)   | [Google Drive](https://drive.google.com/file/d/1mnhPgOE8IrQ3cTtfwOScZEn3aFZvaZG7/view?usp=sharing)  |
+| tacotron2_siwis   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `Tacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/file/d/1r3Dzu5V1A34-StUeKPt0Fl_RoQohu8t_/view?usp=sharing)  |
+| sv2tts_tacotron2_256  | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1at9bYsAoazqMccDBXW089DjivMS1Nb2x/view?usp=sharing)  |
+| sv2tts_siwis  | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1GESyvKozvWEj7nfC7Qin2xuMJrL4pqTS/view?usp=sharing)  |
 
 You can download the `tensorflow` version of `WaveGlow` at [this link](https://drive.google.com/file/d/1Lx-MiiRuxWmBX4_ZORD9YT4LfgHb0Tfk/view?usp=sharing)
 
@@ -69,6 +69,7 @@ Models must be unzipped in the `pretrained_models/` directory !
 
 **Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :)
 
+The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability and produce a voice with more intonation. 
 
 ## Usage and demonstration
 
@@ -97,9 +98,10 @@ You also have to install `ffmpeg` for audio loading / saving.
 - [x] Add `batch_size` support for `vocoder inference`
 - [x] Add pretrained `SV2TTS` weights
 - [x] Add a `similarity loss` to test a new training procedure for single-speaker fine-tuning
-- [ ] Add document parsing to perform `TTS` on document
+- [ ] Add document parsing to perform `TTS` on document (in progress)
 - [ ] Add new languages support
 - [ ] Add new TTS architectures / models
+- [x] Add `consumer-producer` based support for prediction
 
 ## Multi-speaker Text-To-Speech
 

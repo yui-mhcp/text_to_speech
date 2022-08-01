@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import glob
 import json
 import pickle
 import numpy as np
@@ -18,6 +19,17 @@ import pandas as pd
 import tensorflow as tf
 
 from utils.generic_utils import to_json, flatten
+
+try:
+    from utils.image import _image_formats, _video_formats
+    _image_ext = _image_formats + _video_formats
+except ImportError:
+    _image_ext = ()
+
+try:
+    from utils.audio import _audio_formats as _audio_ext
+except ImportError:
+    _audio_ext = ()
 
 def normalize_filename(filename, invalid_mode = 'error'):
     """
@@ -89,20 +101,23 @@ def _load_audio(filename, rate = None, ** kwargs):
 
 def dump_data(filename, data, overwrite = False, ** kwargs):
     if isinstance(data, tf.Tensor): data = data.numpy()
-    if isinstance(data, np.ndarray): filename += '.npy'
-    elif isinstance(data, pd.DataFrame): filename += '.csv'
-    elif isinstance(data, str): filename += '.txt'
-    else: filename += '.pkl'
+    ext = os.path.splitext(filename)[1][1:]
+    if not ext:
+        for types, default_ext in _default_ext.items():
+            if isinstance(data, types):
+                filename += '.' + default_ext
+                ext = default_ext
+                break
+        
+        if not ext: filename, ext = '{}.pkl'.format(filename), 'pkl'
     
     if overwrite or not os.path.exists(filename):
-        if isinstance(data, pd.DataFrame):
-            data.to_csv(filename)
-        elif isinstance(data, np.ndarray):
-            np.save(filename, data)
-        elif isinstance(data, str):
-            dump_txt(filename, data)
-        else:
-            dump_pickle(filename, data)
+        if ext not in _dump_file_fn:
+            raise ValueError('Unhandled extention !\n  Accepted : {}\n  Got : {}'.format(
+                tuple(_dump_file_fn.keys()), ext
+            ))
+        
+        _dump_file_fn[ext](filename, data, ** kwargs)
     
     return filename
 
@@ -122,9 +137,6 @@ def dump_txt(filename, data, ** kwargs):
     with open(filename, 'w', encoding = 'utf-8') as file:
         file.write(data)
 
-_image_ext      = ('jpg', 'png', 'gif')
-_audio_ext      = ('m4a', 'mp3', 'wav', 'flac', 'opus')
-
 _load_file_fn   = {
     ** {ext : _load_image for ext in _image_ext},
     ** {ext : _load_audio for ext in _audio_ext},
@@ -132,5 +144,21 @@ _load_file_fn   = {
     'txt'   : load_txt,
     'pkl'   : load_pickle,
     'npy'   : np.load,
-    'csv'   : pd.read_csv
+    'csv'   : pd.read_csv,
+    'tsv'   : lambda filename, ** kwargs: pd.read_csv(filename, sep = '\t', ** kwargs)
+}
+_dump_file_fn   = {
+    'json'  : dump_json,
+    'txt'   : dump_txt,
+    'pkl'   : dump_pickle,
+    'csv'   : lambda filename, data, ** kwargs: data.to_csv(filename, ** kwargs),
+    'tsv'   : lambda filename, data, ** kwargs: data.to_csv(filename, sep = '\t', ** kwargs),
+    'xlsx'  : lambda filename, data, ** kwargs: data.to_excel(filename, ** kwargs),
+    'npy'   : lambda filename, data, ** kwargs: np.save(filename, data, ** kwargs)
+}
+_default_ext    = {
+    str     : 'txt',
+    (list, tuple, dict, int, float) : 'json',
+    np.ndarray      : 'npy',
+    pd.DataFrame    : 'csv'
 }

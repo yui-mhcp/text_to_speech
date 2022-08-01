@@ -59,7 +59,18 @@ class BaseAudioModel(BaseModel):
                     mel_as_image    = None, # for retro-compatibility
                     
                     ** kwargs
-                   ):        
+                   ):
+        """
+            Constructor for the audio-related variables
+            
+            Arguments :
+                - audio_rate    : the audio sampling rate
+                - audio_format  : the audio format handled by the model (audio / mel / mel_image)
+                - mel_fn    : either the mel's filename or a mel's type
+                - mel_config    : the mel spectrogram's config
+                - pad_mel_value : value used to pad mel-spectrogram (in batch)
+                - mel_fn_type / mel_as_image : for retro-compatibility
+        """
         assert audio_format in _supported_audio_format
         
         if mel_as_image is not None:
@@ -152,18 +163,24 @@ class BaseAudioModel(BaseModel):
 
     
     def _str_audio(self):
-        des = "Audio rate : {}\n".format(self.audio_rate)
+        des = "- Audio rate : {}\n".format(self.audio_rate)
         if self.use_mel_fn:
-            des += "# mel channels : {}\n".format(self.n_mel_channels)
+            des += "- # mel channels : {}\n".format(self.n_mel_channels)
         return des
     
     def get_audio_input(self, data, ** kwargs):
-        kwargs = {** self.trim_kwargs, ** kwargs}
-        audio = load_audio(data, self.audio_rate, ** kwargs)
+        """ Load audio and returns a 2-D `tf.Tensor` with shape `(1, audio_len)` """
+        kwargs  = {** self.trim_kwargs, ** kwargs}
+        audio   = load_audio(data, self.audio_rate, ** kwargs)
         
-        return tf.expand_dims(audio, 1)
+        return tf.expand_dims(audio, axis = 1)
     
     def get_mel_input(self, data, ** kwargs):
+        """
+            Load the mel-spectrogram and returns :
+                if `self.mel_as_image` : a 3-D `tf.Tensor` with shape `(n_frames, n_channels, 1)`
+                else: a 2-D `tf.Tensor` with shape `(n_frames, n_channels)`
+        """
         kwargs = {** self.trim_kwargs, ** kwargs}
         mel = load_mel(
             data,
@@ -179,6 +196,7 @@ class BaseAudioModel(BaseModel):
         return mel
     
     def get_audio(self, data, ** kwargs):
+        """ Either calls `get_mel_input` or `get_audio_input` depending on `audio_format` """
         if isinstance(data, list):
             return [self.get_audio(data_i, ** kwargs) for data_i in data]
         elif isinstance(data, pd.DataFrame):
@@ -192,6 +210,9 @@ class BaseAudioModel(BaseModel):
         return input_data
     
     def _augment_audio(self, audio, max_length = -1):
+        """
+            Augment `audio` with random noise and random shift / padding if `max_length > len(audio)`
+        """
         if max_length > len(audio):
             audio = random_shift(audio, min_length = max_length)
             audio = random_pad(audio, max_length)
@@ -205,6 +226,9 @@ class BaseAudioModel(BaseModel):
         return audio
     
     def _augment_mel(self, mel, max_length = -1):
+        """
+            Augment `mel` with random noise and random shift / padding if `max_length > len(audio)`
+        """
         if max_length > len(mel):
             max_padding = max_length - tf.shape(mel)[0]
             if max_padding > 0:
@@ -240,6 +264,7 @@ class BaseAudioModel(BaseModel):
         )
     
     def augment_audio(self, inp, ** kwargs):
+        """ Either cals `_augment_audio` or `_augment_mel` depending on `audio_format` """
         if self.use_mel_fn:
             return self._augment_mel(inp, ** kwargs)
         else:

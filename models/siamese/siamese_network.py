@@ -404,12 +404,11 @@ class SiameseNetwork(BaseModel):
             This function is the core of the `siamese networks` as embeddings are used for everything (predict similarity / distance), label predictions, clustering, make funny colored plots, ...
         """
         time_logger.start_timer('processing')
-
+        if not isinstance(data, (list, tuple, pd.DataFrame)): data = [data]
+        
         inputs = self.get_input(data, ** kwargs)
-        
+
         time_logger.stop_timer('processing')
-        
-        if not isinstance(inputs, (list, tf.Tensor)): inputs = [inputs]
         
         encoder = self.encoder
         

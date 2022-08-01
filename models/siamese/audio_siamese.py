@@ -23,7 +23,7 @@ from custom_architectures import get_architecture
 from models.siamese.siamese_network import SiameseNetwork
 from models.interfaces.base_audio_model import BaseAudioModel
 from utils import load_json, dump_json, normalize_filename
-from utils.audio import load_audio, AudioAnnotation
+from utils.audio import load_audio, write_audio, AudioAnnotation
 from utils.distance import KPropagation
 
 time_logger = logging.getLogger('timer')
@@ -295,7 +295,7 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
                 audio_num = len(os.listdir(audio_dir))
                 audio_filename = os.path.join(audio_dir, 'audio_{}.wav'.format(audio_num))
 
-                write_audio(filename, audio_filename, rate = self.audio_rate)
+                write_audio(audio = filename, filename = audio_filename, rate = self.audio_rate)
             else:
                 audio_filename = normalize_filename(filename)
             

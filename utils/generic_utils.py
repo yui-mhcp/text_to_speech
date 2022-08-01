@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import enum
 import json
 import pickle
 import logging
@@ -65,6 +66,15 @@ def limit_gpu_memory(limit = 2048):
     except:
         logging.error("Error while limiting tensorflow GPU memory")
 
+def get_enum_item(value, enum, upper_names = True):
+    if isinstance(value, enum): return value
+    if isinstance(value, str):
+        if upper_names: value = value.upper()
+        if not hasattr(enum, value):
+            raise KeyError('{} is not a valid {} : {}'.format(value, enum.__name__, tuple(enum)))
+        return getattr(enum, value)
+    return enum(value)
+    
 def get_object(available_objects, obj_name, * args,
                print_name = 'object', err = False, 
                allowed_type = None, ** kwargs):
@@ -119,6 +129,7 @@ def to_lower_keys(dico):
 
 def to_json(data):
     """ Convert a given data to json-serializable (if possible) """
+    if isinstance(data, enum.Enum): data = data.value
     if isinstance(data, tf.Tensor): data = data.numpy()
     if isinstance(data, bytes): data = data.decode('utf-8')
     if isinstance(data, bool): return data

@@ -37,6 +37,7 @@
 #
 # *****************************************************************************
 
+import logging
 import tensorflow as tf
 
 from custom_layers import Invertible1x1Conv
@@ -102,7 +103,7 @@ class WaveglowBlock(tf.keras.Model):
                 res_skip_channels, 1
             ))
 
-    def call(self, forward_input):
+    def call(self, forward_input, training = False, mask = None):
         audio, spect = forward_input
         
         audio = self.start(audio)
@@ -175,7 +176,7 @@ class WaveGlow(tf.keras.Model):
         self.kernel_size    = kernel_size
 
         self.upsample = tf.keras.layers.Conv1DTranspose(
-            n_mel_channels, 1024, strides=256
+            n_mel_channels, 1024, strides = 256
         )
         self.blocks     = []
         self.convinv    = []
@@ -220,9 +221,9 @@ class WaveGlow(tf.keras.Model):
 
         spect = tf.image.extract_patches(
             tf.expand_dims(spect, -1),
-            sizes = [1, self.n_group,1,1],
+            sizes   = [1, self.n_group,1,1],
             strides = [1,self.n_group,1,1],
-            rates = [1,1,1,1],
+            rates   = [1,1,1,1],
             padding = 'VALID'
         )
         spect = tf.reshape(spect, [tf.shape(spect)[0], tf.shape(spect)[1], -1])
@@ -232,7 +233,7 @@ class WaveGlow(tf.keras.Model):
         ])
 
         for i, k in enumerate(reversed(range(self.n_flows))):
-            n_half = int(tf.shape(audio)[2] / 2)
+            n_half  = tf.cast(tf.shape(audio)[2] / 2, tf.int32)
             audio_0 = audio[:, :, :n_half]
             audio_1 = audio[:, :, n_half:]
 
@@ -241,19 +242,19 @@ class WaveGlow(tf.keras.Model):
             s = output[:, :, n_half:]
             b = output[:, :, :n_half]
 
-            audio_1 = (audio_1 - b)/tf.exp(s)
-            audio = tf.concat([audio_0, audio_1], 2)
+            audio_1 = (audio_1 - b) / tf.exp(s)
+            audio   = tf.concat([audio_0, audio_1], axis = 2)
             
-            audio = self.convinv[k](audio, reverse=True)
+            audio = self.convinv[k](audio, reverse = True)
 
             if k % self.n_early_every == 0 and k > 0:
                 z = tf.random.normal([
                     tf.shape(spect)[0], tf.shape(spect)[1], self.n_early_size
                 ])
                 audio = tf.concat([sigma*z, audio], axis = 2)
-
-        audio = tf.reshape(audio, [tf.shape(audio)[0], -1])
         
+        audio = tf.reshape(audio, [tf.shape(audio)[0], -1])
+
         return audio
     
     def get_config(self):

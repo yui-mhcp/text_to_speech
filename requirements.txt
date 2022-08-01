@@ -1,10 +1,25 @@
+graphviz
+imageio
+kneed
 librosa
 matplotlib
+moviepy
+noisereduce
+num2words
 numpy==1.20.0
 opencv_python
 pandas
+pdfminer.six
+PyAudio
+pydub
+python_docx
+python_speech_features
+pytube3
 regex
 requests
+scipy
+sentencepiece
+tensorboard
 tensorflow
 tensorflow_datasets
 torch
@@ -13,37 +28,3 @@ transformers
 umap_learn
 Unidecode
 pydot
-
-# special imports
-
-# audio loading / processing
-scipy
-# read audio from video
-moviepy
-# for youtube video loading
-pytube3
-# noise reduction
-noisereduce
-# for a specific STFT class (DeepSpeechSTFT)
-python_speech_features
-
-# for audio loading
-pydub
-# for GIF creation
-imageio
-# for YOLO generator
-imgaug
-
-# for k-means
-kneed
-
-# for text processing
-num2words
-
-# for STT streaming
-sounddevice
-
-# for Q&A / maggie bot
-discord
-google
-async_timeout

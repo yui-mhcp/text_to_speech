@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import logging
+import collections
 import numpy as np
 
 def print_vars(model):
@@ -23,17 +24,19 @@ def print_vars(model):
 def transpose_weights(weights):
     if len(weights.shape) <= 1:
         return weights
-    if len(weights.shape) == 2:
+    elif len(weights.shape) == 2:
         return weights.T
-    if len(weights.shape) == 3:
+    elif len(weights.shape) == 3:
         return np.transpose(weights, [2, 1, 0])
+    elif len(weights.shape) == 4:
+        return np.transpose(weights, [2, 3, 1, 0])
     else:
         raise ValueError("Unknown weights shape : {}".format(weights.shape))
 
 """ Pytorch to Tensorflow convertion """
 
 def get_pt_layers(pt_model):
-    layers = {}
+    layers = collections.OrderedDict()
     state_dict = pt_model.state_dict() if not isinstance(pt_model, dict) else pt_model
     for k, v in state_dict.items():
         layer_name = '.'.join(k.split('.')[:-1])
@@ -61,7 +64,7 @@ def pt_convert_layer_weights(layer_weights):
     return [transpose_weights(w) for w in new_weights]
 
 def get_pt_variables(pt_model, verbose = False):
-    pt_layers = get_pt_layers(pt_model)
+    pt_layers = get_pt_layers(pt_model) if not isinstance(pt_model, dict) else pt_model
     converted_weights = []
     for layer_name, layer_variables in pt_layers.items():
         converted_variables = pt_convert_layer_weights(layer_variables) if 'embedding' not in layer_name else layer_variables
@@ -84,7 +87,7 @@ def pt_convert_model_weights(pt_model, tf_model, verbose = False):
 """ Tensorflow to Pytorch converter """
 
 def get_tf_layers(tf_model):
-    layers = {}
+    layers = collections.OrderedDict()
     variables = tf_model.variables if not isinstance(tf_model, list) else tf_model
     for v in variables:
         layer_name = '/'.join(v.name.split('/')[:-1])

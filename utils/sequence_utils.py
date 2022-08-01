@@ -14,8 +14,10 @@ import numpy as np
 import tensorflow as tf
 
 def truncate(tokens, max_length, keep_mode = 'start'):
+    """ Truncate a sequence of shape `(length, )` to `max_length` """
     assert mode in ('random', 'start', 'end')
     
+    start = 0
     if tf.shape(tokens)[0] > max_length:
         if keep_mode == 'random':
             start = tf.random.uniform(
@@ -34,7 +36,7 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     """
         Create a padded version of batch in a single np.ndarray
         Note that this function allows to have different shapes on different dimensions and will pad all of them. 
-        However, all data must have the same rank
+        However, all data must have the same rank (number of dimensions)
         
         Arguments : 
             - batch         : list of np.ndarray / tf.Tensor
@@ -72,7 +74,15 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     return padded_batch
 
 def concat_sequences(seq1, seq2, pad_value):
-    """ Concat 2 batch of sequences where `seq1` and `seq2` have shape `(batch_size, seq_{1 / 2}_len)` """
+    """
+        Concat 2 sequences on the 0-axis
+        Arguments :
+            - seq1  : sequence with shape `(n1, len_1)`
+            - seq2  : sequence with shape `(n2, len_2)`
+            - pad_value : the padding value for the shortest sequence
+        Returns :
+            - concatenation with shape `(n1 + n2, max(len_1, len_2))`
+    """
     len_1, len_2 = tf.shape(seq1)[1], tf.shape(seq2)[1]
 
     if len_1 != len_2:
@@ -84,7 +94,8 @@ def concat_sequences(seq1, seq2, pad_value):
     
     return tf.concat([seq1, seq2], axis = 0)
 
-def pad_to_multiple(seq, multiple, axis = 1, pad_after = True):
+def pad_to_multiple(seq, multiple, axis = 1, pad_after = True, ** kwargs):
+    """ Pad `seq[axis]` to the next multiple of `multiple` (if not a multiple of it) """
     if axis < 0: axis = len(tf.shape(seq)) + axis
     rest = tf.shape(seq)[axis] % multiple
     if rest != 0:
@@ -94,7 +105,7 @@ def pad_to_multiple(seq, multiple, axis = 1, pad_after = True):
             (0, 0) for _ in range(axis + 1, len(tf.shape(seq)))
         ]
         
-        seq = tf.pad(seq, padding)
+        seq = tf.pad(seq, padding, ** kwargs)
         
     return seq
 

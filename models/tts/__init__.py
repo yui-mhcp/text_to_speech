@@ -11,8 +11,12 @@
 # limitations under the License.
 
 import os
+import shutil
+import numpy as np
 
 from utils import load_json
+from utils.text import parse_document
+from utils.audio import read_audio, write_audio
 from models.model_utils import get_model_dir, get_model_config, is_model_name
 
 from models.tts.waveglow import WaveGlow, PtWaveGlow
@@ -22,7 +26,7 @@ from models.tts.vocoder import Vocoder
 
 _vocoder = None
 
-_default_vocoer = 'WaveGlow' if is_model_name('WaveGlow') else None
+_default_vocoder = 'WaveGlow' if is_model_name('WaveGlow') else None
 
 def get_model_lang(model):
     return get_model_config(model).get('lang', None)
@@ -32,7 +36,7 @@ def get_model_name(lang):
         raise ValueError('Unknown language for pretrained TTS model\n  Accepted : {}\n  Got : {}'.format(tuple(_pretrained.keys()), lang))
     return _pretrained[lang]
 
-def get_tts_model(lang = None, model = None, vocoder = _default_vocoer, ** kwargs):
+def get_tts_model(lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
     global _vocoder
     
     # Get pretrained information from '_pretrained'
@@ -64,17 +68,59 @@ def get_audio_file(text, * args, ** kwargs):
     
     return load_json(os.path.join(directory, 'map.json')).get(text, {}).get('audio', None)
 
-def tts_stream(lang = None, model = None, vocoder = _default_vocoer, ** kwargs):
+def tts_stream(lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
     model = get_tts_model(
         lang = lang, model = model, vocoder = vocoder
     )
     model.stream(** kwargs)
 
-def tts(sentences, lang = None, model = None, vocoder = _default_vocoer, ** kwargs):
+def tts_document(filename,
+                 output_dir = None,
+                 save_page_audios   = True,
+                 page_audio_format  = 'page_{}.mp3',
+                 save_mel   = False,
+                 ** kwargs
+                ):
+    if output_dir is None: output_dir = os.path.splitext(filename)[0] + '_audios'
+    os.makedirs(output_dir, exist_ok = True)
+    
+    parsed  = parse_document(filename, save_images = False)
+
+    flattened = []
+    for _, paragraphs in parsed.items():
+        flattened.extend([p['text'] for p in paragraphs if 'text' in p])
+
+    result  = tts(flattened, directory = output_dir, save_mel = save_mel, ** kwargs)
+    
+    text_to_audio = {}
+    for text, infos in result: text_to_audio.setdefault(text, infos)
+    
+    for page_nb, paragraphs in parsed.items():
+        for para in paragraphs:
+            if 'text' not in para or not para['text'].strip() or para['text'] not in text_to_audio: continue
+            
+            para.update(text_to_audio[para['text']])
+        
+        if save_page_audios:
+            page_audios = [para['audio'] for para in paragraphs if 'audio' in para]
+            audio = [
+                read_audio(audio) for audio in page_audios
+            ]
+            rate    = audio[0][0]
+            audio   = np.concatenate([a[1] for a in audio])
+            filename    = os.path.join(output_dir, page_audio_format.format(page_nb))
+            write_audio(audio = audio, filename = filename, rate = rate)
+    
+    base_name = os.path.basename(os.path.splitext(filename)[0])
+    shutil.copy(result[-1][1]['audio'], os.path.join(output_dir, base_name + '.mp3'))
+    
+    return parsed
+    
+def tts(sentences, lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
     """
-        Perform tts and return result of Waveglow.predict(...)
-        Return : list of tuple (phrase, infos) whe infos is a dict
-            infos contains :
+        Perform TTS and return result of Waveglow.predict(...)
+        Return : list of tuple (sentence, infos) whe infos is a dict
+            `infos` contains :
             - splitted  : the splitted original phrase
             - mels  : mel spectrogram files for each splitted part
             - audio : raw audio (if directory is None) or filename of the full audio
@@ -94,5 +140,5 @@ _models = {
 
 _pretrained = {
     'en'    : 'pretrained_tacotron2',
-    'fr'    : 'tacotron2_siwis'
+    'fr'    : 'sv2tts_siwis'
 }

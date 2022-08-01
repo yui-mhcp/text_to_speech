@@ -18,6 +18,30 @@ from num2words import num2words
 
 _lang = 'en'
 
+_comma_extended     = {
+    'fr' : 'virgule', 'en' : 'comma'
+}
+_math_symbols   = {
+    '=' : {'fr' : 'égal',       'en' : 'equal'},
+    '+' : {'fr' : 'plus',       'en' : 'plus'},
+    '-' : {'fr' : 'moins',      'en' : 'minus'},
+    '*' : {'fr' : 'fois',       'en' : 'times'},
+    '/' : {'fr' : 'sur',        'en' : 'divide by'},
+    '^' : {'fr' : 'exposant',   'en' : 'exponent'}
+}
+_join_symbols   = '|'.join([re.escape(symbol) for symbol in _math_symbols])
+_time_extended  = {
+    'h'     : {'fr' : 'heures',     'en' : 'hours'},
+    'min'   : {'fr' : 'minutes',    'en' : 'minutes'},
+    'sec'   : {'fr' : 'secondes',   'en' : 'seconds'}
+}
+
+_ordinal_re = {
+    'en'    : re.compile(r'[0-9]+(st|nd|rd|th)'),
+    'fr'    : re.compile(r'[0-9]+(er|ère|ème|eme|ième|ieme)')
+
+}
+
 _time_re            = re.compile(r'([0-9]+h|[0-9]+min|[0-9]+sec|[0-9]*:[0-9]{1,2}:[0-9]{1,2})')
 _zero_re            = re.compile(r'^0*')
 _comma_number_re    = re.compile(r'([0-9][0-9\,]+[0-9])')
@@ -26,54 +50,20 @@ _tiret_number_re    = re.compile(r'([0-9]+-[0-9])')
 _decimal_number_re  = re.compile(r'([0-9]+\.[0-9]+)')
 _pounds_re          = re.compile(r'£([0-9\,]*[0-9]+)')
 _dollars_re         = re.compile(r'\$([0-9\.\,]*[0-9]+)')
-_ordinal_re_en      = re.compile(r'[0-9]+(st|nd|rd|th)')
-_ordinal_re_fr      = re.compile(r'[0-9]+(er|ère|ème|eme|ième|ieme)')
 _number_re          = re.compile(r'[0-9]+')
-_math_symbol_re     = re.compile(r'((([0-9]\s)?(\+|-|\*|/)\s?[0-9])|([0-9]\s?(\+|-|\*|/)\s?[0-9]?))')
-
-_comma_extended     = {
-    'fr' : 'virgule', 'en' : 'comma'
-}
-_special_symbols    = {
-    '='     : {'fr' : ' egal ',     'en' : ' equal '},
-    '+'     : ' plus ',
-    '/'     : ' slash ',
-    '%'     : {'fr' : ' pourcent ', 'en' : ' percent '},
-    '§'     : {'fr' : ' paragraphe ', 'en' : ' paragraph '},
-    '&'     : {'fr' : ' et ', 'en' : ' and '}
-}
-_math_symbols   = {
-    '='   : {'fr' : ' egal ',     'en' : ' equal '},
-    '+'   : {'fr' : ' plus ',     'en' : ' plus '},
-    '-'   : {'fr' : ' moins ',    'en' : ' minus '},
-    '*'   : {'fr' : ' fois ',     'en' : ' times '},
-    '/'   : {'fr' : ' sur ',      'en' : ' divide by '},
-}
-_time_extended    = {
-    'h' : {'fr' : 'heures', 'en' : 'hours'},
-    'min'   : {'fr' : 'minutes', 'en' : 'minutes'},
-    'sec'   : {'fr' : 'secondes', 'en' : 'seconds'}
-}
+_math_symbol_re     = re.compile(
+    r'[0-9]+ *({}) *((\+|\-) *)?(?=[0-9]+)'.format(_join_symbols, _join_symbols)
+)
 
 def _expand_math_symbols(m, lang = None):
     if lang is None:
         global _lang
         lang = _lang
-    
+
     text = m.group(0)
     for s, extended in _math_symbols.items():
-        if lang in extended: extended = extended[lang]
-        text = text.replace(s, extended)
-    return text
-
-def _expand_special_symbols(text, lang = None):
-    if lang is None:
-        global _lang
-        lang = _lang
-    
-    for s, extended in _special_symbols.items():
-        if lang in extended: extended = extended[lang]
-        text = text.replace(s, extended)
+        if lang not in extended: continue
+        text = text.replace(s, ' {} '.format(extended[lang]))
     return text
 
 def _expand_time(m, lang = None):
@@ -165,7 +155,7 @@ def _expand_number(m, lang = None, decimal_as_individual = False):
             words = '{} {} {}'.format(
                 num2words(ent, lang = lang), _comma_extended.get(lang, ''), _extend_with_zeros(dec)
             )
-    return '{}'.format(words)
+    return ' {} '.format(words)
 
 
 def normalize_numbers(text, lang = None, ** kwargs):
@@ -175,20 +165,17 @@ def normalize_numbers(text, lang = None, ** kwargs):
     else:
         _lang = lang
     
-    text = re.sub(_math_symbol_re, _expand_math_symbols, text)
-    text = _expand_special_symbols(text, lang = lang)
-    text = re.sub(_time_re, _expand_time, text)
+    text = re.sub(_math_symbol_re,  _expand_math_symbols, text)
+    text = re.sub(_time_re,         _expand_time, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_tiret_number_re, _expand_tiret, text)
     text = re.sub(_space_number_re, _remove_space, text)
-    text = re.sub(_pounds_re, r'\1 pounds', text)
-    text = re.sub(_dollars_re, _expand_dollars, text)
-    text = re.sub(_decimal_number_re, _expand_number, text)
+    text = re.sub(_pounds_re,       r'\1 pounds', text)
+    text = re.sub(_dollars_re,      _expand_dollars, text)
+    text = re.sub(_decimal_number_re,   _expand_number, text)
     
-    if lang == 'en':
-        text = re.sub(_ordinal_re_en, _expand_ordinal, text)
-    elif lang == 'fr':
-        text = re.sub(_ordinal_re_fr, _expand_ordinal, text)
+    if lang in _ordinal_re:
+        text = re.sub(_ordinal_re[lang],    _expand_ordinal, text)
     
-    text = re.sub(_number_re, _expand_number, text)
+    text = re.sub(_number_re,       _expand_number, text)
     return text

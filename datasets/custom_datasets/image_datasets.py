@@ -66,6 +66,50 @@ def preprocess_image_directory(directory, ** kwargs):
     return pd.DataFrame(metadata)
             
 
+@timer(name = 'yolo output loading')
+def preprocess_annotation_annots(directory, img_dir = None, one_line_per_box = False, ** kwargs):
+    """
+        Directory of the form
+            directory/
+                <dir_1>/
+                <dir_2>/
+                ...
+                <dir_1>_boxes.json
+                <dir_2>_boxes.json
+                ...
+        where the `.json` files contains {filename : {'boxes' : [...]}} and `filename` is in <dir_x>/<filename>
+    """
+    if img_dir is None: img_dir = directory
+    
+    dataset = []
+    for metadata_file in os.listdir(directory):
+        if not metadata_file.endswith('_boxes.json'): continue
+        
+        sub_img_dir = metadata_file[:-11] # remove _boxes.json
+        
+        metadata = load_json(os.path.join(directory, metadata_file))
+        
+        metadata = [
+            {'filename' : os.path.join(img_dir, sub_img_dir, img_name), ** infos}
+            for img_name, infos in metadata.items()
+        ]
+        metadata = [m for m in metadata if os.path.exists(m['filename'])]
+        for data in metadata:
+            data['label'] = [box[-1] for box in data['boxes']]
+            data['boxes']  = [box[:4] for box in data['boxes']]
+            
+            image = Image.open(data['filename'])
+            w, h = image.size
+            data.update({'height' : h, 'width' : w})
+        
+        dataset.extend(metadata)
+    
+    dataset = pd.DataFrame(dataset)
+    dataset = dataset.rename(columns = {'boxes' : 'box'})
+    dataset['nb_box'] = dataset['box'].apply(len)
+    
+    return dataset
+
 @timer(name = 'essex loading')
 def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0, 
                             one_line_per_box=True, accepted_labels=None, 
@@ -721,6 +765,7 @@ _custom_image_datasets = {
 }
 
 _image_dataset_processing  = {
+    'img_annots'    : preprocess_annotation_annots,
     'coco'          : preprocess_COCO_annots,
     'celeba'        : preprocess_celeba_annots,
     'directory'     : preprocess_image_directory,

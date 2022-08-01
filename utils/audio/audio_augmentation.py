@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from utils.audio.audio_io import load_audio
 
-def silence(duration, rate = 22050):
+def silence(duration, rate):
     return np.zeros((int(duration * rate),))
 
 def concat(* audios, rate = 22050, silence_time = 0.15):

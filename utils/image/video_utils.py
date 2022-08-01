@@ -16,14 +16,41 @@ import logging
 import subprocess
 import numpy as np
 
-def write_video(images, filename, fps=16):
+from dataclasses import dataclass
+
+@dataclass
+class VideoInfos:
+    fps : int
+    nb_frames   : int
+    frame_w     : int
+    frame_h     : int
+
+def get_video_infos(filename):
+    """ Returns a `VideoInfos` dataclass with the video's information """
+    cap = cv2.VideoCapture(filename)
+    
+    infos   = VideoInfos(
+        fps = int(cap.get(cv2.CAP_PROP_FPS)),
+        nb_frames   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+        frame_h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        frame_w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    )
+
+    cap.release()
+    return infos
+    
+def write_video(images, filename, fps = 16, show = False):
+    """ Save a list of images as a video to `filename` """
     h, w, c = images[0].shape
     video = cv2.VideoWriter(filename, 0, fps, (w,h))
     for image in images:
-        if image.dtype in (float, np.floating): 
-            image = np.array(image * 255, dtype = np.uint8)
+        if image.dtype in (float, np.floating):
+            image = (image * 255).astype(np.uint8)
         video.write(image)
-    cv2.destroyAllWindows()
+        if show:
+            cv2.imshow(filename, image)
+            cv2.waitKey(1)
+    if show: cv2.destroyAllWindows()
     video.release()
     
 def load_youtube_playlist(url, directory = 'youtube_playlist', 
@@ -86,16 +113,16 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
 
 def copy_audio(video_source, video_target):
     """ Copy audio from one video (`video_source`) to another (`video_target`) """
-    audio_file = extract_audio(video_source, filename = 'audio_tmp.mp3')
-    res = set_video_audio(audio_file, video_target)
+    audio_file  = extract_audio(video_source, filename = 'audio_tmp.mp3')
+    res         = set_video_audio(audio_file, video_target)
     os.remove(audio_file)
     return res
 
 def set_video_audio(audio_filename, video_filename):
-    """ Set the audio in `audio_filename` to `video_filename` """
+    """ Set the audio in `audio_filename` to `video_filename` (with `ffmpeg`) """
     return subprocess.run([
-        'ffmpeg', '-i', video_target, '-i', audio_file, '-c', 'copy', '-map', '0:v:0',
-        '-map', '1:a:0', video_target[:-4] + '_audio.mp4'
+        'ffmpeg', '-i', video_filename, '-i', audio_filename, '-c', 'copy', '-map', '0:v:0',
+        '-map', '1:a:0', video_filename[:-4] + '_audio.mp4'
     ])
 
     
@@ -107,7 +134,7 @@ def extract_audio(video_filename, filename = None):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        logging.error("You must install moviepy : pip install moviepy")
+        logging.error("You must install moviepy : `pip install moviepy`")
         return None
 
     if filename is None: filename = '{}_audio.mp3'.format(video_filename[:-4])

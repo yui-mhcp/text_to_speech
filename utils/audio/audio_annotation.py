@@ -774,7 +774,7 @@ class AudioAnnotation(object):
                 if preprocess_fn is not None:
                     audio_segment = preprocess_fn(audio_segment, rate = rate, id = info['id'])
                 
-                write_audio(audio_segment, audio_name, rate = rate)
+                write_audio(audio = audio_segment, filename = audio_name, rate = rate)
             
             new_infos.append({
                 'original_filename' : self.filename.replace(os.path.sep, '/'),

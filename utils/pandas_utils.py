@@ -106,16 +106,17 @@ def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** k
     
     return result
 
-def sample_df(data, on = 'id', n = 10, n_sample = 10):
+def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_state = None):
     """
         Sample dataframe by taking `n_sample` for `n` different values of `on`
         Default values means : 'taking 10 samples for 10 different ids'
     """
     uniques = data[on].value_counts()
     
-    if n is None: n = len(uniques)
+    if n is None or n <= 0: n = len(uniques)
+    if min_sample is None: min_sample = n_sample
     
-    mask = uniques > n_sample
+    mask    = uniques >= min_sample
     uniques = uniques.index[:n * 2] if mask.sum() < n else uniques[mask].index
     
     uniques = np.random.choice(uniques, min(n, len(uniques)), replace = False)
@@ -125,7 +126,9 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10):
     samples = []
     for u in uniques:
         samples_i = data[data[on] == u]
-        samples_i = samples_i.sample(min(n_sample, len(samples_i)))
+        samples_i = samples_i.sample(
+            min(n_sample, len(samples_i)), replace = False, random_state = random_state
+        )
         
         samples.append(samples_i)
     

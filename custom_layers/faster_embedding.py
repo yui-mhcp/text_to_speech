@@ -15,10 +15,14 @@ import tensorflow as tf
 class FasterEmbedding(tf.keras.layers.Embedding):
     """Faster version of embedding."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, * args, ** kwargs):
+        super().__init__(* args, ** kwargs)
+
+    def change_vocabulary(self, new_vocab, ** kwargs):
+        self.input_dim = len(new_vocab)
+        self.build((None, None))
 
     def call(self, inputs):
-        inputs = tf.cast(tf.expand_dims(inputs, -1), tf.int32)
+        inputs  = tf.cast(tf.expand_dims(inputs, -1), tf.int32)
         outputs = tf.gather_nd(self.embeddings, inputs)
         return outputs

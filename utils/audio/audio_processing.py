@@ -176,6 +176,8 @@ def normalize_audio(audio, max_val = 32767, dtype = np.int16, normalize_by_mean 
         max_audio_val = np.mean(np.sort(np.abs(audio))[-len(audio) // 100:])
     else:
         max_audio_val = np.max(np.abs(audio))
+    if max_audio_val <= 1e-9: return audio.astype(dtype)
+    
     normalized = ((audio / max_audio_val) * max_val).astype(dtype)
     return np.clip(normalized, -max_val, max_val)
 
@@ -231,7 +233,7 @@ def window_sumsquare(window, n_frames, hop_length=200, win_length=800,
     return x
 
 
-def griffin_lim(magnitudes, stft_fn, n_iters=30):
+def griffin_lim(magnitudes, stft_fn, n_iters = 30):
     """
     PARAMS
     ------
@@ -250,20 +252,18 @@ def griffin_lim(magnitudes, stft_fn, n_iters=30):
     return signal
 
 
-def dynamic_range_compression(x, C=1, clip_val=1e-5):
+def dynamic_range_compression(x, C = 1, clip_val = 1e-5):
     """
     PARAMS
     ------
     C: compression factor
     """
     return tf.math.log(tf.clip_by_value(
-        x, 
-        clip_value_min = clip_val, 
-        clip_value_max = tf.reduce_max(x)
+        x,  clip_value_min = clip_val,  clip_value_max = tf.reduce_max(x)
     ) * C)
 
 
-def dynamic_range_decompression(x, C=1):
+def dynamic_range_decompression(x, C = 1):
     """
     PARAMS
     ------

@@ -14,12 +14,12 @@ import tensorflow as tf
 
 def augment_image(img, transforms, prct = 0.25, ** kwargs):
     """
-        Augment `img` by applying sequentially each `transforms` each with `prct` probability
+        Augment `img` by applying sequentially each `transforms`, each with `prct` probability
         
         Arguments :
-            - img   : the image to augment
+            - img       : the image to augment
             - transforms    : (list of) str / callable, transformations to apply
-            - prct  : the probability to apply each transformation
+            - prct      : the probability to apply each transformation (between [0., 1.])
             - kwargs    : kwargs passed to each transformation function
         Return :
             - transformed : (maybe) transformed image
@@ -31,7 +31,10 @@ def augment_image(img, transforms, prct = 0.25, ** kwargs):
     """
     if not isinstance(transforms, (list, tuple)): transforms = [transforms]
     for transfo in transforms:
-        assert callable(transfo) or transfo in _image_augmentations_fn, "Unknown transformation !\n  Accepted : {}\n  Got : {}".format(tuple(_image_augmentations_fn.keys()), transfo)
+        if not callable(transfo) and transfo not in _image_augmentations_fn:
+            raise ValueError("Unknown transformation !\n  Accepted : {}\n  Got : {}".format(
+                tuple(_image_augmentations_fn.keys()), transfo
+            ))
         
         fn = transfo if callable(transfo) else _image_augmentations_fn[transfo]
         

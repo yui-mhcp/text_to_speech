@@ -18,6 +18,16 @@ import unicodedata
 from unidecode import unidecode
 from utils.text.numbers import normalize_numbers
 
+_special_symbols    = {
+    '='     : {'fr' : 'égal',       'en' : 'equal'},
+    '+'     : {'fr' : 'plus',       'en' : 'plus'},
+    '/'     : {'fr' : 'slash',      'en' : 'slash'},
+    '*'     : {'fr' : 'étoile',     'en' : 'star'},
+    '^'     : {'fr' : 'chapeau',    'en' : 'hat'},
+    '%'     : {'fr' : 'pourcent',   'en' : 'percent'},
+    '§'     : {'fr' : 'paragraphe', 'en' : 'paragraph'},
+    '&'     : {'fr' : 'et',         'en' : 'and'}
+}
 
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
@@ -94,10 +104,20 @@ def lstrip(text, ** kwargs):
 def rstrip(text, ** kwargs):
     return text.rstrip()
 
+def replace_patterns(text, patterns, ** kwargs):
+    """ `pattern` is a dict associating the word to replace (key) and its replacement (value) """
+    regex = re.compile(r'(\b|\s)({})(\b|\s)'.format('|'.join(
+        [re.escape(pat) for pat in patterns.keys()]
+    )))
+    return re.sub(regex, lambda w: ' {} '.format(patterns[w.group(0).strip()]), text)
+
 def expand_abbreviations(text, abreviations = _english_abreviations, ** kwargs):
-    for regex, replacement in abreviations:
-        text = re.sub(regex, replacement, text)
-    return text
+    return replace_patterns(text, abreviations, ** kwargs)
+
+def expand_special_symbols(text, lang = None, symbols = None, ** kwargs):
+    assert lang is not None or symbols is not None
+    if symbols is None: symbols = {k : v[lang] for k, v in _special_symbols.items() if lang in v}
+    return replace_patterns(text, symbols, ** kwargs)
 
 def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
@@ -112,10 +132,10 @@ def remove_punctuation(text, punctuation = _punctuation, ** kwargs):
     return ''.join(c for c in text if c not in punctuation)
 
 def remove_tokens(text, tokens = None, ** kwargs):
+    """ Replace all tokens in `tokens` (an iterable) by ' ' (space) """
     if not tokens: return text
     regex = re.compile(r'\b({})\b'.format('|'.join(tokens)))
-    text = re.sub(regex, ' ', text)
-    return text
+    return re.sub(regex, ' ', text)
 
 def attach_punctuation(text, ** kwargs):
     for punct in _left_punctuation:
@@ -125,6 +145,7 @@ def attach_punctuation(text, ** kwargs):
     return text
 
 def expand_acronym(text, lang, ** kwargs):
+    """ Expand all words composed of uppercases """
     return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
 
 def expand_numbers(text, lang = 'en', ** kwargs):
@@ -150,17 +171,21 @@ def convert_to_ascii(text, ** kwargs):
     return unidecode(text)
 
 def fr_convert_to_ascii(text, accents_to_keep = _accents, ** kwargs):
-    converted = []
-    for c in text:
-        converted.append(unidecode(c) if c not in accents_to_keep else c)
-    return ''.join(converted)
+    """ Convert to ascii (with `unidecode`) while keeping some french accents """
+    converted = ''
+    idx = 0
+    while idx < len(text):
+        next_idx = min([
+            text.index(a, idx) if a in text[idx:] else len(text) for a in accents_to_keep
+        ])
+        converted += unidecode(text[idx : next_idx])
+        if next_idx < len(text): converted += text[next_idx]
+        idx = next_idx + 1
+    return converted
 
 def convert_to_alnum(text, allowed_char = '.,?! ', replace_char = ' ', ** kwargs):
-    new_text = ''
-    for c in text:
-        if c.isalnum() or c in allowed_char: new_text += c
-        else: new_text += replace_char
-    return new_text
+    """ Replace all non-alphanumeric charactes by `replace_char` """
+    return ''.join([c if c.isalnum() or c in allowed_char else replace_char for c in text])
 
 def basic_cleaners(text, ** kwargs):
     '''Basic pipeline that lowercases and collapses whitespace without transliteration.'''
@@ -175,23 +200,39 @@ def transliteration_cleaners(text, ** kwargs):
     text = collapse_whitespace(text, ** kwargs)
     return text
 
-def english_cleaners(text, to_lowercase = True, to_expand = True, to_expand_acronyms = False,
-                     ** kwargs):
-    '''Pipeline for English text, including number and abbreviation expansion.'''
-    text = convert_to_ascii(text, ** kwargs)
-    if to_expand_acronyms: text = expand_acronym(text, lang = 'en', ** kwargs)
-    if to_lowercase: text = lowercase(text, ** kwargs)
-    if to_expand: text = expand_numbers(text, lang = 'en', ** kwargs)
-    text = expand_abbreviations(text, ** kwargs)
+def complete_cleaners(text,
+                      lang,
+                      to_lowercase  = True,
+                      to_expand     = True,
+                      to_expand_acronyms    = False,
+                      abbreviations = None,
+                      replacements  = None,
+                      ** kwargs
+                     ):
+    """
+        Complete cleaners pipeline for a given language (the language is required for some processing). Note that some processing are optional (cf arguments).
+        `to_expand` is for the 5th step (number + symbols expansion)
+        1) Convert to ASCII
+        2) Expand abbreviations
+        3) Expand acronyms
+        4) Lowercase
+        5) Expand numbers + special symbols
+        6) Collapse whitespace
+    """
+    if lang == 'fr':        text = fr_convert_to_ascii(text, ** kwargs)
+    else:                   text = convert_to_ascii(text, ** kwargs)
+    
+    if abbreviations:       text = expand_abbreviations(text, ** kwargs)
+    if to_expand_acronyms:  text = expand_acronym(text, lang = lang, ** kwargs)
+    if to_lowercase:        text = lowercase(text, ** kwargs)
+    if to_expand:
+        text = expand_numbers(text, lang = lang, ** kwargs)
+        text = expand_special_symbols(text, lang = lang, ** kwargs)
     text = collapse_whitespace(text, ** kwargs)
     return text
 
-def french_cleaners(text, to_lowercase = True, to_expand = True, to_expand_acronyms = False,
-                    ** kwargs):
-    '''Pipeline for French text, including number expansion.'''
-    text = fr_convert_to_ascii(text, ** kwargs)
-    if to_expand_acronyms: text = expand_acronym(text, lang = 'fr', ** kwargs)
-    if to_lowercase: text = lowercase(text, ** kwargs)
-    if to_expand: text = expand_numbers(text, lang = 'fr', ** kwargs)
-    text = collapse_whitespace(text, ** kwargs)
-    return text
+def english_cleaners(text, ** kwargs):
+    return complete_cleaners(text, lang = 'en', ** kwargs)
+
+def french_cleaners(text, ** kwargs):
+    return complete_cleaners(text, lang = 'fr', ** kwargs)

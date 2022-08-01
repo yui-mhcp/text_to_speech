@@ -35,7 +35,9 @@ class MelSTFT(object):
                  sampling_rate  = 22050, 
                  mel_fmin       = 0.0,
                  mel_fmax       = 8000.0,
-                 normalize_mode = None
+                 normalize_mode = None,
+                 pre_emph       = 0.,
+                 ** kwargs
                 ):
         assert normalize_mode in (None, 'per_feature', 'all_feature')
         self.filter_length  = filter_length if filter_length > 1. else int(filter_length * sampling_rate)
@@ -46,7 +48,8 @@ class MelSTFT(object):
         self.mel_fmin       = mel_fmin
         self.mel_fmax       = mel_fmax
         self.normalize_mode = normalize_mode
-
+        self.pre_emph   = pre_emph
+        
         if self.use_mel_basis:
             mel_basis = librosa_mel_fn(
                 sr      = self.sampling_rate, 
@@ -97,13 +100,22 @@ class MelSTFT(object):
         
         audio = tf.cast(audio, tf.float32)
         
+        if self.pre_emph > 0.:
+            audio = tf.concat([
+                audio[:, :1],
+                audio[:, 1:] - self.pre_emph * audio[:, :-1]
+            ], axis = 1)
+        
         mel = self.mel_spectrogram(audio)
         return mel
         
     def get_length(self, audio_length):
         """ Return expected mel_length given the audio_length """
-        return int( np.ceil(audio_length / self.hop_length))
-        
+        return int(max(self.filter_length, audio_length) / self.hop_length) + 1
+    
+    def get_audio_length(self, mel_length):
+        return (mel_length - 1) * self.hop_length
+    
     def mel_spectrogram(self, audio):
         """
             Computes mel-spectrograms from a batch of waves
@@ -138,6 +150,7 @@ class MelSTFT(object):
         config['mel_fmin']       = self.mel_fmin
         config['mel_fmax']       = self.mel_fmax
         config['normalize_mode'] = self.normalize_mode
+        config['pre_emph']       = self.pre_emph
         
         return config
     
@@ -175,13 +188,15 @@ class STFT(object):
                  hop_length     = 200, 
                  win_length     = 800,
                  window         = 'hann',
-                 to_magnitude   = True
+                 to_magnitude   = True,
+                 periodic       = True
                 ):
         self.filter_length  = filter_length
         self.hop_length     = hop_length
         self.win_length     = win_length
         self.window         = window
         self.to_magnitude   = to_magnitude
+        self.periodic       = periodic
         
         scale   = self.filter_length / self.hop_length
         cutoff  = int((self.filter_length / 2 + 1))
@@ -201,7 +216,7 @@ class STFT(object):
         if window is not None:
             assert(filter_length >= win_length)
             # get window and zero center pad it to filter_length
-            fft_window = get_window(window, win_length, fftbins=True)
+            fft_window = get_window(window, win_length, fftbins = periodic)
             fft_window = pad_center(fft_window, size = filter_length)
             fft_window = tf.cast(fft_window, tf.float32)
 
@@ -249,7 +264,7 @@ class STFT(object):
             magnitude = tf.math.sqrt(real_part**2 + imag_part**2)
         else:
             magnitude = tf.stack([real_part, imag_part], axis = -1)
-            
+        
         return magnitude, phase
 
     def inverse(self, magnitude, phase):
@@ -306,10 +321,23 @@ class STFT(object):
         if len(audio.shape) == 1: audio = tf.expand_dims(audio, axis = 0)
         return self.transform(audio)[0]
 
+    def get_config(self):
+        return {
+            'filter_length' : self.filter_length,
+            'hop_length'    : self.hop_length,
+            'win_length'    : self.win_length,
+            'window'        : self.window,
+            'to_magnitude'  : self.to_magnitude,
+            'periodic'      : self.periodic
+        }
+
 class TacotronSTFT(MelSTFT):
-    def __init__(self, * args, ** kwargs):
+    def __init__(self, * args, window = 'hann', periodic = True, ** kwargs):
         super(TacotronSTFT, self).__init__(* args, ** kwargs)
-        self.stft_fn = STFT(self.filter_length, self.hop_length, self.win_length)
+        self.stft_fn = STFT(
+            self.filter_length, self.hop_length, self.win_length,
+            window = window, periodic = periodic
+        )
 
         self.mel_basis = tf.expand_dims(self.mel_basis, 0)
 
@@ -336,6 +364,63 @@ class TacotronSTFT(MelSTFT):
         mel_output = self.spectral_normalize(mel_output)
         return self.normalize(mel_output)
     
+    def get_config(self):
+        config = super(TacotronSTFT, self).get_config()
+        config.update(self.stft_fn.get_config())
+        return config
+    
+class ConformerSTFT(TacotronSTFT):
+    def __init__(self,
+                 * args,
+                 mag_power = 1.,
+                 log    = True,
+                 log_zero_guard_type    = 'add',
+                 log_zero_guard_value   = 2 ** -24,
+                 ** kwargs
+                ):
+        super().__init__(* args, ** kwargs)
+        self.log    = log
+        self.log_zero_guard_type    = log_zero_guard_type
+        self.log_zero_guard_value   = log_zero_guard_value
+        self.mag_power  = mag_power
+    
+    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
+    def mel_spectrogram(self, y):
+        """Computes mel-spectrograms from a batch of waves
+        PARAMS
+        ------
+        y: tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
+
+        RETURNS
+        -------
+        mel_output: tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
+        """
+        magnitudes, phases = self.stft_fn.transform(y)
+
+        if self.mag_power != 1.:
+            magnitudes = tf.pow(magnitudes, self.mag_power)
+
+        mel_output = tf.matmul(magnitudes, self.mel_basis)
+        
+        if self.log:
+            if self.log_zero_guard_type == "add":
+                mel_output = tf.math.log(mel_output + self.log_zero_guard_value)
+            elif self.log_zero_guard_type == "clamp":
+                raise NotImplementedError()
+            else:
+                raise ValueError("log_zero_guard_type was not understood")
+
+        return self.normalize(mel_output)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'log'   : self.log,
+            'mag_power' : self.mag_power,
+            'log_zero_guard_type'   : self.log_zero_guard_type,
+            'log_zero_guard_value'  : self.log_zero_guard_value
+        })
+        return config
     
 class SpeechNetSTFT(MelSTFT):
     @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
@@ -384,8 +469,9 @@ class JasperSTFT(MelSTFT):
         self.pad_to = pad_to
         self.log    = log
         
-        self.stft_fn = STFT(self.filter_length, self.hop_length, 
-                            self.win_length, to_magnitude = False)
+        self.stft_fn = STFT(
+            self.filter_length, self.hop_length, self.win_length, to_magnitude = False
+        )
         
     def get_seq_len(self, audio):
         return tf.cast(tf.math.ceil(tf.shape(audio)[1] / self.hop_length), tf.int32)
@@ -452,6 +538,7 @@ class LibrosaSTFT(MelSTFT):
     
 _mel_classes = {
     'JasperSTFT'        : JasperSTFT,
+    'ConformerSTFT'     : ConformerSTFT,
     'LibrosaSTFT'       : LibrosaSTFT,
     'TacotronSTFT'      : TacotronSTFT,
     'SpeechNetSTFT'     : SpeechNetSTFT,

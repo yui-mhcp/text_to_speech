@@ -68,7 +68,7 @@ def test_text_encoder(encoder):
     set_sequential()
     for sent in _default_sentences:
         assert_function(encoder.encode, sent, name = 'encode')
-        assert_function(lambda text: encoder.decode(encoder.encode(text)), sent, name = 'decode')
+        assert_function(encoder.invert, sent, name = 'decode')
         assert_function(encoder.split, sent, max_length = 150, name = 'split')
     
     assert_function(encoder.join, * _default_sentences, name = 'join')

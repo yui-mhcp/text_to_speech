@@ -41,9 +41,11 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         
         assert self.hparams.attention_dim % self.hparams.num_heads == 0, "Attention_dim % num_heads != 0 !"
         
-        self.num_heads = self.hparams.num_heads
-        self.attention_dim  = self.hparams.attention_dim
-        self.depth = self.hparams.attention_dim // self.hparams.num_heads
+        self.num_heads  = tf.cast(self.hparams.num_heads, tf.int32)
+        self.attention_dim  = tf.cast(self.hparams.attention_dim, tf.int32)
+        self.depth      = tf.cast(self.hparams.attention_dim // self.hparams.num_heads, tf.int32)
+        
+        self.sqrt_depth = tf.math.sqrt(tf.cast(self.depth, tf.float32))
         
         self.wq = tf.keras.layers.Dense(self.hparams.attention_dim, name = "query_layer")
         self.wk = tf.keras.layers.Dense(self.hparams.attention_dim, name = "key_layer")
@@ -54,14 +56,14 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         ) if self.hparams.attention_drop_rate > 0. else None
 
         self.output_layer   = tf.keras.layers.Dense(
-            self.hparams.attention_dim
+            self.hparams.attention_dim, name = 'output_layer'
         ) if self.hparams.use_output_layer else None
         self.dropout        = tf.keras.layers.Dropout(self.hparams.drop_rate)
         self.inp_norm_layer = tf.keras.layers.LayerNormalization(
             epsilon = self.hparams.epsilon, name = 'input_normalization'
         ) if self.hparams.normalize_input else None
         self.norm_layer     = tf.keras.layers.LayerNormalization(
-            epsilon = self.hparams.epsilon
+            epsilon = self.hparams.epsilon, name = 'output_norm'
         ) if self.hparams.normalize else None
     
     def split_heads(self, x, batch_size):
@@ -95,14 +97,16 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         """
         matmul_qk = tf.matmul(q, k, transpose_b = True)
 
-        dk = tf.cast(tf.shape(k)[-1], tf.float32)
-        scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+        scaled_attention_logits = matmul_qk / self.sqrt_depth
+        
+        return self.compute_attention(scaled_attention_logits, v, mask = mask, training = training)
 
+    def compute_attention(self, attn_logits, v, mask = None, training = False):
         if mask is not None:
-            scaled_attention_logits = scaled_attention_logits * (1. - mask) + mask * self.mask_factor
+            attn_logits = attn_logits * (1. - mask) + mask * self.mask_factor
 
         # (..., seq_len_q, seq_len_k)
-        attention_weights = tf.nn.softmax(scaled_attention_logits, axis = -1)
+        attention_weights = tf.nn.softmax(attn_logits, axis = -1)
 
         if self.attn_dropout is not None:
             attention_weights = self.attn_dropout(attention_weights, training = training)
@@ -111,8 +115,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
 
         return output, attention_weights
     
-    def call(self, query, key, value, mask = None, training = False, initial_state = None,
-             return_attention = True, return_state = False, normalize_kv = True):
+    def process_qkv(self, query, key, value, training, normalize_kv, initial_state):
         batch_size = tf.shape(query)[0]
         
         q, k, v = query, key, value
@@ -122,9 +125,9 @@ class MultiHeadAttention(tf.keras.layers.Layer):
                 k = self.inp_norm_layer(k, training = training and self.norm_training)
                 v = self.inp_norm_layer(v, training = training and self.norm_training)
 
-        q = self.wq(q)      # (batch_size, seq_len, d_model)
-        k = self.wk(k)        # (batch_size, seq_len, d_model)
-        v = self.wv(v)      # (batch_size, seq_len, d_model)
+        q = self.wq(q)      # (batch_size, seq1_len, d_model)
+        k = self.wk(k)      # (batch_size, seq2_len, d_model)
+        v = self.wv(v)      # (batch_size, seq2_len, d_model)
 
         q = self.split_heads(q, batch_size)     # (batch, num_heads, seq_len_q, depth)
         k = self.split_heads(k, batch_size)     # (batch, num_heads, seq_len_k, depth)
@@ -134,7 +137,27 @@ class MultiHeadAttention(tf.keras.layers.Layer):
             past_k, past_v = initial_state
             k = tf.concat([past_k, k], axis = -2)
             v = tf.concat([past_v, v], axis = -2)
+        
+        return q, k, v
 
+    def call(self,
+             query,
+             key,
+             value,
+             mask       = None,
+             training   = False,
+             initial_state  = None,
+             return_attention   = True,
+             return_state   = False,
+             normalize_kv   = True,
+             ** kwargs
+            ):
+        batch_size = tf.shape(query)[0]
+        
+        q, k, v = self.process_qkv(
+            query, key, value, training, normalize_kv = normalize_kv, initial_state = initial_state
+        )
+        
         # scaled_attention shape == (atch, num_heads, seq_len_q, depth)
         # attention_weights shape == (batch, num_heads, seq_len_q, seq_len_k)
         scaled_attention, attention_weights = self.scaled_dot_product_attention(

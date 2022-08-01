@@ -89,6 +89,48 @@ class BaseTextModel(BaseModel):
         )
         return des
     
+    def set_text_encoder(self, new_encoder, lang = None, ** kwargs):
+        from models import is_model_name, get_pretrained
+        
+        if lang is None: lang = self.lang
+        old_vocab   = self.vocab
+        
+        if isinstance(new_encoder, str):
+            if is_model_name(new_encoder):
+                new_encoder = get_pretrained(new_encoder)
+            else:
+                new_encoder = get_encoder(lang = lang, text_encoder = new_encoder)
+        
+        if isinstance(new_encoder, BaseTextModel):
+            self.lang   = new_encoder.lang
+            self.text_encoder   = new_encoder.text_encoder
+            self.text_encoder_config    = new_encoder.text_encoder_config
+        elif isinstance(new_encoder, TextEncoder):
+            self.lang   = lang
+            self.text_encoder   = new_encoder
+            self.text_encoder_config    = {}
+        else:
+            raise ValueError('Unsupported TextEncoder (type {}) : {}'.format(
+                type(new_encoder), new_encoder
+            ))
+        
+        self.save_text_encoder(force = True)
+        
+        if hasattr(self.get_model(), 'change_vocabulary'):
+            self.get_model().change_vocabulary(
+                self.vocab, old_vocab = old_vocab,
+                sos_token = self.sos_token_idx,
+                pad_token = self.blank_token_idx,
+                ** kwargs
+            )
+        
+        self.save()
+        
+        return self.text_encoder
+    
+    def clean_text(self, text, * args, ** kwargs):
+        return self.text_encoder.clean_text(text, * args, ** kwargs)
+
     def encode_text(self, text, * args, ** kwargs):
         return self.text_encoder.encode(text, * args, ** kwargs)
     
@@ -125,11 +167,17 @@ class BaseTextModel(BaseModel):
         )
         return tokens, len(tokens)
 
+    def save_text_encoder(self, filename = None, force = False):
+        if filename is None: filename = self.text_encoder_file
+        
+        if not os.path.exists(filename) or force:
+            self.text_encoder.save_to_file(filename)
+        return filename
+    
     def get_config_text(self, * args, ** kwargs):
         # Saving text encoder and mel fn (if needed)
-        if not os.path.exists(self.text_encoder_file):
-            self.text_encoder.save_to_file(self.text_encoder_file)
-
+        self.save_text_encoder()
+        
         return {
             'lang'      : self.lang,
             'text_encoder'  : self.text_encoder_file

@@ -26,6 +26,8 @@ from datasets.custom_datasets.text_datasets import _text_dataset_processing
 
 from datasets.custom_datasets.preprocessing import *
 
+logger  = logging.getLogger(__name__)
+
 _dataset_dir = os.environ.get('DATASET_DIR', 'D:/datasets')
 
 def set_dataset_dir(dataset_dir):
@@ -75,7 +77,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
             if shuffle: dataset = sklearn_shuffle(dataset, random_state = random_state)
             datasets[mode] = dataset
         
-        return datasets if len(datasets) > 1 else datasets['train']
+        return datasets if len(datasets) > 1 else list(datasets.values())[0]
     
     if ds_name not in _custom_datasets and type_annots is None:
         raise ValueError("Unknown dataset !\n  Got : {}\n  Accepted : {}".format(ds_name, list(_custom_datasets.keys())))
@@ -88,7 +90,7 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
         
     process_fn = _custom_processing[type_annots]
     
-    logging.info('Loading dataset {}...'.format(ds_name))
+    logger.info('Loading dataset {}...'.format(ds_name))
     
     if 'train'  not in _custom_datasets.get(ds_name, {}):
         ds_kwargs = {**_custom_datasets.get(ds_name, {}), ** kwargs}
@@ -120,7 +122,9 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
             if size: valid_dataset = valid_dataset[:size]
             
             datasets['valid'] = valid_dataset
-            
+        
+        if len(datasets) == 1: datasets = list(datasets.values())[0]
+    
     return datasets
 
 _custom_datasets = {

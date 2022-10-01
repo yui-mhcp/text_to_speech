@@ -10,191 +10,139 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-import collections
+import logging
 import numpy as np
 import tensorflow as tf
 
-from utils.sequence_utils import pad_batch
-from utils.text.cleaners import collapse_whitespace, remove_tokens, remove_punctuation, lowercase
+logger  = logging.getLogger(__name__)
 
 _max_length = 150
-
-_eos_chars = ('...', '.', ' ?', ' !', '?', '!')
-
-def _normalize_text_f1(text, exclude = []):
-    return collapse_whitespace(remove_tokens(remove_punctuation(lowercase(text)), exclude)).strip()
-
-def bytes_to_unicode():
-    # Copyright 2018 The Open AI Team Authors and The HuggingFace Inc. team.
-    #
-    # Licensed under the Apache License, Version 2.0 (the "License");
-    # you may not use this file except in compliance with the License.
-    # You may obtain a copy of the License at
-    #
-    #     http://www.apache.org/licenses/LICENSE-2.0
-    #
-    # Unless required by applicable law or agreed to in writing, software
-    # distributed under the License is distributed on an "AS IS" BASIS,
-    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    # See the License for the specific language governing permissions and
-    # limitations under the License.
-
-    """
-    Returns list of utf-8 byte and a mapping to unicode strings. We specifically avoids mapping to whitespace/control
-    characters the bpe code barfs on.
-    The reversible bpe codes work on unicode strings. This means you need a large # of unicode characters in your vocab
-    if you want to avoid UNKs. When you're at something like a 10B token dataset you end up needing around 5K for
-    decent coverage. This is a significant percentage of your normal, say, 32K bpe vocab. To avoid that, we want lookup
-    tables between utf-8 bytes and unicode strings.
-    """
-    bs = (
-        list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
-    )
-    cs = bs[:]
-    n = 0
-    for b in range(2 ** 8):
-        if b not in bs:
-            bs.append(b)
-            cs.append(2 ** 8 + n)
-            n += 1
-    cs = [chr(n) for n in cs]
-    return dict(zip(bs, cs))
+_eos_chars  = ('...', '.', ' ?', ' !', '?', '!')
 
 def get_pairs(text, n = 2):
     """ Creates a n-gram """
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
-def bpe(token, bpe_ranks):
-    word = tuple(token)
-    pairs = get_pairs(word)
-    
-    if not pairs: return token
-    
-    while True:
-        bigram = min(pairs, key = lambda pair: bpe_ranks.get(pair, float('inf')))
-        
-        if bigram not in bpe_ranks: break
-        
-        first, second = bigram
-        new_word = []
-        i = 0
-        while i < len(word):
-            try:
-                j = word.index(first, i)
-            except ValueError:
-                new_word.extend(word[i:])
-                break
-            else:
-                new_word.extend(word[i:j])
-                i = j
-            
-            if word[i] == first and i < len(word) - 1 and word[i + 1] == second:
-                new_word.append(first + second)
-                i += 2
-            else:
-                new_word.append(word[i])
-                i += 1
-        new_word = tuple(new_word)
-        word = new_word
-        if len(word) == 1: break
-        else: pairs = get_pairs(word)
-    return word
+def filter_texts(encoded_texts,
+                 lengths,
 
-def exact_match(y_true, y_pred):
-    return int(y_true == y_pred)
+                 min_length     = -1,
+                 max_length     = -1,
 
-def f1_score(y_true, y_pred, normalize = True, exclude = None, as_matrix = False):
+                 max_total_length   = -1,
+                 sort_by_length     = False,
+
+                 required_idx   = -1,
+
+                 max_texts      = -1,
+                 select_mode    = 'start',
+
+                 ** kwargs
+                ):
     """
-        Compute F1-score
+        Filter a batch of texts with length in the range [min_length, max_length]
         
         Arguments :
-            - y_true    : ground truth (target)
-            - y_pred    : prediction (hypothesis)
-            - normalize : whether to normalize or not (lowercase + remove spaces)
-            - exclude   : list of token to exclude (not take into account)
-        Return :
-            - if `y_true` and `y_pred` are str : [EM, F1, precision, recall]
-            - if `y_true` or `y_pred` is a list (not nested) :
-                - if `as_matrix` is False : [n, 4] (n = len(y_true) = len(y_pred))
-                - else : [len(y_true), len(y_pred), 4]
-            - if `y_true` or `y_pred` is a nested list : np.ndarray of shape [N, n_true, n_pred, 4]
-                - N = len(y_true) = len(y_pred)
-                - n1 = max(len(y_true_i))
-                - n2 = max(len(y_pred_i))
-                
+            - encoded_texts : 2-D / 3-D `tf.Tensor`, the encoded batch of texts
+            - lengths       : 1-D / 2-D `tf.Tensor`, the texts' lengths
+            
+            - {min / max}_length    : the minimal / maximal length
+            
+            - max_total_length      : the maximal total cumulated length
+            - sort_by_length        : whether to sort by length when filtering on max_total_length
+            
+            - required_idx  : index to keep even if its length is not in the expected range
+            
+            - max_texts     : maximum number of texts to keep
+            - select_mode   : selection mode if there are too much texts
+        Returns :
+            - filtered_texts    : the filtered batch of texts
+            - filtered_lengths  : the filtered lengths
+        
+        Warning : if no texts respects the constraints, the 1st outputs' dimension can be 0 !
+        
+        Note : if `encoded_texts` is a 3-D `tf.Tensor`, it represents a *splitted* version, meaning that :
+        - The 1st dimension is the number of paragraphs
+        - The 2nd dimension is the number of sentences
+        - The 3rd dimension is the encoded sentence
+        In this case, `lengths` is a 2-D `tf.Tensor` and the filters on length are applied on the paragraphs' lengths (i.e. `tf.reduce_sum(lengths, axis = -1)`)
     """
-    def _is_nested_list(data):
-        if isinstance(data, (list, tuple)) and len(data) > 0 and isinstance(data[0], (list, tuple)):
-            return True
-        return False
+    ####################
+    # Filter on length #
+    ####################
     
-    def _normalize(data):
-        if isinstance(data, tf.Tensor): data = data.numpy()
-        if isinstance(data, bytes):     data = data.decode('utf-8')
-        if isinstance(data, np.ndarray):    data = data.tolist()
-        if isinstance(data, (list, tuple)) and isinstance(data[0], int):
-            data = ' '.join([str(d) for d in data])
-        return data
+    text_lengths    = lengths if len(tf.shape(encoded_texts)) == 2 else tf.reduce_sum(lengths, axis = -1)
     
-    y_true  = _normalize(y_true)
-    y_pred  = _normalize(y_pred)
+    valid_mask  = tf.ones_like(text_lengths, dtype = tf.bool)
+    if min_length > -1:
+        valid_mask = tf.math.logical_and(valid_mask, text_lengths >= min_length)
     
-    if _is_nested_list(y_true) or _is_nested_list(y_pred):
-        if not _is_nested_list(y_true): y_true = [[yi] for yi in y_true]
-        if not _is_nested_list(y_pred): y_pred = [[yi] for yi in y_pred]
+    if max_length > -1:
+        valid_mask = tf.math.logical_and(valid_mask, text_lengths <= max_length)
     
-        return pad_batch([
-            f1_score(y_true_i, y_pred_i, normalize = normalize, exclude = exclude, as_matrix = True)
-            for y_true_i, y_pred_i in zip(y_true, y_pred)
-        ], pad_value = -1., dtype = np.float32)
-    elif isinstance(y_true, (list, tuple)) and isinstance(y_pred, (list, tuple)):
-        if not as_matrix:
-            assert len(y_true) == len(y_pred), "Lengths are {} and {}".format(len(y_true), len(y_pred))
-            return np.array([
-                f1_score(y_true_i, y_pred_i, normalize = normalize, exclude = exclude)
-                for y_true_i, y_pred_i in zip(y_true, y_pred)
-            ])
-        return np.array([
-            f1_score(y_true_i, y_pred, normalize = normalize, exclude = exclude) for y_true_i in y_true
-        ])
-    elif isinstance(y_true, (list, tuple)):
-        return np.array([
-            f1_score(y_true_i, y_pred, normalize = normalize, exclude = exclude) for y_true_i in y_true
-        ])
-    elif isinstance(y_pred, (list, tuple)):
-        return np.array([
-            f1_score(y_true, y_pred_i, normalize = normalize, exclude = exclude) for y_pred_i in y_pred
-        ])
-    
-    if exclude: exclude = _normalize(exclude)
-    
-    if normalize:
-        y_true = _normalize_text_f1(y_true, exclude)
-        y_pred = _normalize_text_f1(y_pred, exclude)
-    elif exclude:
-        y_true = collapse_whitespace(remove_tokens(y_true, exclude))
-        y_pred = collapse_whitespace(remove_tokens(y_pred, exclude))
-    
-    true_tokens = y_true.split()
-    pred_tokens = y_pred.split()
-    
-    common = collections.Counter(true_tokens) & collections.Counter(pred_tokens)
-    nb_same = sum(common.values())
+    if required_idx != -1:
+        valid_mask = tf.math.logical_or(valid_mask, tf.range(tf.shape(lengths)[0]) == required_idx)
 
-    em = exact_match(y_true, y_pred)
+    if not tf.reduce_all(valid_mask):
+        logger.debug('Valid texts for length-based filtering : {}'.format(valid_mask))
+        
+        encoded_texts   = tf.boolean_mask(encoded_texts, valid_mask)
+        text_lengths    = tf.boolean_mask(text_lengths, valid_mask)
+        lengths         = tf.boolean_mask(lengths, valid_mask)
+    
+    ##############################
+    #   Filter on total length   #
+    ##############################
+    
+    if max_total_length > 0 and tf.shape(lengths)[0] > 0 and tf.reduce_sum(text_lengths) > max_total_length:
+        indexes = tf.range(tf.shape(lengths)[0]) if not sort_by_length else tf.argsort(text_lengths)
+        
+        if required_idx != -1:
+            indexes     = tf.concat([
+                [required_idx], tf.boolean_mask(indexes, indexes != required_idx)
+            ], axis = -1)
+        
+        cum_text_lengths = tf.math.cumsum(tf.gather(text_lengths, indexes))
 
-    if len(true_tokens) == 0 or len(pred_tokens) == 0:
-        f1 = int(true_tokens == pred_tokens)
-        return em, f1, f1, f1
-    elif nb_same == 0:
-        return 0, 0, 0, 0
+        valid_indexes  = tf.boolean_mask(indexes, cum_text_lengths <= max_total_length)
+        if sort_by_length: valid_indexes = tf.sort(valid_indexes)
+        
+        logger.debug('Selected indexes (max_total_length filtering) : {}'.format(valid_indexes))
+        encoded_texts   = tf.gather(encoded_texts, valid_indexes)
+        text_lengths    = tf.gather(text_lengths, valid_indexes)
+        lengths         = tf.gather(lengths, valid_indexes)
+
+    ##############################
+    #   Filter on texts' number  #
+    ##############################
+
+    if max_texts > 0 and tf.shape(lengths)[0] > 0:
+        if required_idx != -1: max_texts -= 1
+        
+        if tf.shape(lengths)[0] > max_texts:
+            indexes = tf.range(tf.shape(lengths)[0])
+            if required_idx != -1: indexes = tf.boolean_mask(indexes, indexes != required_idx)
+            
+            if select_mode == 'random':
+                indexes = tf.random.shuffle(indexes)[:max_texts]
+            elif select_mode == 'random_sorted':
+                indexes = tf.sort(tf.random.shuffle(indexes)[:max_texts])
+            elif select_mode == 'start':
+                indexes = indexes[:max_texts]
+            elif select_mode == 'end':
+                indexes = indexes[-max_texts:]
+            
+            if required_idx != -1: indexes = tf.concat([[required_idx], indexes], axis = 0)
+            
+            logger.debug('Selected indexes (max_texts filtering) : {}'.format(indexes))
+            encoded_texts   = tf.gather(encoded_texts, indexes)
+            text_lengths    = tf.gather(text_lengths, indexes)
+            lengths         = tf.gather(lengths, indexes)
     
-    precision = 1. * nb_same / len(pred_tokens)
-    recall    = 1. * nb_same / len(true_tokens)
-    f1 = (2 * precision * recall) / (precision + recall)
-    
-    return em, f1, precision, recall
+    if len(lengths) > 0:
+        encoded_texts = encoded_texts[..., : tf.reduce_max(lengths)]
+
+    return encoded_texts, lengths
 
 def create_padding_mask(seq, seq_len = None, pad_value = 0, maxlen = None, dtype = tf.float32):
     """
@@ -229,9 +177,9 @@ def extract_sentence(text, pattern):
     return [sent for sent in split_sentence(text) if pattern in sent.lower()]
 
 def split_sentence(text):
-    patterns = [pat + ' ' for pat in _eos_chars]
+    patterns = [pat + ' ' for pat in _eos_chars] + [pat + '\n' for pat in _eos_chars]
     return [
-        part.strip() + end_char for part, end_char in multi_split(text, * patterns)
+        (part.strip() + end_char).strip() for part, end_char in multi_split(text, * patterns)
         if len(part.strip()) > 0
     ]
 

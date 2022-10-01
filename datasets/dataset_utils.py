@@ -27,6 +27,8 @@ from loggers import DEV
 from utils.generic_utils import time_to_string
 from utils.pandas_utils import filter_df
 
+logger  = logging.getLogger(__name__)
+
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 _accepted_datasets_types = {
@@ -95,17 +97,17 @@ def test_dataset_time(dataset, steps = 100, batch_size = 0, ** kwargs):
     temps = time.time() - start
     
     samp_per_s = '\n' if batch_size <= 0 else ' ({:.3f} samples / sec)'.format(batch_size * i / temps)
-    logging.info("\n{} batchs in {} sec ({:.3f} batch / sec){}".format(
+    logger.info("\n{} batchs in {} sec ({:.3f} batch / sec){}".format(
         i, time_to_string(temps), i / temps, samp_per_s
     ))
 
     size = tf.data.experimental.cardinality(dataset).numpy()
     if size > 0:
-        logging.info("Time estimated for all dataset ({} batch) : {}".format(
+        logger.info("Time estimated for all dataset ({} batch) : {}".format(
             size, time_to_string(size * (i / temps))
         ))
         
-    logging.info("Batch infos : {}".format(_get_infos(batch)))
+    logger.info("Batch infos : {}".format(_get_infos(batch)))
             
     return temps
 
@@ -148,7 +150,7 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
                 data = data.to_dict('records')
                 if 'output_signature' not in kwargs:
                     kwargs['output_signature'] = _infer_generator_spec(data)
-                    logging.log(DEV, 'Inferred dataset signature : {}'.format(
+                    logger.log(DEV, 'Inferred dataset signature : {}'.format(
                         kwargs['output_signature']
                     ))
 
@@ -458,29 +460,29 @@ def prepare_dataset(data,
     def batch_dataset(dataset):
         if augment_fn is not None: 
             dataset = dataset.map(augment_fn, num_parallel_calls = num_parallel_calls)
-            logging.log(DEV, "- Dataset after augmentation : {}".format(dataset))
+            logger.log(DEV, "- Dataset after augmentation : {}".format(dataset))
         
         if batch_size > 0:
             if not padded_batch:
                 dataset = dataset.batch(batch_size)
             else:
                 dataset = dataset.padded_batch(batch_size, **pad_kwargs)
-            logging.log(DEV, "- Dataset after batch : {}".format(dataset))
+            logger.log(DEV, "- Dataset after batch : {}".format(dataset))
             
         return dataset 
     
     dataset = build_tf_dataset(data, ** kwargs)
     if dataset is None: return None
     
-    logging.log(DEV, "Original dataset : {}".format(dataset))
+    logger.log(DEV, "Original dataset : {}".format(dataset))
     
     if encode_fn is not None:
         dataset = dataset.map(encode_fn, num_parallel_calls = num_parallel_calls)
-        logging.log(DEV, "- Dataset after encoding : {}".format(dataset))
+        logger.log(DEV, "- Dataset after encoding : {}".format(dataset))
     
     if filter_fn is not None:
         dataset = dataset.filter(filter_fn)
-        logging.log(DEV, "- Dataset after filtering : {}".format(dataset))
+        logger.log(DEV, "- Dataset after filtering : {}".format(dataset))
     
     if batch_before_map:
         dataset = cache_dataset(dataset)
@@ -488,7 +490,7 @@ def prepare_dataset(data,
         
     if map_fn is not None:
         dataset = dataset.map(map_fn, num_parallel_calls = num_parallel_calls)
-        logging.log(DEV, "- Dataset after mapping : {}".format(dataset))
+        logger.log(DEV, "- Dataset after mapping : {}".format(dataset))
     
     dataset = cache_dataset(dataset)
     
@@ -496,7 +498,7 @@ def prepare_dataset(data,
         dataset = dataset.map(
             memory_consuming_fn, num_parallel_calls = num_parallel_calls
         )
-        logging.log(DEV, "- Dataset after memory mapping : {}".format(dataset))
+        logger.log(DEV, "- Dataset after memory mapping : {}".format(dataset))
     
     if not batch_before_map:        
         dataset = batch_dataset(dataset)

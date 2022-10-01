@@ -20,6 +20,8 @@ from models.interfaces.base_model import BaseModel
 from utils.audio import MelSTFT, load_audio, load_mel
 from utils.audio import random_pad, random_shift, random_noise
 
+logger = logging.getLogger(__name__)
+
 _supported_audio_format = ('raw', 'audio', 'mel', 'spect', 'spectrogram', 'mel_image')
 
 AudioTrainingHParams = HParams(
@@ -74,10 +76,10 @@ class BaseAudioModel(BaseModel):
         assert audio_format in _supported_audio_format
         
         if mel_as_image is not None:
-            logging.warning('`mel_as_image` is deprecated, please use `audio_format` to specify the type of input or call `save_config()` to update the config file')
+            logger.warning('`mel_as_image` is deprecated, please use `audio_format` to specify the type of input or call `save_config()` to update the config file')
             audio_format = 'mel' if not mel_as_image else 'mel_image'
         if mel_fn_type is not None:
-            logging.warning('`mel_fn_type` is deprecated, please use `mel_fn` to specify the Mel class / file or call `save_config()` to update the config file')
+            logger.warning('`mel_fn_type` is deprecated, please use `mel_fn` to specify the Mel class / file or call `save_config()` to update the config file')
             mel_fn = mel_fn_type
             self.mel_fn_type    = mel_fn_type
         

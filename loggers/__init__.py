@@ -23,6 +23,8 @@ except ImportError as e:
 from loggers.time_logger import TIME_LEVEL, timer
 from loggers.telegram_handler import TelegramHandler
 
+logger  = logging.getLogger(__name__)
+
 DEV     = 11
 
 _styles = {
@@ -52,11 +54,15 @@ def add_level(value, name):
     def _special_log(* args, ** kwargs):
         return logging.log(value, * args, ** kwargs)
     
+    def _special_logger_log(self, * args, ** kwargs):
+        return self.log(value, * args, ** kwargs)
+
     global _levels
     _levels[name.lower()] = value
 
     logging.addLevelName(value, name.upper())
     setattr(logging, name.lower(), _special_log)
+    setattr(logging.Logger, name.lower(), _special_logger_log)
 
 def set_style(style, logger = None):
     global _default_style
@@ -114,7 +120,7 @@ def try_tts_handler(* args, ** kwargs):
         from loggers.tts_handler import TTSHandler
         return TTSHandler(* args, ** kwargs)
     except ImportError as e:
-        logging.error("Error when adding TTSHandler : {}".format(e))
+        logger.error("Error when adding TTSHandler : {}".format(e))
         return None
 
 _handlers   = {

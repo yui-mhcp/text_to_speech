@@ -10,6 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 import json
 import logging
 import regex as re
@@ -17,24 +18,27 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils import dump_json, load_json, flatten
+from utils import dump_json, load_json, flatten, get_enum_item, convert_to_str, download_file
 from utils.text import cleaners as cleaners_module
-from utils.text.text_processing import bytes_to_unicode, bpe, split_sentence, split_and_join
+from utils.text.bpe import bytes_to_unicode, bpe
+from utils.text.text_processing import split_sentence, split_and_join
 from utils.distance.distance_method import distance
 
+logger  = logging.getLogger(__name__)
+
+_clip_bpe_url   = 'https://raw.githubusercontent.com/openai/CLIP/master/clip/bpe_simple_vocab_16e6.txt.gz'
+
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
+_clip_pattern   = r"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
 
-CHAR_LEVEL  = 0
-TOKEN_LEVEL = 1
-WORD_LEVEL  = 2
-
-_str_level = {
-    'char'  : CHAR_LEVEL,
-    'token' : TOKEN_LEVEL,
-    'word'  : WORD_LEVEL
-}
+class TextEncoderLevel(enum.IntEnum):
+    CHAR    = 0
+    TOKEN   = 1
+    BPE     = 1
+    WORD    = 2
 
 def get_cleaners_fn(cleaners):
+    if not isinstance(cleaners, (list, tuple)): cleaners = [cleaners]
     cleaners_fn    = []
     for name in cleaners:
         kwargs = None
@@ -61,6 +65,7 @@ class TextEncoder(object):
                  split_pattern  = None,
                  bpe_pairs      = None,
                  byte_encoder   = None,
+                 bpe_end_of_word    = None,
                  
                  pad_token      = '',       # blank token
                  ukn_token      = None,     # for unknown toekn (if not provided, skip them)
@@ -86,10 +91,9 @@ class TextEncoder(object):
                 - use_eos_and_eos   : whether to add <sos> / <eos> at the beginning / end of the sentence
                 - name      : special name for this encoder
         """
-        if isinstance(level, str): level = _str_level.get(level, None)
-        assert level in (CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL)
-        if level != CHAR_LEVEL and 'detach_punctuation' not in cleaners:
-            logging.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
+        level = get_enum_item(level, TextEncoderLevel)
+        if level != TextEncoderLevel.CHAR and 'detach_punctuation' not in cleaners:
+            logger.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
         
         self.name       = name
         self.vocab      = list(vocab)
@@ -102,6 +106,7 @@ class TextEncoder(object):
         self.bpe_pairs      = bpe_pairs if bpe_pairs is None else [tuple(pair) for pair in bpe_pairs]
         self.byte_encoder   = byte_encoder if byte_encoder is None else {int(k) : v for k, v in byte_encoder.items()}
         self.byte_encoder_inv   = None if byte_encoder is None else {v : k for k, v in self.byte_encoder.items()}
+        self.bpe_end_of_word    = bpe_end_of_word
         
         self.pad_token  = pad_token
         self.sep_token  = sep_token
@@ -114,7 +119,9 @@ class TextEncoder(object):
 
         
         self.splitter   = re.compile(split_pattern) if split_pattern is not None else None
-        self.bpe_ranks  = {pair : i for i, pair in enumerate(self.bpe_pairs)} if self.bpe_pairs else None
+        if bpe_pairs is not None and not isinstance(bpe_pairs, dict):
+            bpe_pairs   = {tuple(pair) : i for i, pair in enumerate(bpe_pairs)}
+        self.bpe_ranks  = bpe_pairs
         self.cleaners_fn    = get_cleaners_fn(cleaners)
         
         self._special_tokens    = [token for token in self.tokens.values()]
@@ -153,7 +160,7 @@ class TextEncoder(object):
     
     @property
     def word_split(self):
-        return self.level != CHAR_LEVEL and self.splitter is None
+        return self.level != TextEncoderLevel.CHAR and self.splitter is None
     
     @property
     def special_tokens(self):
@@ -218,8 +225,8 @@ class TextEncoder(object):
         return label in self.vocab
     
     def is_start_of_word(self, token, previous = None):
-        if self.level == WORD_LEVEL: return True
-        elif self.level == CHAR_LEVEL:
+        if self.level == TextEncoderLevel.WORD: return True
+        elif self.level == TextEncoderLevel.CHAR:
             return previous is None or not self[token].isalnum() or not self[previous].isalnum()
         elif self.sub_word_prefix: return not self[token].startswith(self.sub_word_prefix)
         else:
@@ -241,7 +248,7 @@ class TextEncoder(object):
         for cleaned, token in tokens.items():
             text = text.replace(cleaned, token)
 
-        if self.level == CHAR_LEVEL and self.ukn_token_idx == -1:
+        if self.level == TextEncoderLevel.CHAR and self.ukn_token_idx == -1:
             text = ''.join([c for c in text if c in self])
             text = text.strip()
 
@@ -308,7 +315,7 @@ class TextEncoder(object):
             bpe_token = ''.join([
                 self.byte_encoder[b] for b in token.encode('utf-8') if b in self.byte_encoder
             ])
-            bpe_token = bpe(bpe_token, self.bpe_ranks)
+            bpe_token = bpe(bpe_token, self.bpe_ranks, end_of_word = self.bpe_end_of_word)
             self._bpe_cache[token] = bpe_token
         
         return self._bpe_cache[token]
@@ -316,18 +323,19 @@ class TextEncoder(object):
     def _tokenize(self, token):
         if len(token) == 0: return None
         
-        if self.level == CHAR_LEVEL:
+        if self.level == TextEncoderLevel.CHAR:
             return self._char_tokenize(token)
-        elif self.level == WORD_LEVEL:
+        elif self.level == TextEncoderLevel.WORD:
             return self._word_tokenize(token)
-        elif self.level == TOKEN_LEVEL and self.bpe_pairs is None:
+        elif self.level == TextEncoderLevel.TOKEN and self.bpe_pairs is None:
             return self._sub_word_tokenize(token)
-        elif self.level == TOKEN_LEVEL and self.bpe_pairs is not None:
+        elif self.level == TextEncoderLevel.TOKEN and self.bpe_pairs is not None:
             return self._bpe_tokenize(token)
     
-    def tokenize(self, text, ** kwargs):
-        text = self.clean_text(text, self._cleaned_tokens, ** kwargs)
-        logging.debug('Cleaned text : {}'.format(text))
+    def tokenize(self, text, cleaned = False, ** kwargs):
+        if not cleaned:
+            text = self.clean_text(text, self._cleaned_tokens, ** kwargs)
+        logger.debug('Cleaned text : {}'.format(text))
 
         splitted = self.split_text(text, self._special_tokens)
         
@@ -359,9 +367,8 @@ class TextEncoder(object):
                 row, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for _, row in text.iterrows()]
         if isinstance(text, (dict, pd.Series)): text = text['text']
-        if isinstance(text, tf.Tensor): text = text.numpy()
-        if isinstance(text, bytes): text = text.decode('utf-8')
-        if isinstance(text, (list, tuple, np.ndarray)):
+        text = convert_to_str(text)
+        if isinstance(text, (list, tuple)):
             return [self.encode(
                 t, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for t in text]
@@ -379,8 +386,8 @@ class TextEncoder(object):
             tokens = [self.sos_token_idx] + tokens + [self.eos_token_idx]
         
         if return_type == 'list': return tokens
-        elif return_type == 'np': return np.array(tokens)
-        elif return_type == 'tf': return tf.cast(tokens, tf.int32)
+        elif return_type == 'np': return np.array(tokens, dtype = np.int32)
+        elif return_type == 'tf': return tf.cast(tokens, dtype = tf.int32)
         else:
             raise ValueError("Unknown return type !\n  Accepted : {}\n  Got : {}".format(
                 ('list', 'np', 'tf'), return_type
@@ -389,9 +396,10 @@ class TextEncoder(object):
     def decode(self, sequence, skip_padding = True, attach_punctuation = True,
                remove_tokens = False):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
-        if isinstance(sequence, tf.Tensor): sequence = sequence.numpy()
+        if hasattr(sequence, 'numpy'): sequence = sequence.numpy()
         if hasattr(sequence, 'shape'):
-            if sequence.dtype in (np.float32, np.float64): sequence = np.argmax(sequence, axis = -1)
+            if sequence.dtype in (np.float32, np.float64):
+                sequence = np.argmax(sequence, axis = -1) if sequence.shape[0] > 0 else sequence
             if len(sequence.shape) > 1:
                 return [self.decode(
                     s, skip_padding = skip_padding, attach_punctuation = attach_punctuation,
@@ -426,9 +434,11 @@ class TextEncoder(object):
             except UnicodeDecodeError as e:
                 pass
         
-        if self.level == TOKEN_LEVEL and self.sub_word_prefix:
+        if self.level == TextEncoderLevel.TOKEN and self.sub_word_prefix:
             text = text.replace(' ' + self.sub_word_prefix, '')
-        
+        if self.level == TextEncoderLevel.TOKEN and self.bpe_end_of_word:
+            text = text.replace(self.bpe_end_of_word, ' ')
+
         if attach_punctuation:
             text = cleaners_module.attach_punctuation(text)
             
@@ -459,7 +469,7 @@ class TextEncoder(object):
             return n_prev, n_next
         
         def _split_encoded(encoded, max_length):
-            _decrease   = False
+            _decrease   = True
             splitted    = []
             start, end = 0, max_length
             while start < len(encoded):
@@ -490,32 +500,35 @@ class TextEncoder(object):
         
         prefix = self.encode(prefix, add_sos_and_eos = False, return_type = 'list') if prefix is not None else []
         suffix = self.encode(suffix, add_sos_and_eos = False, return_type = 'list') if suffix is not None else []
-        if len(prefix) > 0 and sep_token_idx != -1: prefix.append(sep_token_idx)
-        if len(suffix) > 0 and sep_token_idx != -1: suffix.insert(0, sep_token_idx)
+        
+        if len(prefix) > 0 and sep_token_idx != -1 and sep_token_idx != prefix[-1]:
+            prefix.append(sep_token_idx)
+        if len(suffix) > 0 and sep_token_idx != -1 and sep_token_idx != suffix[0]:
+            suffix.insert(0, sep_token_idx)
         if add_sos_and_eos:
             prefix, suffix = [self.sos_token_idx] + prefix, suffix + [self.eos_token_idx]
         
         if split_mode == 'words':
             # split such that each sub-part contains `max_length` words (no matter the final number of tokens)
             text = text.split()
-            splitted = self.encode(
-                ' '.join([text[i : i + max_length] for i in range(0, len(text), max_length)]),
-                add_sos_and_eos = False, return_type = 'list'
-            )
+            splitted = [self.encode(
+                ' '.join(text[i : i + max_length]), add_sos_and_eos = False, return_type = 'list'
+            ) for i in range(0, len(text), max_length)]
         elif split_mode == 'sentence':
             max_length = max(1, max_length - len(prefix) - len(suffix))
 
-            sentences           = split_sentence(text)
+            text    = self.clean_text(text)
+            sentences   = split_sentence(text)
             encoded_sentences   = [
-                self.encode(sent, add_sos_and_eos = False, return_type = 'list')
+                self.encode(sent, cleaned = True, add_sos_and_eos = False, return_type = 'list')
                 for sent in sentences
             ]
             
             splitted, sents, length = [], [], 0
             for i, (sent, enc) in enumerate(zip(sentences, encoded_sentences)):
-                if length + len(enc) > max_length and length > 0:
+                if length + len(enc) >= (max_length - len(sents)) and length > 0:
                     encoded = self.encode(
-                        ' '.join(sents), add_sos_and_eos = False, return_type = 'list'
+                        ' '.join(sents), cleaned = True, add_sos_and_eos = False, return_type = 'list'
                     ) if length != len(encoded_sentences[i - 1]) else encoded_sentences[i - 1]
                     if len(encoded) <= max_length: splitted.append(encoded)
                     else: splitted.extend(_split_encoded(encoded, max_length))
@@ -526,9 +539,10 @@ class TextEncoder(object):
             
             if length > 0:
                 encoded = self.encode(
-                    ' '.join(sents), add_sos_and_eos = False, return_type = 'list'
+                    ' '.join(sents), cleaned = True, add_sos_and_eos = False, return_type = 'list'
                 ) if length != len(encoded_sentences[-1]) else encoded_sentences[-1]
-                splitted.append(encoded)
+                if len(encoded) <= max_length: splitted.append(encoded)
+                else: splitted.extend(_split_encoded(encoded, max_length))
         
         else: # split_mode = 'token'
             # split such that each sub-part has at most `max_length` tokens
@@ -539,7 +553,7 @@ class TextEncoder(object):
 
             splitted = _split_encoded(encoded, max_length)
         
-        splitted = [np.array(prefix + part + suffix) for part in splitted]
+        splitted = [np.array(prefix + part + suffix, dtype = np.int32) for part in splitted]
         
         return splitted
     
@@ -559,17 +573,13 @@ class TextEncoder(object):
         
         ids = [np.full((len(e),), i) for i, e in enumerate(encoded)]
         
-        return np.concatenate(encoded), np.concatenate(ids)
+        return np.concatenate(encoded).astype(np.int32), np.concatenate(ids).astype(np.int32)
     
     def format(self, pattern, ** kwargs):
-        def _to_str(x):
-            if isinstance(x, tf.Tensor): x = x.numpy()
-            if isinstance(x, bytes): x = x.decode('utf-8')
-            return x
-        
+        pattern = convert_to_str(pattern)
+        kwargs  = convert_to_str(kwargs)
+
         if not isinstance(pattern, (list, tuple)): pattern = [pattern]
-        pattern = [_to_str(p) for p in pattern]
-        kwargs  = {k : _to_str(v) for k, v in kwargs.items()}
         
         formatted = [
             pat.format(** kwargs, ** self.tokens) for pat in pattern
@@ -578,16 +588,14 @@ class TextEncoder(object):
         return self.join(* formatted)
     
     def split_and_format(self, pattern, split_key, max_length, ** kwargs):
-        def _to_str(x):
-            if isinstance(x, tf.Tensor): x = x.numpy()
-            if isinstance(x, bytes): x = x.decode('utf-8')
-            return x
-        
+        pattern     = convert_to_str(pattern)
+        split_key   = convert_to_str(split_key)
+        kwargs      = convert_to_str(kwargs)
+
         if not isinstance(pattern, (list, tuple)): pattern = [pattern]
-        pattern = '{sep_token}'.join([_to_str(p) for p in pattern])
-        kwargs  = {k : _to_str(v) for k, v in kwargs.items()}
+        pattern = '{sep_token}'.join(pattern)
         
-        assert pattern.count(split_key) <= 1
+        assert pattern.count(split_key) <= 1, '`pattern` {} cannot contains multiple times `split_key` ({})'.format(pattern, split_key)
         
         splitted = pattern.split(split_key)
         assert len(splitted) == 2, '{} splitted on {} gives {} parts'.format(
@@ -595,6 +603,9 @@ class TextEncoder(object):
         )
         
         prefix, suffix = splitted[0][:-1], splitted[1][1:]
+        
+        prefix  = prefix.format(** kwargs, ** self.tokens)
+        suffix  = suffix.format(** kwargs, ** self.tokens)
         
         return self.split(
             kwargs[split_key], max_length, prefix = prefix, suffix = suffix, ** kwargs
@@ -609,7 +620,7 @@ class TextEncoder(object):
             if tok == self.eos_token_idx: return True
             return any([final_punct in self._id_to_symbol.get(tok, None) for final_punct in punct])
 
-        if isinstance(tokens, tf.Tensor): tokens = tokens.numpy()
+        if hasattr(tokens, 'numpy'): tokens = tokens.numpy()
 
         start, end = idx, idx + 1
 
@@ -652,6 +663,7 @@ class TextEncoder(object):
             'split_pattern' : self.split_pattern,
             'bpe_pairs' : self.bpe_pairs,
             'byte_encoder'  : self.byte_encoder,
+            'bpe_end_of_word'   : self.bpe_end_of_word,
             
             'pad_token' : self.pad_token,
             'sep_token' : self.sep_token,
@@ -669,7 +681,7 @@ class TextEncoder(object):
         
         _update = False
         if 'word_level' in config:  # for retro-compatibility
-            config['level'] = CHAR_LEVEL if not config.pop('word_level') else WORD_LEVEL
+            config['level'] = TextEncoderLevel.CHAR if not config.pop('word_level') else TextEncoderLevel.WORD
             _update = True
         
         if 'tokenizer' in config:
@@ -718,7 +730,7 @@ class TextEncoder(object):
             })
         # Common config
         kwargs.update({
-            'level'         : TOKEN_LEVEL,
+            'level'         : TextEncoderLevel.TOKEN,
             'use_sos_and_eos'   : True,
             'pad_token'     : pretrained.pad_token,
             'sep_token'     : pretrained.sep_token,
@@ -727,6 +739,38 @@ class TextEncoder(object):
         })
         return cls(** kwargs)
     
+    @classmethod
+    def from_clip_pretrained(cls, ** kwargs):
+        import gzip
+        
+        filename    = download_file(url = _clip_bpe_url)
+        
+        with gzip.open(filename) as file:
+            pairs = file.read().decode('utf-8').split('\n')
+        
+        pairs = [tuple(pair.split()) for pair in pairs[1:49152-256-2+1]]
+        
+        vocab = list(bytes_to_unicode().values())
+        vocab = vocab + [v+'</w>' for v in vocab]
+        for pair in pairs:
+            vocab.append(''.join(pair))
+        vocab.extend(['<|startoftext|>', '<|endoftext|>'])
+
+        kwargs.update({
+            'vocab' : vocab,
+            'level' : 'bpe',
+            'cleaners'  : {'name' : 'english_cleaners', 'to_lowercase' : False},
+            'bpe_pairs' : {pair : i for i, pair in enumerate(pairs)},
+            'byte_encoder'  : bytes_to_unicode(),
+            'split_pattern' : _clip_pattern,
+            'use_sos_and_eos'   : True,
+            'pad_token'     : vocab[0],
+            'sos_token'     : '<|startoftext|>',
+            'eos_token'     : '<|endoftext|>',
+            'bpe_end_of_word'   : '</w>'
+        })
+        return cls(** kwargs)
+
     @classmethod
     def build_from_corpus(cls, textes, word_level, max_vocab_size = -1, 
                           cleaners = [], tqdm = lambda x: x, **kwargs):

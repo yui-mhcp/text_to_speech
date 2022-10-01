@@ -13,6 +13,8 @@
 import logging
 import datetime
 
+logger = logging.getLogger(__name__)
+
 def time_to_string(secondes):
     """ return a string representation of a time (given in seconds) """
     h = int(secondes // 3600)
@@ -66,7 +68,7 @@ def get_object(available_objects, obj_name, * args,
                 print_name, tuple(available_objects.keys()), obj_name
             ))
         else:
-            logging.warning("{} : '{}' is not available !".format(print_name, obj_name))
+            logger.warning("{} : '{}' is not available !".format(print_name, obj_name))
         return obj_name
 
 def to_lower_keys(dico):

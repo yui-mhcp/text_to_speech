@@ -24,6 +24,8 @@ from utils.sequence_utils import pad_batch
 from utils.pandas_utils import filter_df, aggregate_df
 from utils.thread_utils import ThreadedQueue
 
+logger = logging.getLogger(__name__)
+
 _allowed_embeddings_ext = ('.csv', '.npy', '.pkl')
 _embedding_filename = 'embeddings_{}'
 _accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')
@@ -41,7 +43,7 @@ def embeddings_to_np(embeddings, col = 'embedding'):
         # if it is a 2D-matrix
         if embeddings.startswith('['):
             if embeddings.startswith('[['):
-                logging.debug(embeddings[1 : -1].split(']')[0][1:])
+                logger.debug(embeddings[1 : -1].split(']')[0][1:])
                 return np.array([
                     np.fromstring(xi[1 :]) for xi in embeddings[1:-1].split(']')
                 ])
@@ -115,15 +117,15 @@ def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
     to_process = dataset[~processed].to_dict('records')
     
     if len(to_process) == 0:
-        logging.info("Dataset already processed !")
+        logger.info("Dataset already processed !")
         return embeddings
         
-    logging.info("Processing dataset...\n  {} utterances already processed\n  {} utterances to process".format(len(dataset) - len(to_process), len(to_process)))
+    logger.info("Processing dataset...\n  {} utterances already processed\n  {} utterances to process".format(len(dataset) - len(to_process), len(to_process)))
     
     n = len(embeddings)
     nb_batch = len(to_process) // max_audios + 1
     for i in range(nb_batch):
-        logging.info("Batch {} / {}".format(i+1, nb_batch))
+        logger.info("Batch {} / {}".format(i+1, nb_batch))
         start_idx = i * max_audios
         batch = to_process[start_idx : start_idx + max_audios]
         if len(batch) == 0: continue
@@ -140,7 +142,7 @@ def embed_dataset(directory, dataset, embed_fn, embedding_dim, rate,
         
         if len(embeddings) - n >= save_every:
             n = len(embeddings)
-            logging.info("Saving at utterance {}".format(len(embeddings)))
+            logger.info("Saving at utterance {}".format(len(embeddings)))
             save_embeddings(embeddings_file, embeddings)
     
     if n < len(embeddings):
@@ -291,7 +293,7 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
     if isinstance(embeddings, pd.DataFrame):
         filtered_embeddings = filter_df(embeddings, ** kwargs)
         if len(filtered_embeddings) == 0:
-            logging.warning('No embedding respects filters {}'.format(kwargs))
+            logger.warning('No embedding respects filters {}'.format(kwargs))
             filtered_embeddings = embeddings
         np_embeddings = embeddings_to_np(filtered_embeddings)
     else:

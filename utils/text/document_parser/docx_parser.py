@@ -13,12 +13,14 @@
 import os
 import logging
 
+logger = logging.getLogger(__name__)
+
 def parse_docx(filename, ** kwargs):
     """ Parse `.docx` files and return the list of paragraphs in the form {'text' : str} """
     try:
         from docx import Document
     except ImportError as e:
-        logging.error('Exception from .docx parsing : {}'.format(e))
+        logger.error('Exception from .docx parsing : {}'.format(e))
         return []
     
     doc = Document(filename)

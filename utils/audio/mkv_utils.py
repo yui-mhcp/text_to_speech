@@ -17,9 +17,10 @@ import subprocess
 
 from utils import load_json, dump_json
 
+logger = logging.getLogger(__name__)
+
 def log(message, verbose = True):
-    level = logging.DEBUG if not verbose else logging.INFO
-    logging.log(level, message)
+    logger.log(logging.DEBUG if not verbose else logging.INFO, message)
 
 def process_mkv(path, audio_stream = 1, subs_stream = -1, 
                 output_dir = None, audio_filename = None, subs_filename = None, 

@@ -13,6 +13,8 @@
 import re
 import logging
 
+logger = logging.getLogger(__name__)
+
 _wiki_cleaner = r'(\[edit\]|\[[0-9]\])'
 
 def parse_html(text,
@@ -69,7 +71,7 @@ def parse_html(text,
         if not links: return False
         links_text = '\n'.join([l.text for l in links])
         if len(text) - len(links_text) <= links_threshold * len(text):
-            logging.debug('Skipping tag {} because it is a list of links ! (text : {})'.format(
+            logger.debug('Skipping tag {} because it is a list of links ! (text : {})'.format(
                 tag.name, text
             ))
             return True
@@ -107,13 +109,13 @@ def parse_html(text,
         
         if any([skip_tag in tag.name for skip_tag in to_skip_tags]):
             _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
-            logging.debug('Adding {} for skiping (text {})'.format(tag.name, _cleaned_text))
+            logger.debug('Adding {} for skiping (text {})'.format(tag.name, _cleaned_text))
             to_skip.append(tag)
             continue
         
         if any([tag in skip.find_all(tag.name) for skip in to_skip]):
             _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
-            logging.debug('Skipping tag {} with text {}'.format(tag.name, _cleaned_text))
+            logger.debug('Skipping tag {} with text {}'.format(tag.name, _cleaned_text))
             continue
         
         text = tag.text.strip()

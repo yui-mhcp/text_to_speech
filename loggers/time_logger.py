@@ -20,6 +20,8 @@ try:
 except ImportError as e:
     from loggers.utils import time_to_string
 
+logger = logging.getLogger(__name__)
+
 TIME_LEVEL  = 15
 
 _str_indent     = '  '
@@ -75,7 +77,7 @@ class RootTimer:
         def thread_to_str(thread_timers, ** kwargs):
             des = ''
             for _, timer in thread_timers.items():
-                des += timer_to_str(timer, ** kwargs)
+                des += '\n' + timer_to_str(timer, ** kwargs)
             return des
         
         if self.running: return "timer {} not stopped yet".format(self.name)
@@ -86,11 +88,11 @@ class RootTimer:
         
         des = 'Timers for logger {} :'.format(self.name)
         if len(_timers) == 1:
-            des += '\n' + thread_to_str(list(_timers.values())[0])
+            des += thread_to_str(list(_timers.values())[0])
         else:
             for thread, timers in _timers.items():
                 if len(timers) == 0: continue
-                des += '\n- Timers in thread {} :\n{}'.format(
+                des += '\n- Timers in thread {} :{}'.format(
                     thread, thread_to_str(timers, indent = 1)
                 )
         
@@ -136,7 +138,7 @@ class RootTimer:
     def stop_timer(self, name):
         timers, runnings = self.get_thread_timers()
         if len(runnings) == 0:
-            logging.error('empty runnings when stopping {} {}'.format(name, threading.currentThread().getName()))
+            logger.error('empty runnings when stopping {} {}'.format(name, threading.currentThread().getName()))
             return
         timer = self.stop_current_timer(runnings)
         

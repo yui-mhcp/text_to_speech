@@ -26,6 +26,7 @@ from utils import load_json, dump_json, normalize_filename
 from utils.audio import load_audio, write_audio, AudioAnnotation
 from utils.distance import KPropagation
 
+logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
 
 _supported_encoder_types    = ('rnn', 'conv1d', 'conv2d', 'transformer', 'prenet_transformer')
@@ -187,10 +188,7 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
         return super().training_hparams(** self.training_hparams_audio)
         
     def __str__(self):
-        des = super().__str__()
-        des += self._str_audio()
-
-        return des
+        return super().__str__() + self._str_audio()
     
     def get_input(self, data, ** kwargs):
         if isinstance(data, list):
@@ -299,7 +297,7 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
             else:
                 audio_filename = normalize_filename(filename)
             
-            logging.info("Processing file {}...".format(audio_filename))
+            logger.info("Processing file {}...".format(audio_filename))
             # Load already predicted result
             if audio_filename in all_outputs and not overwrite:
                 result = AudioAnnotation.load_from_file(

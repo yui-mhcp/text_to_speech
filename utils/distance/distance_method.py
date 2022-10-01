@@ -15,9 +15,12 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+logger = logging.getLogger(__name__)
+
 MAX_MATRIX_SIZE = 512 * 1024 * 1024
 
-def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE, ** kwargs):
+def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
+             force_distance = True, ** kwargs):
     """
         Compute distance between `x` and `y` with `method` function
         
@@ -37,7 +40,8 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
         
         This distance can be a scalar (euclidian, manhattan, dot-product) or a vector of element-wise distance (l1, l2)
         
-        Important note : this function returns a **distance** score it means that the lower the score, the more similar they are ! If the method is a similarity metric (such as dot-product), the function returns the inverse (- distances) to keep this property
+        Important note : this function returns a **distance** score : the lower the score, the more similar they are ! If the `method` is a similarity metric (such as dot-product), the function returns the inverse (- distances) to keep this property.
+        You can avoid this by setting `force_distance = False`
     """
     distance_fn = method if callable(method) else _distance_methods.get(method, None)
     if distance_fn is None:
@@ -48,6 +52,10 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
     if method in _str_distance_method:
         return _str_distance_method[method](x, y, ** kwargs)
 
+    logger.debug('Calling {} on matrices with shapes {} and {}'.format(
+        method, tuple(x.shape), tuple(y.shape)
+    ))
+    
     if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
     if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
 
@@ -67,8 +75,10 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
         distances = tf.concat(distances, axis = 0)
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
-        
-    return distances if method != 'dp' else -distances # dot_product is a similarity metric
+    
+    logger.debug('Result shape : {}'.format(tuple(distances.shape)))
+    
+    return distances if not force_distance or method not in _similarity_methods else -distances
 
 def _maybe_expand_for_matrix(x, y, as_matrix = False):
     if as_matrix:
@@ -81,8 +91,10 @@ def _maybe_expand_for_matrix(x, y, as_matrix = False):
 
 def dot_product(x, y, as_matrix = False, ** kwargs):
     x, y = _maybe_expand_for_matrix(x, y, as_matrix = not as_matrix)
-    dp = tf.matmum(x, y, transpose_b = True)
-    return dp if not as_matrix else tf.squeeze(dp, axis = 1)
+    if not as_matrix: y = tf.transpose(y, [1, 0, 2])
+    
+    dp = tf.matmul(x, y, transpose_b = True)
+    return tf.squeeze(dp, axis = 1) if not as_matrix else dp
 
 def l1_distance(x, y, as_matrix = False, ** kwargs):
     x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
@@ -106,6 +118,11 @@ def edit_distance(hypothesis,
                   deletion_cost     = {},
                   insertion_cost    = {}, 
                   replacement_cost  = {},
+                  
+                  default_del_cost  = 1,
+                  default_insert_cost   = 1,
+                  default_replace_cost  = 1,
+                  
                   normalize     = True,
                   return_matrix = False,
                   verbose   = False,
@@ -134,17 +151,19 @@ def edit_distance(hypothesis,
     """
     matrix = np.zeros((len(hypothesis) + 1, len(truth) + 1))
     # Deletion cost
-    deletion_costs = np.array([0] + [deletion_cost.get(h, 1) for h in hypothesis])
+    deletion_costs = np.array([0] + [deletion_cost.get(h, default_del_cost) for h in hypothesis])
     matrix[:, 0] = np.cumsum(deletion_costs)
     # Insertion cost
     if not partial:
-        matrix[0, :] = np.cumsum([0] + [insertion_cost.get(t, 1) for t in truth])
+        matrix[0, :] = np.cumsum([0] + [insertion_cost.get(t, default_insert_cost) for t in truth])
 
     truth_array = truth if not isinstance(truth, str) else np.array(list(truth))
     for i in range(1, len(hypothesis) + 1):
         deletions = matrix[i-1, 1:] + deletion_costs[i]
         
-        matches   = np.array([replacement_cost.get(hypothesis[i-1], {}).get(t, 1) for t in truth])
+        matches   = np.array([
+            replacement_cost.get(hypothesis[i-1], {}).get(t, default_replace_cost) for t in truth
+        ])
         matches   = matrix[i-1, :-1] + matches * (truth_array != hypothesis[i-1])
         
         min_costs = np.minimum(deletions, matches)
@@ -156,7 +175,7 @@ def edit_distance(hypothesis,
     if verbose:
         columns = [''] + [str(v) for v in truth]
         index = [''] + [str(v) for v in hypothesis]
-        logging.info(pd.DataFrame(matrix, columns = columns, index = index))
+        logger.info(pd.DataFrame(matrix, columns = columns, index = index))
     
     distance = matrix[-1, -1] if not partial else np.min(matrix[-1, 1:])
     if normalize:
@@ -190,9 +209,13 @@ _str_distance_method    = {
     'edit'      : edit_distance
 }
 
+_similarity_methods = {
+    'dp'    : dot_product
+}
+
 _distance_methods = {
     ** _str_distance_method,
-    'dp'        : dot_product,
+    ** _similarity_methods,
     'l1'        : l1_distance,
     'l2'        : l2_distance,
     'manhattan' : manhattan_distance,

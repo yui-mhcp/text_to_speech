@@ -20,6 +20,8 @@ from utils import load_json
 from datasets.sqlite_dataset import preprocess_sqlite_database
 from datasets.custom_datasets.preprocessing import parse_nq_annots
 
+logger  = logging.getLogger(__name__)
+
 _siamese_renaming = {'sentence1' : 'text_x', 'sentence2' : 'text_y'}
 _spaces = (' ', '\n', '\t')
 
@@ -364,7 +366,7 @@ def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True,
             for char in ('?', ':', '*', '"'): f = f.replace(char, '_')
             f = os.path.join(directory, 'evidence', prefix, f)
             if not os.path.exists(f):
-                logging.warning("File for context {} does not exist !".format(c))
+                logger.warning("File for context {} does not exist !".format(c))
             text = None
             if load_context:
                 with open(f, 'r', encoding = 'utf-8') as file:

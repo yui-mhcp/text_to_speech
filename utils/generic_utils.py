@@ -21,8 +21,15 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+logger = logging.getLogger(__name__)
+
 _limited_memory = False
 
+def _is_filename(data):
+    return (
+        len(data) < 512 and len(data) > 1 and any(c.isalnum() for c in data) and os.path.exists(data)
+    )
+    
 def time_to_string(secondes):
     """ return a string representation of a time (given in seconds) """
     h = int(secondes // 3600)
@@ -32,6 +39,20 @@ def time_to_string(secondes):
     s = ((secondes % 300) % 60)
     s = "{:.3f} sec".format(s) if m == "" and h == "" else "{}sec".format(int(s))
     return "{}{}{}".format(h, m, s)        
+
+def convert_to_str(x):
+    """ Convert different string formats (bytes, tf.Tensor, ...) to a `str` object """
+    if isinstance(x, str): return x
+    if hasattr(x, 'numpy'): x = x.numpy()
+    if isinstance(x, np.ndarray) and x.ndim == 0: x = str(x)
+    if isinstance(x, bytes): x = x.decode('utf-8')
+    
+    if isinstance(x, (list, tuple, np.ndarray)):
+        return [convert_to_str(xi) for xi in x]
+    elif isinstance(x, dict):
+        return {convert_to_str(k) : convert_to_str(v) for k, v in x.items()}
+    
+    return x
 
 def split_gpus(n, memory = 2048):
     gpus = tf.config.list_physical_devices('GPU')
@@ -64,7 +85,7 @@ def limit_gpu_memory(limit = 2048):
             )
         _limited_memory = True
     except:
-        logging.error("Error while limiting tensorflow GPU memory")
+        logger.error("Error while limiting tensorflow GPU memory")
 
 def get_enum_item(value, enum, upper_names = True):
     if isinstance(value, enum): return value
@@ -118,7 +139,7 @@ def get_object(available_objects, obj_name, * args,
                 print_name, tuple(available_objects.keys()), obj_name
             ))
         else:
-            logging.warning("{} : '{}' is not available !".format(print_name, obj_name))
+            logger.warning("{} : '{}' is not available !".format(print_name, obj_name))
         return obj_name
 
 def print_objects(objects, print_name = 'objects'):
@@ -140,14 +161,14 @@ def to_json(data):
         return [to_json(d) for d in data]
     elif isinstance(data, dict):
         return {to_json(k) : to_json(v) for k, v in data.items()}
-    elif isinstance(data, str) and len(data) < 512 and os.path.exists(data):
+    elif isinstance(data, str) and _is_filename(data):
         return data.replace(os.path.sep, '/')
     elif hasattr(data, 'get_config'):
         return to_json(data.get_config())
     elif data is None or isinstance(data, str):
         return data
     else:
-        logging.warning("Unknown json type : {}".format(type(data)))
+        logger.warning("Unknown json data (type : {}) : {}".format(type(data), data))
         return str(data)
 
 def var_from_str(v):

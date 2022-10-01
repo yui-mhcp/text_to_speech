@@ -16,6 +16,8 @@ import tensorflow as tf
 from tensorflow.keras.layers import *
 from custom_layers import get_activation
 
+logger  = logging.getLogger(__name__)
+
 _flatten_type   = (None, 'max', 'mean', 'avg', 'average', 'lstm', 'gru', 'bi_lstm', 'bilstm', 'bi_gru', 'bigru')
 _pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampling')
 
@@ -162,7 +164,7 @@ def _layer_bn(model, layer_type, n, * args,
     if residual and tuple(x.shape) == tuple(model.shape):
         x = Add()([x, model])
     elif residual:
-        logging.info("Skip connection failed : shape mismatch ({} vs {})".format(
+        logger.info("Skip connection failed : shape mismatch ({} vs {})".format(
             model.shape, x.shape
         ))
     

@@ -1,12 +1,24 @@
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import heapq
 import logging
 
-from typing import Any
-from dataclasses import dataclass, field
 from threading import Thread, RLock, Semaphore
 from queue import Empty, Queue, LifoQueue, PriorityQueue
 
-from utils.thread_utils.producer import _get_thread_name, Producer, Result, StoppedException
+from utils.thread_utils.producer import STOP_ITEM, _get_thread_name, _create_generator, Producer, Event, Item, StoppedException, update_item
 from utils.thread_utils.threaded_dict import ThreadedDict
+
+logger = logging.getLogger(__name__)
 
 _queues = {
     'queue' : Queue,
@@ -17,14 +29,6 @@ _queues = {
     'max_priority' : PriorityQueue,
     'min_priority' : PriorityQueue
 }
-
-@dataclass(order = True)
-class Item:
-    priority    : Any
-    index       : int
-    item        : Any   = field(compare = False)
-    args        : Any   = field(compare = False)
-    kwargs      : dict  = field(compare = False)
 
 def get_buffer(buffer):
     if buffer is not None:
@@ -39,8 +43,6 @@ def get_buffer(buffer):
     return buffer
 
 class Consumer(Producer):
-    STOP_ITEM = Item(priority = -1, index = -1, item = None, args = (), kwargs = {})
-    
     def __init__(self,
                  consumer,
                  * args,
@@ -53,6 +55,7 @@ class Consumer(Producer):
                  
                  max_workers    = 0,
                  keep_result    = False,
+                 allow_multithread  = True,
                  
                  name = None,
                  ** kwargs
@@ -82,10 +85,14 @@ class Consumer(Producer):
             In case of `LIFO` buffer, make sure to add items before starting the Consumer if you ant the exact reverse order, otherwise the 1st item will be consumed directly when appened and then it will be in the 1st position of result (and not the last one)
         """
         if stateful:
-            if batch_size > 1:
+            if batch_size != 1:
                 raise ValueError('`batch_size = {} and stateful = True` are incompatible !\nWhen using a`stateful  consumer, the `batch_size` must be 1'.format(batch_size))
             elif max_workers > 1:
                 raise ValueError('`max_workers = {} and stateful = True` are incompatible !\nWhen using a`stateful  consumer, the `max_workers` must be <= 1'.format(max_workers))
+        
+        if batch_size == 0: batch_size = 1
+        elif batch_size < -1:
+            raise ValueError('Only `batch_size = -1 or batch_size > 0` are allowed')
         
         if hasattr(consumer, '__doc__'): kwargs.setdefault('description', consumer.__doc__)
         
@@ -97,26 +104,30 @@ class Consumer(Producer):
         self.consumer   = consumer
         self.buffer     = get_buffer(buffer)
         self.buffer_type    = buffer
-        
+
         self.stateful   = stateful
         self.__state    = () if init_state is None else init_state
         
-        self.batch_size = max(batch_size, 1)
+        self.batch_size = batch_size if batch_size != 0 else 1
         
         self.keep_result    = keep_result
-        self.__results      = ThreadedDict()
+        self._results       = ThreadedDict()
         
-        self.max_workers    = max_workers
+        self.max_workers    = max_workers if allow_multithread else min(max_workers, 0)
         
-        self.__current_index    = 0
-        self.__next_index   = 0
-        self.__last_index   = 0
-        self.__stop_index   = -1
+        self._current_index     = 0
+        self._next_index    = 0
+        self._last_index    = 0
+        self._stop_index    = -1
         
         self.__stop_empty   = False
         
         self.mutex_get  = RLock()
         self.workers    = []
+    
+    @property
+    def append_listeners(self):
+        return self._listeners.get(Event.APPEND, [])
     
     @property
     def is_max_priority(self):
@@ -128,19 +139,19 @@ class Consumer(Producer):
     
     @property
     def current_index(self):
-        with self.mutex_infos: return self.__current_index
+        with self.mutex_infos: return self._current_index
     
     @property
     def next_index(self):
-        with self.mutex_infos: return self.__next_index
+        with self.mutex_infos: return self._next_index
     
     @property
     def last_index(self):
-        with self.mutex_infos: return self.__last_index
+        with self.mutex_infos: return self._last_index
 
     @property
     def stop_index(self):
-        with self.mutex_infos: return self.__stop_index
+        with self.mutex_infos: return self._stop_index
     
     @property
     def stop_empty(self):
@@ -150,7 +161,7 @@ class Consumer(Producer):
     def results(self):
         if not self.keep_result:
             raise ValueError("You must set `keep_result` to True to get results")
-        return [self.__results[idx].result for idx in range(self.last_index)]
+        return [self._results[idx].data for idx in range(self.last_index)]
     
     @property
     def is_stopped(self):
@@ -173,32 +184,33 @@ class Consumer(Producer):
     
     def __next__(self):
         if not self.multi_threaded:
-            if self.batch_size in (0, 1) or self.current_index not in self.__results:
+            if self.batch_size in (0, 1) or self.current_index not in self._results:
                 self.consume_next()
+        
         with self.mutex_infos:
-            if self.__stop_index != -1 and self.__current_index >= self.__stop_index:
+            if self._stop_index != -1 and self._current_index >= self._stop_index:
                 raise StopIteration()
 
-            idx = self.__current_index
-            self.__current_index += 1
+            idx = self._current_index
+            self._current_index += 1
 
-        logging.debug('[NEXT {}] Waiting for index {}'.format(self.name, idx))
-        item = self.__results[idx]
-        if not self.keep_result: self.__results.pop(idx)
-        if isinstance(item, Item): raise StopIteration()
+        logger.debug('[NEXT {}] Waiting for index {}'.format(self.name, idx))
+        item = self._results[idx]
+        if not self.keep_result: self._results.pop(idx)
+        if item.stop: raise StopIteration()
         return item
     
     def __call__(self, item, * args, ** kwargs):
         """ Equivalent to `self.append` """
-        self.append(item, * args, ** kwargs)
+        return self.append(item, * args, ** kwargs)
 
     def empty(self):
         with self.mutex_infos:
-            return self.__last_index == self.__next_index
+            return self._last_index == self._next_index
         
     def get_stop_item(self, index):
         p = -1 if not isinstance(self.buffer, PriorityQueue) else float('inf')
-        return Item(item = None, args = (), kwargs = {}, index = -1, priority = p)
+        return Item(data = None, priority = p, stop = True)
         
     def get(self, raise_empty = False, ** kwargs):
         with self.mutex_get:
@@ -208,29 +220,27 @@ class Consumer(Producer):
                     raise_empty     = False
                 item = self.buffer.get(** kwargs)
             except Empty as e:
-                logging.debug('[GET {}] Empty !'.format(self.name))
+                logger.debug('[GET {}] Empty !'.format(self.name))
                 if raise_empty: raise e
-                return Consumer.STOP_ITEM, -1
+                return STOP_ITEM, -1
             
-            if item.index == -1:
-                logging.debug('[GET {}] Stop item !'.format(self.name))
+            if item.stop:
+                logger.debug('[GET {}] Stop item !'.format(self.name))
                 return item, -1
             
-            logging.debug('[GET {}] item with index {} and priority {}'.format(
-                self.name, item.index, item.priority
-            ))
+            logger.debug('[GET {}] {}'.format(self.name, item))
             
             with self.mutex_infos:
-                if self.__stop_index != -1 and self.__next_index >= self.__stop_index:
-                    return Consumer.STOP_ITEM, -1
+                if self._stop_index != -1 and self._next_index >= self._stop_index:
+                    return STOP_ITEM, -1
 
-                idx = self.__next_index
-                self.__next_index += 1
+                idx = self._next_index
+                self._next_index += 1
         
         return item, idx
     
     def get_batch(self, ** kwargs):
-        items, indexes  = Item(item = [], priority = [], index = [], args = (), kwargs = {}), []
+        items, indexes  = Item(data = [], items = []), []
         with self.mutex_get:
             is_empty = False
             while len(indexes) < self.batch_size and not is_empty:
@@ -242,20 +252,21 @@ class Consumer(Producer):
                     is_empty = True
                     continue
                 
-                if idx == -1:
+                if item.stop:
                     if len(indexes) == 0: return item, idx
                     self.buffer.put(item)
                     break
                 
-                for attr in ['item', 'priority', 'index']:
-                    getattr(items, attr).append(getattr(item, attr))
+                items.data.append(item.data)
+                items.items.append(item)
                 indexes.append(idx)
+        
         return items, indexes
     
     def consume_next(self):
         item, idx = self.get() if self.batch_size == 1 else self.get_batch()
         
-        if idx == -1:
+        if item.stop:
             with self.mutex_infos:
                 if self.__stop_empty:
                     self.__stop_empty = False
@@ -268,27 +279,32 @@ class Consumer(Producer):
     def consume(self, idx, item):
         """ Consume an item and return the result """
         if not self.stateful:
-            res = self.consumer(item.item, * item.args, ** item.kwargs)
+            res = self.consumer(item.data, * item.args, ** item.kwargs)
         else:
-            res, next_state = self.consumer(item.item, * item.args, * self.__state, ** item.kwargs)
+            res, next_state = self.consumer(item.data, * item.args, * self.__state, ** item.kwargs)
             self.__state = next_state
+        
+        return self.set_result(idx, item, res)
 
+    def set_result(self, idx, item, res):
+        if isinstance(idx, (list, tuple)):
+            return [
+                self.set_result(idx_i, item_i, res_i)
+                for idx_i, item_i, res_i in zip(idx, item.items, res)
+            ]
+
+        res = self.update_res_item(item, res)
+        
         if self.max_workers != -2:
-            if isinstance(idx, (list, tuple)):
-                for i, (idx_i, res_i) in enumerate(zip(idx, res)):
-                    self.__results[idx_i] = Result(
-                        result = res_i, index = item.index[i], priority = item.priority[i]
-                    )
-                    self.buffer.task_done()
-            else:
-                self.__results[idx] = Result(
-                    result = res, index = item.index, priority = item.priority
-                )
-                self.buffer.task_done()
+            self._results[idx] = res
+            self.buffer.task_done()
         
         return res
     
-    def run_threads(self):
+    def update_res_item(self, item, res):
+        return update_item(item, data = res, clone = False)
+    
+    def run_thread(self):
         run = True
         while run:
             run = self.consume_next()
@@ -296,14 +312,51 @@ class Consumer(Producer):
     def run(self, * args, ** kwargs):
         if self.multi_threaded:
             self.workers = [
-                Thread(target = self.run_threads, name = '{}_{}'.format(self.name, i))
+                Thread(target = self.run_thread, name = '{}_{}'.format(self.name, i))
                 for i in range(self.max_workers)
             ]
             for w in self.workers: w.start()
         if not self.run_main_thread:
             super().run(* args, ** kwargs)
     
-    def append(self, item, * args, priority = -1, ** kwargs):
+    def extend_and_wait(self, items, * args, stop = False, ** kwargs):
+        def append_and_wake_up(item, idx):
+            result[idx] = item
+            clock.release()
+        
+        def get_callback(idx):
+            return lambda item: append_and_wake_up(item, idx)
+        
+        result = [None] * len(items)
+        clock  = Semaphore(0)
+        
+        for i, item in enumerate(_create_generator(items)()):
+            self.append(item, * args, callback = get_callback(i), ** kwargs)
+        if not self.run_main_thread:
+            for _ in range(len(items)): clock.acquire()
+        
+        if stop: self.stop()
+        
+        return result
+        
+    def append_and_wait(self, item, * args, stop = False, ** kwargs):
+        def append_and_wake_up(item):
+            result.append(item)
+            clock.release()
+        
+        result = []
+        clock  = Semaphore(0)
+        
+        self.append(item, * args, callback = append_and_wake_up, ** kwargs)
+        if not self.run_main_thread: clock.acquire()
+        if stop: self.stop()
+        
+        return result[0]
+    
+    def extend(self, items, * args, ** kwargs):
+        return [self.append(item, * args, ** kwargs) for item in _create_generator(items)()]
+    
+    def append(self, item, * args, priority = -1, callback = None, ** kwargs):
         """ Add the item to the buffer (raise ValueError if `stop` has been called) """
         if self.is_stopped:
             raise StoppedException('Consumer stopped, you cannot add new items !')
@@ -311,14 +364,24 @@ class Consumer(Producer):
             raise ValueError('When using `batch_size` > 1, args / kwargs in `append` must be empty ! Found :\n  Args : {}\n  Kwargs : {}'.format(args, kwargs))
         
         with self.mutex_infos:
+            idx = self._last_index
+            self._last_index += 1
+        
+        if callback: callback = (self, callback)
+        if not isinstance(item, Item):
             item = Item(
-                priority = priority if not self.is_max_priority else -priority,
-                index = self.__last_index, item = item, args = args, kwargs = kwargs
+                data = item, args = args, kwargs = kwargs, index = idx, callback = callback,
+                priority = priority if not self.is_max_priority else -priority
             )
-            self.__last_index += 1
-        logging.debug('[APPEND {}] index {} and priority {}'.format(
-            self.name, item.index, item.priority
-        ))
+        else:
+            item = update_item(item, index = idx, clone = True)
+        
+        self._append_item(item)
+        
+        return item
+    
+    def _append_item(self, item):
+        self.on_append(item)
         if self.max_workers == -2:
             self.on_item_produced(self.consume(item.index, item))
         else:
@@ -327,6 +390,17 @@ class Consumer(Producer):
                 self.on_item_produced(self.__next__())
 
     
+    def update_priority(self, item, new_priority, keep_best = True):
+        if not isinstance(self.buffer, PriorityQueue): return
+
+        if keep_best and item.priority <= new_priority: return
+        with self.buffer.mutex:
+            logger.debug('[PRIORITY UPDATE {}] Update priority to {} for item {}'.format(
+                self.name, new_priority, item
+            ))
+            item.priority = new_priority
+            heapq.heapify(self.buffer.queue)
+
     def stop(self, force = False, ** kwargs):
         """
             Set the `stop_index` to either `next_index` (if not force) else `current_index`
@@ -335,19 +409,19 @@ class Consumer(Producer):
         """
         with self.mutex_infos:
             if self.finished: return
-            logging.debug('[STATUS {}] Call to stop at index {}'.format(
-                self.name, self.__last_index
+            logger.debug('[STATUS {}] Call to stop at index {}'.format(
+                self.name, self._last_index
             ))
-            if self.__stop_index == -1 and not self.__stop_empty:
-                self.__stop_index   = self.__last_index
+            if self._stop_index == -1 and not self.__stop_empty:
+                self._stop_index   = self._last_index
                 if not isinstance(self.buffer, LifoQueue) or self.empty():
                     for _ in range(max(1, self.max_workers)):
-                        self.buffer.put(self.get_stop_item(self.__last_index))
+                        self.buffer.put(self.get_stop_item(self._last_index))
             
-            if force: self.__stop_index = self.__current_index
-            self.__results.setdefault(self.__stop_index, Consumer.STOP_ITEM)
+            if force: self._stop_index = self._current_index
+            self._results.setdefault(self._stop_index, STOP_ITEM)
         
-        if self.max_workers == -1:
+        if self.run_main_thread:
             self._finished = True
             self.on_stop()
     
@@ -355,14 +429,20 @@ class Consumer(Producer):
         with self.mutex_infos:
             self.__stop_empty = True
             if self.empty():
-                self.buffer.put(self.get_stop_item(self.__last_index))
+                self.buffer.put(self.get_stop_item(self._last_index))
 
     def join(self, * args, ** kwargs):
         """ Stop the thread then wait its end (that all items have been consumed) """
         self.stop_when_empty()
-        if self.multi_threaded:
-            for w in self.workers: w.join()
+        for w in self.workers: w.join()
         super().join(* args, ** kwargs)
     
     def wait(self, * args, ** kwargs):
+        """ Waits the Thread is finished (equivalent to `join`) """
         return super().join(* args, ** kwargs)
+
+    def on_append(self, item):
+        logger.debug('[APPEND {}] {}'.format(self.name, item))
+        for l, infos in self.append_listeners:
+            l(item) if infos.get('pass_item', False) else l(item.data)
+    

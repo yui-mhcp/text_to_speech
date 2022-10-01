@@ -14,6 +14,8 @@ import time
 import logging
 import tensorflow as tf
 
+logger = logging.getLogger(__name__)
+
 MIN_MODE    = 0
 MAX_MODE    = 0
 
@@ -52,9 +54,9 @@ class CkptCallback(tf.keras.callbacks.Callback):
     def save(self, epoch = None):
         if self.verbose:
             if epoch:
-                logging.info("\nSaving at epoch {} !".format(epoch))
+                logger.info("\nSaving at epoch {} !".format(epoch))
             else:
-                logging.info("\nSaving after 1 hour training !")
+                logger.info("\nSaving after 1 hour training !")
         self.ckpt_manager.save()
         self.last_saving_time = time.time()
         

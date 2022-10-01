@@ -18,6 +18,8 @@ from utils.plot_utils import plot_embedding
 from utils.distance.knn import KNN
 from utils.distance.distance_method import distance
 
+logger = logging.getLogger(__name__)
+
 class Clustering:
     def __init__(self,
                  points,
@@ -85,7 +87,7 @@ class Clustering:
             cluster_indexes = tf.reshape(tf.where(cluster == cluster_id), [-1])
             if len(cluster_indexes) >= self.min_cluster_size: continue
             
-            logging.debug("Clean cluster {}".format(cluster_id))
+            logger.debug("Clean cluster {}".format(cluster_id))
             other_ids = [id_i for id_i in ids if id_i != cluster_id]
             for idx in cluster_indexes:
                 new_id = tf.squeeze(knn.predict(points[i], possible_ids = other_ids))

@@ -202,10 +202,9 @@ class WaveGlow(tf.keras.Model):
         
         self.n_remaining_channels = n_remaining_channels  # Useful during inference
 
-    def _build(self):
-        inputs = tf.random.normal((1, 64, self.n_mel_channels))
-
-        self(inputs)
+    @property
+    def dummy_inputs(self):
+        return tf.random.normal((1, 64, self.n_mel_channels))
     
     def call(self, inputs, training = False):
         return self.infer(inputs)

@@ -23,7 +23,8 @@ class SimilarityLayer(tf.keras.layers.Layer):
         
         self.decision_layer = tf.keras.layers.Dense(1, activation = None, name = 'decision_layer')
     
-    def call(self, inputs, training = False, pred_matrix = False, max_matrix_size = -1):
+    def call(self, inputs, training = False, pred_probability = None,
+             pred_matrix = False, max_matrix_size = -1):
         """
             Perform distance computation between `inputs[0]` and `inputs[1]`
             
@@ -52,11 +53,17 @@ class SimilarityLayer(tf.keras.layers.Layer):
                             `output.shape == [batch_size, batch_size_2]`
                             
         """
+        if pred_probability is None: pred_probability = self.pred_probability
+        
         embedded_1, embedded_2 = inputs
 
         distances = distance(
-            embedded_1, embedded_2, method = self.distance_metric,
-            as_matrix = pred_matrix, max_matrix_size = max_matrix_size
+            embedded_1,
+            embedded_2,
+            method      = self.distance_metric,
+            as_matrix   = pred_matrix,
+            max_matrix_size = max_matrix_size,
+            force_distance  = False
         )
 
         if len(tf.shape(distances)) < len(tf.shape(embedded_2)):
@@ -64,7 +71,7 @@ class SimilarityLayer(tf.keras.layers.Layer):
 
         if not pred_matrix:
             output = self.decision_layer(distances)
-            if self.pred_probability: output = tf.sigmoid(output)
+            if pred_probability: output = tf.sigmoid(output)
             return output
 
         b, n = tf.shape(distances)[0], tf.shape(distances)[1]
@@ -73,7 +80,7 @@ class SimilarityLayer(tf.keras.layers.Layer):
         
         output = self.decision_layer(distances)
         output = tf.reshape(output, [b, n])
-        if self.pred_probability: output = tf.nn.softmax(output, axis = -1)
+        if pred_probability: output = tf.nn.softmax(output, axis = -1)
             
         return output
     

@@ -22,6 +22,8 @@ import tensorflow as tf
 from utils import time_to_string, load_data, dump_data, load_json, dump_json, load_pickle, dump_pickle
 from utils.comparison_utils import is_in, is_equal, is_diff, is_smaller, is_greater
 
+logger = logging.getLogger(__name__)
+
 RANDOM_WARNING = """
 /!\ WARNING /!\ This test contains randomness, make sure to set explicit seed to have reproducible results.
 Furthermore, if multiple functions are random, make sure to put different seeds for each call.
@@ -52,7 +54,7 @@ _test_result    = {
 
 def _maybe_call(data, * args, ** kwargs):
     if callable(data):
-        logging.debug('Calling function {}'.format(data))
+        logger.debug('Calling function {}'.format(data))
         return data(* args, ** kwargs)
     return data
 
@@ -97,11 +99,11 @@ class TestSuite:
             try:
                 from models.model_utils import is_model_name
             except ImportError as e:
-                logging.error("You try to make a model-dependant test without the `models` module !\n{}".format(e))
+                logger.error("You try to make a model-dependant test without the `models` module !\n{}".format(e))
                 is_model_name = lambda * args, ** kwargs: False
                 self.__stopped  = True
             if not is_model_name(model_dependant):
-                logging.warning('Test {} depends on model {} which does not exist. Skipping the test'.format(self.name, model_dependant))
+                logger.warning('Test {} depends on model {} which does not exist. Skipping the test'.format(self.name, model_dependant))
                 self.__stopped  = True
         
         if not self.__stopped:
@@ -305,7 +307,7 @@ class TestSuite:
             'compare_kwargs'    : {} if compare_kwargs is None else compare_kwargs
         })
         
-        logging.debug('Adding test {} to test suite {}'.format(name, self.name))
+        logger.debug('Adding test {} to test suite {}'.format(name, self.name))
         
         self.__order.append(name)
         
@@ -330,7 +332,7 @@ class TestSuite:
         t0 = time.time()
         
         try:
-            logging.debug('run test {} with target : {} - value : {}'.format(
+            logger.debug('run test {} with target : {} - value : {}'.format(
                 name, self.name, test['target'], test['value']
             ))
             
@@ -366,7 +368,7 @@ class TestSuite:
             name for name in self if to_run == 'all' or not self.is_success(name)
         ]
         
-        logging.info('Running test {} ({} tests to run)'.format(self.name, len(names)))
+        logger.info('Running test {} ({} tests to run)'.format(self.name, len(names)))
         
         for name in names:
             if self.stopped: break
@@ -395,17 +397,17 @@ class TestSuite:
             for name, test in restored_tests.items():
                 if self.__tests[name]['overwrite'] or self.overwrite or 'target' not in test:
                     if 'target' in test:
-                        logging.info('Overwriting test {} from {}'.format(name, self.name))
+                        logger.info('Overwriting test {} from {}'.format(name, self.name))
                     continue
                 else:
-                    logging.debug('{} from {} successfully restored !'.format(name, self.name))
+                    logger.debug('{} from {} successfully restored !'.format(name, self.name))
                 
                 test['target'] = load_data(test['target'])
                 self.__tests[name].update(test)
                 self.__results[name].update(results[name])
         
         except Exception as e:
-            logging.error("Failed to restore due to {} : {}".format(e.__class__.__name__, e))
+            logger.error("Failed to restore due to {} : {}".format(e.__class__.__name__, e))
 
     def save(self):
         os.makedirs(self.directory, exist_ok = True)
@@ -432,20 +434,20 @@ class TestSuite:
                 else:
                     for file in test_file: os.remove(file)
                 
-                logging.debug('Saving {} from {}'.format(name, self.name))
+                logger.debug('Saving {} from {}'.format(name, self.name))
                 
                 test['target']  = _maybe_call(test['target'], * test['args'], ** test['kwargs'])
 
-                test['target']  = dump_data(
-                    filename    = filename,
-                    data        = test['target'],
-                    overwrite   = overwrite_test
-                )
+                if not callable(test['target']):
+                    test['target']  = dump_data(
+                        filename    = filename,
+                        data        = test['target'],
+                        overwrite   = overwrite_test
+                    )
             
-            test.pop('value')
-            test.pop('overwrite')
+            for k in ['value', 'overwrite']: test.pop(k)
             if callable(test['target']): test.pop('target')
-        
+
         dump_pickle(self.tests_file, data)
     
     def save_config(self):
@@ -508,12 +510,12 @@ class TestResult:
     def __getitem__(self, idx):
         return self.tests[idx]
     
-    def run(self, ** kwargs):
-        for t in self: t.run(** kwargs)
+    def run(self, * args, ** kwargs):
+        for t in self: t.run(* args, ** kwargs)
     
     def assert_succeed(self):
         assert self.succeed, "\n{}".format(self)
-        logging.info("All tests succeed !")
+        logger.info("All tests succeed !")
     
     def save(self):
         for t in self: t.save()
@@ -561,9 +563,9 @@ def assert_equal(target, value, * args, ** kwargs):
 def assert_not_equal(target, value, * args, ** kwargs):
     _current_test.append(is_diff, target = target, value = value, args = args, ** kwargs)
 
-def run_tests(** kwargs):
+def run_tests(* args, ** kwargs):
     tests = TestResult()
-    tests.run(** kwargs)
+    tests.run(* args, ** kwargs)
     
     return tests
 

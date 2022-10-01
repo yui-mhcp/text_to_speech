@@ -14,6 +14,7 @@ import os
 import time
 import logging
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 
 from tqdm import tqdm
@@ -28,12 +29,19 @@ from utils.audio import write_audio
 from utils.text import default_english_encoder, split_text
 from utils.thread_utils import Producer, Consumer, Pipeline, ThreadedDict
 
+logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 DEFAULT_MAX_TEXT_LENGTH = 150
 
 class Tacotron2(BaseTextModel, BaseAudioModel):
+    """
+        Tacotron2 is a model introduced in this paper [https://arxiv.org/abs/1712.05884]. 
+        It takes as input a text and produces a mel-spectrogram of the corresponding audio. 
+        
+        This class inherits from `BaseTextModel` and `BaseAudioModel` as it combines both types of data (text and audio). It means that it handles all the features available in those 2 interfaces.
+    """
     def __init__(self,
                  lang,
                  audio_rate     = 22050,
@@ -79,15 +87,13 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     @property
     def input_signature(self):
         return self.text_signature + (
-            self.audio_signature,
-            tf.TensorSpec(shape = (None,), dtype = tf.int32)
+            self.audio_signature, tf.TensorSpec(shape = (None,), dtype = tf.int32)
         )
     
     @property
     def output_signature(self):
         return (
-            self.audio_signature,
-            tf.TensorSpec(shape = (None, None), dtype = tf.float32)
+            self.audio_signature, tf.TensorSpec(shape = (None, None), dtype = tf.float32)
         )
         
     @property
@@ -106,10 +112,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return tf.zeros((1, self.n_mel_channels), dtype = tf.float32)
     
     def __str__(self):
-        des = super().__str__()
-        des += self._str_text()
-        des += self._str_audio()
-        return des
+        return super().__str__() + self._str_text() + self._str_audio()
     
     def call(self, inputs, training = False, **kwargs):
         pred = self.tts_model(inputs, training = training, **kwargs)
@@ -135,6 +138,10 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     def compile(self, loss = 'tacotronloss', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
+    def get_input(self, data, ** kwargs):
+        tokens = self.tf_encode_text(data)
+        return tokens, len(tokens)
+    
     def get_mel_gate(self, data):
         mel = self.get_audio(data)
         
@@ -146,25 +153,30 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return mel, gate
     
     def encode_data(self, data):
-        encoded_text = self.tf_encode_text(data)
+        encoded_text, text_length = self.get_input(data)
         
         mel, gate = self.get_mel_gate(data)
         
-        return encoded_text, len(encoded_text), mel, len(mel), mel, gate
+        return (encoded_text, text_length, mel, len(mel)), (mel, gate)
+        return encoded_text, text_length, mel, len(mel), mel, gate
         
-    def filter_data(self, text, text_length, mel_input, mel_length, mel_output, gate):
+    def filter_data(self, inputs, outputs):
         if self.max_train_frames > 0: return True
         return tf.logical_and(
-            text_length <= self.max_input_length, 
-            mel_length <= self.max_output_length
+            inputs[1] <= self.max_input_length, 
+            inputs[-1] <= self.max_output_length
         )
     
-    def augment_data(self, text, text_length, mel_input, mel_length, mel_output, gate):
+    def augment_data(self, inputs, outputs):
+        mel_input, mel_length = inputs[-2:]
         mel_input = self.augment_audio(mel_input)
         
-        return text, text_length, mel_input, mel_length, mel_output, gate
+        return inputs[:-2] + (mel_input, mel_length), outputs
     
-    def preprocess_data(self, text, text_length, mel_input, mel_length, mel_output, gate):
+    def preprocess_data(self, inputs, outputs):
+        mel_input, mel_length   = inputs[-2:]
+        mel_output, gate        = outputs
+        
         if self.pad_to_multiple and self.max_train_frames > 0:
             to_pad = tf.shape(gate)[1] % self.max_train_frames
             padding = self.max_train_frames - to_pad + 1
@@ -182,16 +194,18 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         mel_output  = mel_output[:, 1:]
         gate        = gate[:, 1:]
         
-        return (text, text_length, mel_input, mel_length), (mel_output, gate)
+        return inputs[:-2] + (mel_input, mel_length), (mel_output, gate)
     
-    def get_dataset_config(self, **kwargs):
-        kwargs['pad_kwargs']    = {
-            'padding_values'    : (
-                self.blank_token_idx, 0, self.pad_mel_value, 0, self.pad_mel_value, 1.
-            )
-        }
-        kwargs['batch_before_map']  = True
-        kwargs['padded_batch']      = True
+    def get_dataset_config(self, ** kwargs):
+        kwargs.update({
+            'batch_before_map'  : True,
+            'padded_batch'  : True,
+            'pad_kwargs'    : {
+                'padding_values'    : (
+                    (self.blank_token_idx, 0, self.pad_mel_value, 0), (self.pad_mel_value, 1.)
+                )
+            }
+        })
         
         return super().get_dataset_config(**kwargs)
     
@@ -263,511 +277,290 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
 
         
     def get_pipeline(self,
+                     max_text_length    = -1,
+                     expand_acronyms    = True,
+                     
                      save    = True,
+                     show_mel   = False,
                      save_mel   = None,
                      save_plot  = None,
                      save_audio = None,
                      
                      directory   = None,
                      
-                     required_keys  = 'mel',
+                     expected_keys  = 'mels',
                      
-                     expand_acronyms    = True,
-                     
-                     batch_size     = 8,
-                     max_workers    = 0,
+                     batch_size = 8,
+                     post_group = None,
+                     pre_processing     = None,
                      post_processing    = None,
                      
                      ** kwargs
                     ):
         """
-            Creates an `inference pipeline` with possibly saving the result
+            Creates an *inference pipeline* (i.e. cleaning + text splitting + inference)
             
             Arguments :
+                - max_text_length   : kwarg for `split_text`
+                - expand_acronyms   : kwarg for `self.clean_text` call
+
                 - save / save_mel / save_plot / save_audio  : whether to save results or not
                     If one of save_{} is None, it takes the value of `save`
                 - directory : where to save the results
                     `save_mel`      creates a `/mels` sub-directory
                     `save_plot`     creates a `/plots` subdirectory
-                    `save_audio`    creates a `/sentence_audio` subdirectory (see the important note below for audio saving)
+                    `save_audio`    creates a `/sentence_audio` subdirectory
                 
-                - required_keys : (list of) keys that are required in the resulting output
-                    For instance if `required_keys = 'audio'` and the sentence has already a saved `audio` key but no `mel` key, it will not generate it as `mel` is not required
-                
-                - expand_acronyms   : kwarg for `self.clean_text` call
+                - expected_keys : (list of) keys that are required in the resulting output
+                    For instance if `expected_keys = 'audio'` and the sentence has already a saved `audio` key but no `mel` key, it will not generate it as `mel` is not required
                 
                 - batch_size    : number of sentences to give for the inference (it is a maximum, not a strict value ! cf `Consumer` batch behavior)
-                - max_workers   : max_workers argument for the `Consumer`'s (maximum 1)
+                - pre_processing    : takes a text and returns a cleaned version of it that will be used as ID (see the note on saving)
                 - post_processing   : `Consumer`-like applied after inference and before saving (useful for `Vocoder` inference)
+                    It takes a single argument `infos` (dict), the result of the inference
+                - post_group    : `Consumer`-like applied after grouping the results (for a given text)
+                    It takes a single argument `infos` (dict), the grouped results
                 
                 - kwargs    : propagated to `self.infer`
-            Return : (sent_mapping, pipeline)
-                - sent_mapping  : `ThreadedDict` that contains information about generated sentences
-                - pipeline      : list of 3 dict representing the inference pipeline (can be given to a `Pipeline` object or to `add_consumer`
-            
-            Important Note : this function does not generate any audio ! the `save_audio` is therefore only used if the `post_processing` adds an `audio` key to the sentence's information
+            Returns : pipeline
+                a `thread_utils.Consumer` class (already started) that takes a text as input and outputs its resulting dict {mels, audios, plots, gates, attn_weights}
+                Note that some of these keys are optional and can be missing (only `expected_keys` must be in the result)
             
             Pipeline process :
-                1) Receives sentences' information (sent, overwrite, timestamp) or sent (simple str)
-                2) Filters duplacted sentences to avoid generating multiple times the same sentence
-                3) Performs inference on kept sentences
-                4) Maps the filtered and kept sentences to their respective result (mel / attn_weights / ...)
-                5) Add each sentence in `in_pipeline` such that if the same sentence comes before the end, it will not be re-generated
-                6) Apply `post_processing` (identity function if `post_processing is None`)
-                7) Save mel / plot / audio (if required and provided and not already done*)
-                8) Removes the sentence from `in_pipeline`
-                
-                * A sentence already generated with `overwrite = False` or a duplicata sentence will have a `mel` key which is already a filename (and not the raw generated mel) so it will not save it again.
+                1) Receives a text and pre-process it with `pre_processing` (default `self.clean_text`)
+                2) Split the text into sentences
+                3) Encode the sentences
+                4) Performs inference
+                5) Apply `post_processing` (if provided)
+                6) Saving
+                    6.1) If `save_mel` : saves the mel-spectrogram and set the `mel` key to its filename
+                    6.2) If `save_plot` : saves the attention / mel plot and set the `plot` key
+                    6.3) If `save_audio` and `audio` key is in the result : saves the audio and sets the `audio` key to the saving filename
+                7) Groups each sentence's result for a given text
+                8) Apply `post_group` (if provided)
             
-            Notice that the pipeline does not perform any processing on `sentences` meaning that you have to split them before sending them to the pipeline.
-            
-            The `timestamp` value is used to determine if the already generated sentence is recent enough to be sent back as is or if it is expected to re-generate it. 
-            For instance if you send 2 identical sentences, the 1st one will enter the pipeline and go out of it and will be saved with a more recent `timestamp`. Therefore, the 2nd one (with an older timestamp) will not be re-generated as the saved version is more recent (so has already been overwritten). 
+            Note that `Pipeline` tracks inputs and can restore an already processed ID.
+            It means that :
+                - If 2 t
         """
         @timer
-        def _filter_sent(sent_infos):
-            """
-                Filter sentences to return those to predict
-                
-                Arguments :
-                    - sent_infos : (list of) sentence informations
-                        str : the sentence to read
-                        tuple (sent, overwrite, timestamp)  : the sentence with its last timestamp and whether to overwrite it or not
-                Returns : (list of) str or None (None if we should not predict the text)
-                    If the input was a list and no sentences should be predicted, the output is an empty list
-            """
-            if isinstance(sent_infos, list):
-                sents = [_filter_sent(s) for s in sent_infos]
-                return list(set(s for s in sents if s is not None and s.strip()))
-            
-            if isinstance(sent_infos, str):
-                sent, overwrite, timestamp = sent_infos, False, -1
-            else:
-                sent, overwrite, timestamp = sent_infos
-
-            if sent in in_pipeline: return None
-            infos = sent_mapping.get(sent, {})
-            
-            if not infos or (overwrite and infos.get('timestamp', 0) <= timestamp) or any(
-                infos.get(k, None) is None for k in required_keys):
-                return sent
-            return None
-        
-        @timer
-        def _filter_mel(mel, gate, attn):
+        def _filter_mel(mel, gate, attn, ** kwargs):
             """ Converts a padded mel output to the right shape (according to `gate`) """
             stop_gate   = np.where(gate > 0.5)[0]
             mel_length  = stop_gate[0] if len(stop_gate) > 0 else len(gate)
 
             return {
+                ** kwargs,
                 'mel'           : mel[: mel_length],
                 'gate'          : gate[: mel_length],
                 'attn_weights'  : attn[: mel_length]
             }
+
+        @timer
+        def preprocess(text, ** kwargs):
+            kwargs.setdefault('to_expand_acronyms', expand_acronyms)
+            return self.clean_text(text, ** kwargs)
         
         @timer
-        def _map_sent_to_mel(sent_infos, sents, mels, gates, attn_weights, timestamp = None):
-            """
-                Maps each input sentence to its corresponding mel / gate / attn
-                
-                Arguments :
-                    - sent_infos    : the original input, the expected sentences
-                    - sents         : the filtered sentences to predict (from `_filter_sent`)
-                    - mels          : mel output
-                
-                Note : `len(sent_infos) ?= (len(sents) == len(mel) == len(gates) == len(attn))`
-                    It means that each `sent` (in sents) has its corresponding output mel but some sent in `sent_infos` can be duplicates / already predicted / already in `in_pipeline`
-            """
-            def _get_mel(sent_info):
-                sent = sent_info[0] if not isinstance(sent_info, str) else sent_info
-                
-                if sent not in mapping:
-                    with in_pipeline.mutex:
-                        if sent in in_pipeline:
-                            mapping[sent] = in_pipeline[sent]
-                    if sent not in mapping:
-                        mapping[sent] = sent_mapping.get(sent, {}).copy()
-
-                    mapping[sent].setdefault('timestamp', timestamp)
-                
-                return (sent, mapping[sent])
-            
-            if timestamp is None: timestamp = time.time()
-            if len(sents) != 1:
-                mapping = {
-                    s : _filter_mel(mel, gate, attn)
-                    for s, mel, gate, attn in zip(sents, mels, gates, attn_weights)
-                }
-            else:
-                mapping = {
-                    sents[0] : {
-                        'mel'   : mels[0, :-1],
-                        'gate'  : gates[0, :-1],
-                        'attn_weights' : attn_weights[0, :-1]
-                    }
-                }
-            for k, v in mapping.items(): v['timestamp'] = timestamp
-            
-            if isinstance(sent_infos, list):
-                return [_get_mel(s) for s in sent_infos]
-            return _get_mel(sent_infos)
-        
-        def add_in_pipeline(pred):
-            if isinstance(pred, list):
-                return [add_in_pipeline(p) for p in pred]
-            
-            sent, infos = pred
-            logging.debug('[START] {}'.format(sent))
-            in_pipeline[sent] = infos
-            return pred
+        def sentence_splitter(text, ** kwargs):
+            """ Splits `text` in sentences of at most `max_text_length` caracters """
+            kwargs.setdefault('to_expand_acronyms', expand_acronyms)
+            splitted    = [
+                self.clean_text(s, to_expand_acronys = expand_acronyms, ** kwargs)
+                for s in split_text(text, max_text_length)
+            ]
+            return (text, splitted if splitted else [''])
         
         @timer
-        def _infer(sent_infos):
+        def inference(sent, ** kw):
             """
-                Get a (list of) str or tuple (text, overwrite, last_timestamp) : the text to read (must be previously splitted if required)
-                Returnsa (list of) tuple (sent, infos) where `infos` is a dict containing new information
-                    `infos` contains :
-                        If generated: {mel, attn_weights, gate, timestamp}
-                        else: `sent_mapping[sent]` (the information in `sent_mapping`)
+                Get a (list of) str : the text(s) to read
+                Returnsa (list of) dict containing {mel, attn_weights, gate}
             """
-            start_time  = time.time()
+            inputs = sent if isinstance(sent, list) else [sent]
             
-            text    = _filter_sent(sent_infos)
-            if text is None: text = []
-            elif not isinstance(text, list): text = [text]
+            should_skip = [
+                False if s and any(c.isalnum() for c in s) else True for s in inputs
+            ]
             
-            mels, gates, attn_weights = [], [], []
-            if len(text) > 0:
-                encoded = [self.encode_text(t, to_expand_acronyms = expand_acronyms) for t in text]
-                lengths = np.array([len(enc) for enc in encoded])
+            if any(not skip for skip in should_skip):
+                encoded, lengths = list(zip(* [
+                    self.get_input(s) for s, skip in zip(inputs, should_skip) if not skip
+                ]))
+                
+                batch   = pad_batch(encoded, pad_value = self.blank_token_idx, dtype = np.int32)
 
-                inputs  = pad_batch(encoded, 0, dtype = np.int32) if len(encoded) > 1 else encoded
-
+                batch   = tf.cast(batch, tf.int32)
                 lengths = tf.cast(lengths, tf.int32)
-                inputs  = tf.cast(inputs, tf.int32)
 
-                _, mels, gates, attn_weights = self.infer(
-                    text = inputs, text_length = lengths, ** kwargs
-                )
-                mels, gates, attn_weights = mels.numpy(), gates.numpy(), attn_weights.numpy()
+                _, mels, gates, attn_weights = [out.numpy() for out in self.infer(
+                    text = batch, text_length = lengths, ** kwargs
+                )]
             
-            outputs = _map_sent_to_mel(
-                sent_infos, text, mels, gates, attn_weights, timestamp = start_time
-            )
-            outputs = add_in_pipeline(outputs)
-            return outputs
+            result, idx = [], 0
+            for i, (txt, skip) in enumerate(zip(inputs, should_skip)):
+                res = {'text' : txt}
+                if not skip:
+                    res = _filter_mel(mels[idx], gates[idx], attn_weights[idx], text = txt)
+                    idx += 1
+                result.append(res)
+            
+            return result if isinstance(sent, list) else result[0]
         
         @timer
-        def _save(pred):
-            """ Saves required information from the input tuple (sent, new_infos) """
-            @timer
-            def _maybe_save_mel():
-                mel = new_infos.get('mel', None)
-                if save_mel and mel is not None and not isinstance(mel, str):
-                    if 'mel' in infos:
-                        filename    = infos['mel']
-                    else:
-                        num_pred    = len(os.listdir(mel_dir))
-                        filename    = os.path.join(mel_dir, 'mel_{}.npy'.format(num_pred))
-                        
-                        infos.update({'mel' : filename})
-                    
-                    np.save(filename, mel)
-                    return True
-                return False
+        def save_plot_fn(result, overwritten_data = {}, ** kwargs):
+            if 'mel' not in result: return result
             
-            @timer
-            def _maybe_save_plot():
-                mel     = new_infos.get('mel', None)
-                attn    = new_infos.get('attn_weights', None)
-                if save_plot and attn is not None and not isinstance(attn, str):
-                    if 'plot' in infos:
-                        filename = infos['plot']
-                    else:
-                        num_pred    = len(os.listdir(plot_dir))
-                        filename    = os.path.join(plot_dir, 'attn_{}.png'.format(num_pred))
-                        
-                        infos.update({'plot' : filename})
-                    
-                    to_plot = {'attention' : attn}
-                    if mel is not None and not isinstance(mel, str): to_plot['spectrogram'] = mel
-                    plot_spectrogram(
-                        ** to_plot, filename = filename, show = False, 
-                        title = "Spectrogram for :\n{}".format(text)
-                    )
-                    return True
-                return False
+            filename = None
+            if save_mel:
+                if 'plot' in overwritten_data:
+                    filename    = overwritten_data['plot']
+                else:
+                    num_pred    = len(os.listdir(plot_dir))
+                    filename    = os.path.join(plot_dir, 'attn_{}.png'.format(num_pred))
+            
+            audio = {} if 'audio' not in result else {'audio' : {
+                'x': result['audio'], 'plot_type' : 'plot'
+            }}
+            plot_spectrogram(
+                mel = result['mel'], attention = result['attn_weights'], ** audio,
+                title = "Spectrogram for :\n{}".format(result['text']),
+                filename = filename, show = show_mel
+            )
+            result['plot'] = filename
+            
+            return result
 
-            @timer
-            def _maybe_save_audio():
-                audio = new_infos.get('audio', None)
-                if save_audio and audio is not None and not isinstance(audio, str):
-                    if 'audio' in infos:
-                        filename = infos['audio']
-                    else:
-                        num_pred    = len(os.listdir(audio_dir))
-                        filename    = os.path.join(audio_dir, 'audio_{}.mp3'.format(num_pred))
-                    
-                    infos.update({'audio' : filename, 'duree' : new_infos['duree']})
-                    
-                    write_audio(audio = audio, filename = filename, rate = self.audio_rate)
-                    return True
-                return False
-            
-            text, new_infos = pred
-            
-            infos   = sent_mapping.get(text, {})
-            
-            if not in_pipeline.get(text, False):
-                logging.info('[END DUPLICATE] {}'.format(text))
-                return (text, infos)
-            
-            new_infos['timestamp'] = time.time()
-            
-            if save:
-                infos['timestamp'] = new_infos['timestamp']
-                _maybe_save_mel()
-                _maybe_save_plot()
-                _maybe_save_audio()
+        @timer
+        def save_mel_fn(result, overwritten_data = {}, ** kwargs):
+            if 'mel' not in result: return result
+
+            if 'mel' in overwritten_data:
+                filename    = overwritten_data['mel']
             else:
-                infos.update(new_infos)
+                num_pred    = len(os.listdir(mel_dir))
+                filename    = os.path.join(mel_dir, 'mel_{}.npy'.format(num_pred))
             
-            logging.debug('[END] {}'.format(text))
-            sent_mapping[text] = infos
+            np.save(filename, result['mel'])
+            result['mel'] = filename
             
-            if save:
-                dump_json(map_file, sent_mapping, indent = 4)
-            
-            in_pipeline.pop(text, None)
+            return result
 
-            return (text, infos)
+        @timer
+        def maybe_save_audio(result, overwritten_data = {}, ** kwargs):
+            if 'audio' not in result: return result
+
+            if 'audio' in overwritten_data:
+                filename    = overwritten_data['audio']
+            else:
+                num_pred    = len(os.listdir(audio_dir))
+                filename    = os.path.join(audio_dir, 'audio_{}.mp3'.format(num_pred))
+            
+            write_audio(audio = result['audio'], filename = filename, rate = self.audio_rate)
+            result['audio'] = filename
+            
+            return result
         
         # get saving directory
-        if save_mel is None:    save_mel = save
-        if save_plot is None:   save_plot = save
-        if save_audio is None:  save_audio = save
+        if max_text_length <= 0:    max_text_length = self.max_input_length
+        if save_mel is None:    save_mel    = save
+        if save_plot is None:   save_plot   = save
+        if save_audio is None:  save_audio  = save
+        
+        if pre_processing is None: pre_processing = preprocess
+        if post_group is not None and not isinstance(post_group, list):
+            post_group = [post_group]
+        if post_processing is not None and not isinstance(post_processing, list):
+            post_processing = [post_processing]
+
+        
         save = save_mel or save_plot or save_audio
         
-        if not save:
-            mel_dir, plot_dir, audio_dir, map_file = None, None, None, None
-        else:
+        mel_dir, plot_dir, audio_dir, map_file = None, None, None, None
+        if save:
             if directory is None: directory = self.pred_dir
             mel_dir     = os.path.join(directory, 'mels')
             plot_dir    = os.path.join(directory, 'plots')
-            audio_dir   = os.path.join(directory, 'sentence_audio')
-            map_file    = os.path.join(directory, 'map_sentences.json')
+            audio_dir   = os.path.join(directory, 'sentence_audios')
+            
+            text_map_file   = os.path.join(directory, 'map.json')
+            sent_map_file   = os.path.join(directory, 'map_sentences.json')
             
             if save_mel:    os.makedirs(mel_dir, exist_ok = True)
             if save_plot:   os.makedirs(plot_dir, exist_ok = True)
             if save_audio:  os.makedirs(audio_dir, exist_ok = True)
 
-        if required_keys is None: required_keys = []
-        elif not isinstance(required_keys, (list, tuple)): required_keys = [required_keys]
-        # load previous generated (if any)
-        sent_mapping    = load_json(map_file, default = {}) if map_file else {}
-        sent_mapping    = ThreadedDict(** sent_mapping)
+        saving_functions    = [] if post_processing is None else post_processing
+        do_not_save_keys    = ['attn_weights', 'gate', 'gates']
         
-        in_pipeline     = ThreadedDict()
+        if save_plot:
+            saving_functions.append({'consumer' : save_plot_fn, 'allow_multithread' : False})
         
-        if post_processing is None:
-            post_processing = {
-                'consumer' : lambda item: item, 'max_workers' : -1, 'name' : 'identity'
-            }
+        if save_mel:
+            saving_functions.append({'consumer' : save_mel_fn, 'allow_multithread' : False})
+        else:
+            do_not_save_keys.extend(['mel', 'mels'])
         
-        return sent_mapping, [
-            {
-                'consumer'      : _infer,
-                'batch_size'    : batch_size,
-                'max_workers'   : min(max_workers, 1),
-                'name'  : 'inference'
-            },
-            post_processing,
-            {
-                'consumer'      : _save,
-                'max_workers'   : min(max_workers, 1),
-                'name'  : 'saving'
-            }
-        ]
-    
-    def get_streaming_pipeline(self,
-                               buffer   = None,
-                               max_text_length = -1,
+        if save_audio:
+            saving_functions.append({'consumer' : maybe_save_audio, 'allow_multithread' : False})
+        else:
+            do_not_save_keys.append('audios')
+        
+        pipeline = Pipeline(** {
+            ** kwargs,
+            'name'  : 'tts_pipeline',
+            'filename'  : None,
+            'track_items'   : False,
+            
+            'tasks' : [
+                {'consumer' : preprocess, 'name' : 'pre_processing'},
+                {
+                    'name'      : 'text_inference',
+                    'filename'  : None if not save else text_map_file,
+                    'expected_keys' : expected_keys,
+                    'do_not_save_keys'  : do_not_save_keys,
 
-                               required_keys    = 'mel',
-                               
-                               save         = True,
-                               save_parts   = None,
-                               directory    = None,
-                               
-                               post_group   = None,
-                               
-                               pipeline_workers = 0,
-                               max_workers  = 0,
-                               
-                               ** kwargs
-                              ):
-        """
-            Creates the complete `inference pipeline` with processing (splitting and re-grouping sentences)
-            The issue with the `Producer` is that it does not handle single-input to multi-output which is the case if the text is too long and should be splitted in multiple sub-sentences.
-            In this case, this function splits the text, adds "manually" each sentence to the `inference pipeline` (cf `self.get_pipeline`) then waits that all individual sentences have been generated to save then return the final result. 
-            It therefore co-exists 2 distinct pipelines : the `inference` pipeline and the `splitting / grouping` pipeline that adds individual sentences to the 1st pipeline. 
-            
-            Arguments :
-                - buffer    : the `buffer` argument for the 2 pipelines
-                - max_text_length   : maximum length for the text splitting
-                
-                - required_keys : same argument as `self.get_pipeline`
-                
-                - save  : whether to save the global result or not
-                - save_parts    : whether to save individual parts or not (given as `save` to `self.get_pipeline`)
-                - directory     : where to save the results
-                
-                - post_group    : function applied after `_group` (re-grouping information from individual sentences of the text) and `_save` that saves the global result to `map.json`
-                
-                - pipeline_workers  : given as `max_workers` to `self.get_pipeline`
-                - max_workers   : max_workers for this second processing pipeline
-                
-                - kwargs    : forwarded to `self.get_pipeline`
-            
-            Returns : (sentence_splitter, grouper, pipeline, text_mapping, sent_mapping)
-                - sentence_splitter : the `Consumer` that splits sentences, the input of the 2nd (processing) pipeline
-                - grouper   : the `_group` (or `post_group`) `Consumer`
-                - pipeline  : the `Pipeline` object for the 1st `inference pipeline`
-                - text_mapping  : `ThreadedDict` that maps text to information
-                - sent_mapping  : `ThreadedDict` that maps sentences to information
-            
-            Note that `sentence_splitter` is a `Consumer`, meaning that you have to "manually" add data to it to start the pipeline
-        """
-        @timer
-        def _sentence_splitter(text, overwrite = False, p = -1, blocking = True, ** kwargs):
-            infos       = text_mapping.get(text, {}).copy()
-            splitted    = infos.get('splitted', None)
-            if overwrite or splitted is None:
-                splitted    = [
-                    self.clean_text(s, ** kwargs) for s in split_text(text, max_text_length)
-                ]
-                splitted    = [s for s in splitted if s and any(c.isalnum() for c in s)]
-                
-                timestamps  = {
-                    s : sent_mapping.get(s, {}).get('timestamp', 0) for s in set(splitted)
+                    'tasks' : [
+                        {'consumer' : sentence_splitter, 'splitter' : True, 'name' : 'text_splitter'},
+                        {
+                            'name'      : 'sentence_inference',
+                            'filename'  : None if not save else sent_map_file,
+                            'expected_keys' : [
+                                k[:-1] if k.endswith('s') else k for k in expected_keys
+                            ],
+                            'do_not_save_keys'  : do_not_save_keys,
+
+                            'tasks' : [
+                                {
+                                    'consumer'      : inference,
+                                    'batch_size'    : batch_size,
+                                    'allow_multithread' : False
+                                },
+                            ] + saving_functions
+                        },
+                        {
+                            'consumer'  : 'grouper',
+                            'nested_group' : True,
+                            'suffix'    : 's',
+                            'name'  : 'text_grouper'
+                        }
+                    ] + (post_group if post_group is not None else [])
                 }
-                for sent, t in timestamps.items():
-                    pipeline((sent, overwrite, t), priority = p)
-            else:
-                timestamps = {sent : t for sent, t in zip(splitted, infos.get('timestamps', []))}
-            
-            if not blocking: return None
-            return text, splitted, timestamps, overwrite
-
-        @timer
-        def _group(text_infos):
-            def _is_recent_enough(sent):
-                if not overwrite and sent in sent_mapping: return True
-                
-                last_timestamp  = timestamps.get(sent, 0)
-                current_timestamp   = sent_mapping.get(sent, {}).get('timestamp', 0)
-                logging.debug('Notified (elapsed time {}) for {}'.format(
-                    current_timestamp - last_timestamp, sent
-                ))
-                return last_timestamp < current_timestamp
-            
-            if text_infos is None: return None
-            text, splitted, timestamps, overwrite = text_infos
-            
-            infos = text_mapping.get(text, {}).copy()
-            
-            if splitted == infos.get('splitted', None) and all(infos.get(k + 's', None) is not None for k in required_keys) and all(_is_recent_enough(s) for s in splitted):
-                logging.debug('Not updating {}'.format(text))
-                return (text, infos, False)
-            
-            infos['splitted'] = splitted
-            for i, sent in enumerate(splitted):
-                logging.debug('Waiting for {}'.format(sent))
-                sent_mapping.wait_for(sent, cond = lambda: _is_recent_enough(sent))
-                logging.debug('Finish waiting for {}'.format(sent))
-                for k, v in sent_mapping[sent].items():
-                    if i == 0: infos[k + 's'] = []
-                    infos[k + 's'].append(v)
-
-            return (text, infos, True)
-        
-        def _save_groupped(output):
-            def _is_json_data(v):
-                if isinstance(v, list): return all(_is_json_data(vi) for vi in v)
-                if isinstance(v, (np.ndarray, tf.Tensor)): return False
-                return True
-            
-            if output is None: return None
-            text, infos, updated = output
-
-            if updated:
-                logging.debug('Updating {} !'.format(text))
-                if map_file:
-                    infos   = {
-                        k : v for k, v in infos.items() if _is_json_data(v)
-                    }
-                text_mapping[text] = {** text_mapping.get(text, {}), ** infos}
-                
-                if map_file:
-                    dump_json(map_file, text_mapping, indent = 4)
-            else:
-                logging.debug('Notifying {} !'.format(text))
-                text_mapping.notify_all(text)
-            
-            return output
-        
-        if max_text_length <= 0: max_text_length = self.max_input_length
-        if required_keys is None: required_keys = []
-        if not isinstance(required_keys, (list, tuple)): required_keys = [required_keys]
-        map_file    = None
-        if save:
-            if directory is None: directory = self.pred_dir
-            map_file = os.path.join(directory, 'map.json')
-        
-        if save_parts is None: save_parts = save
-        # load previous generated (if any)
-        text_mapping    = load_json(map_file, default = {}) if map_file else {}
-        text_mapping    = ThreadedDict(** text_mapping)
-        
-        sent_mapping, pipeline  = self.get_pipeline(
-            save        = save_parts,
-            directory   = directory,
-            max_workers = pipeline_workers,
-            required_keys   = required_keys,
-            ** kwargs
-        )
-        pipeline    = Pipeline(pipeline, buffer = buffer)
+            ]
+        })
         pipeline.start()
-        
-        sentence_splitter   = Consumer(
-            _sentence_splitter, max_workers = max_workers, buffer = buffer
-        )
-        pipeline.add_listener(lambda: sentence_splitter.stop, on = 'stop')
-        sentence_splitter.add_listener(lambda: pipeline.stop, on = 'stop')
-        sentence_splitter.start()
-        
-        grouper = sentence_splitter.add_consumer(
-            _group, start = True, link_stop = True, max_workers = max_workers
-        )
-        if post_group is not None:
-            grouper = grouper.add_consumer(
-                post_group, start = True, link_stop = True, max_workers = max_workers
-            )
-        grouper.add_consumer(
-            _save_groupped, start = True, link_stop = True, max_workers = min(max_workers, 1)
-        )
-        
-        return sentence_splitter, grouper, pipeline, text_mapping, sent_mapping
+        return pipeline
     
     @timer
-    def predict(self, sentences, overwrite = False, ** kwargs):
-        producer, _, _, results, _  = self.get_streaming_pipeline(** kwargs)
+    def predict(self, sentences, ** kwargs):
+        """
+            Performs prediction on `sentences`, a (list of) str
+            See `help(self.get_pipeline)` for more information about the configuration and procedure
+        """
+        if not isinstance(sentences, (list, pd.DataFrame)): sentences = [sentences]
+        pipe    = self.get_pipeline(** kwargs)
         
-        for sent in sentences: producer(sent, overwrite = overwrite)
-        
-        producer.join(recursive = True)
-
-        return [(p, results[p]) for p in sentences]
+        return pipe.extend_and_wait(sentences, stop = True, ** kwargs)
 
     def get_config(self, * args, ** kwargs):
         config = super(Tacotron2, self).get_config(* args, ** kwargs)

@@ -14,17 +14,16 @@ import os
 import time
 import logging
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 
-from tqdm import tqdm
-
 from loggers import timer
-from utils.thread_utils import Consumer
-from utils import time_to_string, load_json, dump_json, pad_batch
+from utils import time_to_string, pad_batch
 from utils.audio import display_audio, play_audio, load_audio, write_audio
 from models.interfaces import BaseModel
 from models.tts.waveglow import PtWaveGlow
 
+logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
 
 _stream_msg = {
@@ -37,32 +36,31 @@ _end_msg = {
 }
 
 _pipelines  = {}
-_vocoder_consumer   = None
 
 class Vocoder(object):
     def __init__(self):
         self.__synthesizer  = None
         self.__vocoder      = None
     
-    def set_synthesizer(self, nom):
-        if isinstance(nom, BaseModel):
-            self.__synthesizer = nom
-        elif isinstance(nom, str):
+    def set_synthesizer(self, model):
+        if isinstance(model, BaseModel):
+            self.__synthesizer = model
+        elif isinstance(model, str):
             from models import get_pretrained
 
-            self.__synthesizer = get_pretrained(nom)
+            self.__synthesizer = get_pretrained(model)
     
-    def set_vocoder(self, nom = None, model_class = None):
-        if  nom is None:
+    def set_vocoder(self, model = None, model_class = None):
+        if  model is None:
             self.__vocoder = PTWaveGlow()
-        elif isinstance(nom, str):
+        elif isinstance(model, str):
             from models import get_pretrained
 
-            self.__vocoder = get_pretrained(nom)
-        elif isinstance(nom, BaseModel):
-            self.__vocoder = nom
+            self.__vocoder = get_pretrained(model)
+        elif isinstance(model, BaseModel):
+            self.__vocoder = model
         else:
-            raise ValueError("Unknown vocoder type : {}\n  {}".format(type(nom), nom))
+            raise ValueError("Unknown vocoder type : {}\n  {}".format(type(model), model))
     
     @property
     def synthesizer(self):
@@ -71,14 +69,6 @@ class Vocoder(object):
     @property
     def vocoder(self):
         return self.__vocoder
-    
-    @property
-    def synthesizer_class(self):
-        return type(self.__synthesizer) if self.__synthesizer is not None else None
-    
-    @property
-    def vocoder_class(self):
-        return type(self.__vocoder) if self.__vocoder is not None else None
     
     @property
     def lang(self):
@@ -93,17 +83,12 @@ class Vocoder(object):
         t0 = time.time()
         
         result = vocoder_inference(
-            sentences,
-            vocoder     = self.vocoder,
-            synthesizer = self.synthesizer,
-            rate    = self.rate,
-            ** kwargs
+            sentences, synthesizer = self.synthesizer, vocoder = self.vocoder, ** kwargs
         )
-        total_time = time.time() - t0
-        if total_time <= 1e-9: total_time = 1e-6
+        total_time = max(time.time() - t0, 1e-6)
         
-        generated_time = sum([i.get('duree', -1) for _, i in result])
-        logging.info("{} generated in {} ({} generated / sec)".format(
+        generated_time = sum([i.get('time', -1) for _, i in result])
+        logger.info("{} generated in {} ({} generated / sec)".format(
             time_to_string(generated_time),
             time_to_string(total_time),
             time_to_string(generated_time / total_time)
@@ -125,28 +110,65 @@ class Vocoder(object):
         if self.lang in _end_msg:
             self.predict(_end_msg[self.lang], ** predict_kwargs)
 
+def maybe_load_mel(mel):
+    if isinstance(mel, list): return [maybe_load_mel(m) for m in mel]
+    if isinstance(mel, dict): mel = mel.get('mel', None)
+    return np.load(mel) if isinstance(mel, str) else mel
+
+@timer
+def vocoder_infer(infos, vocoder, rate, pad_value, ** kwargs):
+    """
+        Gets a (list of) mel-spectrogram (or dict with `mel` key) and returns the (list of) corresponding audio (produced by `vocoder`)
+    """
+    result = infos if isinstance(infos, list) else [infos]
+
+    mels    = maybe_load_mel(result)
+    should_skip = [False if m is not None else True for m in mels]
+    mels    = [m for m in mels if m is not None]
+
+    if len(mels) > 0:
+        batch   = pad_batch(mels, pad_value = pad_value) if len(mels) > 1 else np.array(mels)
+        audios  = vocoder.infer(batch)
+
+    outputs, idx = [], 0
+    for i, (res, skip) in enumerate(zip(result, should_skip)):
+        if skip:
+            outputs.append(res if isinstance(res, dict) else None)
+            continue
+        
+        mel, audio = mels[idx], audios[idx]
+        if len(mels) > 1: audio = audio[: len(mel) * 1024]
+        if isinstance(res, dict):
+            res.update({'audio' : audio, 'time' : len(audio) / rate})
+            outputs.append(res)
+        else:
+            outputs.append(audio)
+        idx += 1
+    
+    return outputs if isinstance(infos, list) else outputs[0]
+
 @timer
 def vocoder_inference(sentences,
                       vocoder,
                       synthesizer,
                       pad_value    = -11.,
-                      rate     = 22050,
                       vocoder_batch_size    = 1,
+                      
+                      save_parts    = None,
                       
                       persistent    = True,
                       
                       ext       = 'mp3',
                       overwrite = False,
-                      directory     = None,
-                      filename      = 'audio_{}.{}',
-                      concat        = True,
-                      concat_filename  = 'concat_audios_{}.{}',
-                       
+                      directory = None,
+                      filename  = 'audio_{}.{}',
+                      
                       silence_time = 0.15,
-                       
-                      blocking  = True,
+                      
                       display   = False,
                       play      = False,
+                      
+                      blocking  = True,
                       ** kwargs
                      ):
     """
@@ -156,18 +178,14 @@ def vocoder_inference(sentences,
             - sentences : (list of) text to read
             - vocoder   : vocoder model to use to transform synthesized mel spectrograms to audio
             - synthesizer   : synthesizer to use to transform text to mel spectrogram
-            - rate      : audio rate (typically 22050 for NVIDIA's pretrained model)
             - persistent    : whether to keep the created `Pipeline` or not
             
-            - batch_size    : batch_size to use for prediction (synthesizer)
             - vocoder_batch_size    : batch_size to use for prediction (vocoder)
             
             - ext   : extension for audio file (default mp3)
-            - concat    : whether to concat all predictions in a big audio
             - overwrite : whether to regenerate audio if it exists (or reuse it)
             - directory : where to save data (if not provided, do not save)
             - filename  : filename format for audio file for single text
-            - concat_filename   : filename format of the full concatenation
             
             - silence_time  : the time of silence between each text part (of a single sentence)
             
@@ -175,46 +193,18 @@ def vocoder_inference(sentences,
             - display / play    : whether to display / play the resulting audio
             - kwargs    : propagated to `synthesizer.get_streaming_pipeline` and `pipeline.append()`
         
-        Return : a list of tuples [(text, infos), ...]
-            Where 'infos' is the 'infos' from tacotron_predictions + 'audio' and 'duree' entries
-        
-        Note : if `concat`, it also creates a pair for the full result in the result
-        
-        /!\ This function has not been tested for `vocoder_batch_size > 1` and might produce  unexpected behavior for empty sentences and can infer duplicated sentences.
+        Returns : a list of tuples [(text, infos), ...]
+            Where `infos` is a dict containing the information returned by the pipeline
+            If the inference is performed (either overwrite or data was not already generated), all keys will be there (i.e. {mels, attn_weights, gates, audios, audio}) but if data is restored, some keys can be missing (see `help(Tacotron2.get_pipeline)` for more information)
         
         Currently, this function creates "global" pipelines and re-use it if already created. It means that the 1st call to `vocoder_inference` will create the pipeline with all its configuration (`batch_size`, `directory`, ...) but subsequent calls will re-use the same pipeline : all these configurations will simply be ignored. 
-        You can skip this behavior by setting `persistent = False` but be careful with this especially if you put `blocking = False` ! If you re-call this function directly after, it will probably re-create a new `Pipeline` which will be executed in parallel of the previous one, meaning that the same models might be call in multiple threads at the same time. 
+        You can skip this behavior by setting `persistent = False` but be careful with this especially if you set `blocking = False` ! If you re-call this function directly after, it will probably re-create a new `Pipeline` which will be executed in parallel of the previous one, meaning that the same models might be call in multiple threads at the same time. 
         If you set `blocking = True`, the models' calls will be finished before ending this function call. It will therefore not cause any issue. 
+        
+        If you call this functions with multiple times with different synthesizers, all the pipelines (1 per synthesizer) will co-exist. If `blocking = True`, it will not be an issue as the co-existing (unused) pipelines will not be active when calling this function (sleeping threads). 
+        However, if `blocking = False` (or in a multi-threaded scenario), multiple pipelines may be active at the same time, meaning that multiple models can be predicting at the same time. 
+        In theory it should not be an issue but I do not know how `tensorflow` handles that. 
     """
-    def maybe_load_mel(mel):
-        if isinstance(mel, list): return [maybe_load_mel(m) for m in mel]
-        return np.load(mel) if isinstance(mel, str) else mel
-
-    @timer
-    def vocoder_infer(pred):
-        data = pred if isinstance(pred, list) else [pred]
-
-        to_update = [
-            infos for sent, infos in data
-            if 'mel' in infos and infos.get('timestamp', 0) > sent_mapping.get(sent, {}).get('timestamp', 0)
-        ]
-        mels = maybe_load_mel([infos['mel'] for infos in to_update])
-        
-        audios = []
-        if len(mels) > 0:
-            batch = np.array(mels) if len(mels) == 1 else pad_batch(mels, pad_value = pad_value)
-
-            if batch.shape[1] > 0:
-                audios = vocoder.infer(batch)
-            else:
-                audios = [silence] * len(batch)
-        
-        for infos_i, audio_i in zip(to_update, audios):
-            if len(audios) > 1: audio_i = audio_i[: len(mel_i) * 1024]
-            infos_i.update({'audio' : audio_i, 'duree' : len(audio_i) / rate})
-        
-        return pred
-    
     def maybe_save_silence():
         silence_filename = silence
         if audio_dir is not None:
@@ -238,92 +228,91 @@ def vocoder_inference(sentences,
             write_audio(audio = concat, filename = audio_filename, rate = rate)
         return audio_filename if audio_dir else concat
     
-    def concatenate_audios(output):
-        if output is None: return None
-        text, infos, updated = output
-
-        if updated or 'audio' not in infos:
-            audios = infos.get('audios', [])
-            if len(audios) == 0:
-                infos['audio'] = maybe_save_silence()
-                infos['duree'] = silence_time
-            elif len(audios) == 1:
-                infos['audio'] = infos['audios'][0] if isinstance(infos['audios'][0], str) else concat_and_save(audios, infos.get('audio', None))
-                infos['duree'] = infos['durees'][0]
-            else:
-                infos['audio'] = concat_and_save(audios, infos.get('audio', None))
-                infos['duree'] = sum(infos['durees'])
-            updated = True
+    def concatenate_audios(result, overwritten_data = {}, ** kwargs):
+        """ Concatenates the audios and (possibly) saves it """
+        audios = result.get('audios', [])
+        if len(audios) == 0:
+            result.update({
+                'audio' : maybe_save_silence(), 'time' : silence_time
+            })
+        elif len(audios) == 1:
+            result.update({
+                'audio' : audios[0] if isinstance(audios[0], str) else concat_and_save(
+                    audios, overwritten_data.get('audio', None)
+                ),
+                'time'  : result['times'][0]
+            })
+        else:
+            result.update({
+                'audio' : concat_and_save(audios, overwritten_data.get('audio', None)),
+                'time'  : sum(result['times'])
+            })
         
-        return (text, infos, updated)
+        return result
     
-    global _pipelines, _vocoder_consumer
-    if _pipelines.get(synthesizer.nom, None) is None:
-        if _vocoder_consumer is None:
-            _vocoder_consumer   = Consumer(
-                vocoder_infer,
-                batch_size  = vocoder_batch_size,
-                max_workers = min(kwargs.get('pipeline_workers', 0), 1)
-            )
+    kwargs.update({'overwrite' : overwrite})
+    for k in ['save_plot', 'save_mel', 'save_audio']: kwargs.setdefault(k, save_parts)
+    
+    audio_dir = None if directory is None else os.path.join(directory, 'audios')
+    if directory is None: display = True
+    else: os.makedirs(audio_dir, exist_ok = True)
+    
+    rate    = synthesizer.audio_rate
 
-        display_and_play_consumers = []
-        if display: display_and_play_consumers.append(
-            lambda out: display_audio(out[1]['audio'], rate = rate)
-        )
-        if play: display_and_play_consumers.append(
-            lambda out: play_audio(out[1]['audio'], rate = rate, block = False)
-        )
-        _pipelines[synthesizer.nom] = synthesizer.get_streaming_pipeline(
-            post_processing = _vocoder_consumer,
-            post_group  = {
-                'consumer'  : concatenate_audios,
-                'consumers' : display_and_play_consumers,
-                'name'      : 'save_audio'
+    global _pipelines
+    if _pipelines.get(synthesizer.nom, None) is None:
+        pipeline = synthesizer.get_pipeline(
+            post_processing = {
+                'consumer'  : lambda out, ** kwargs: vocoder_infer(
+                    out, vocoder, rate = rate, pad_value = pad_value, ** kwargs
+                ),
+                'name'  : 'vocoder_inference',
+                'description'   : vocoder_infer.__doc__,
+                'batch_size'    : vocoder_batch_size,
+                'allow_multithread' : False
             },
-            required_keys   = 'audio',
+            post_group  = {
+                'name' : 'save_audio', 'consumer' : concatenate_audios
+            },
+            expected_keys   = 'audio',
             directory   = directory,
             save    = directory is not None,
             ** kwargs
         )
+        if display:
+            pipeline.add_listener(
+                lambda result, ** kwargs: display_audio(result['audio'], rate = rate),
+                name = 'display_audio'
+            )
+        if play:
+            pipeline.add_listener(
+                lambda result, ** kwargs: play_audio(result['audio'], rate = rate, block = False),
+                name = 'play_audio'
+            )
+        
+        _pipelines[synthesizer.nom] = pipeline
     
-    if directory is None: display = True
-    if not isinstance(sentences, (list, tuple)): sentences = [sentences]
-    # define files / dirs to save results
-    audio_dir = None if directory is None else os.path.join(directory, 'audios')
-    if audio_dir: os.makedirs(audio_dir, exist_ok = True)
+    if not isinstance(sentences, (list, tuple, pd.DataFrame)): sentences = [sentences]
     
     # Define silence waveform
     silence = np.zeros((int(rate * silence_time),))
 
-    sentence_splitter, grouper, pipeline, text_mapping, sent_mapping = _pipelines[synthesizer.nom]
+    pipeline    = _pipelines[synthesizer.nom]
+    if not persistent: _pipelines.pop(synthesizer.nom)
     
-    timestamps  = {
-        text : text_mapping.get(text, {}).get('timestamps', None) for text in set(sentences)
-    }
-    timestamps  = {k : v for k, v in timestamps.items() if v is not None}
-    
-    for sent in sentences:
-        sentence_splitter(sent, overwrite = overwrite, blocking = blocking, ** kwargs)
-    
-    if overwrite and blocking:
-        def is_updated(text):
-            last_timestamps = timestamps[text]
-            new_timestamps  = text_mapping.get(text, {}).get('timestamps', last_timestamps)
-
-            is_new = all(last_t < t for last_t, t in zip(last_timestamps, new_timestamps))
-
-            return is_new
-        
-        for text in timestamps.keys():
-            text_mapping.wait_for(text, lambda: is_updated(text))
-    
-    if not persistent:
-        if not blocking:
-            logging.warning('Be careful when calling this function with `blocking = False and persistent = False` !')
-        _vocoder_consumer   = None
-        _pipelines.pop(synthesizer.nom)
-        
     if not blocking:
-        return [(text, text_mapping.get(text, {})) for text in sentences]
-    return [(text, text_mapping[text]) for text in sentences]
+        pipeline.extend(sentences, ** kwargs)
+        if not persistent: pipeline.stop_when_empty()
+        
+        if overwrite:
+            return [(sent, {}) for sent in sentences]
+        
+        with pipeline.mutex_db:
+            return [(sent, pipe._get_from_database(sent, {})) for sent in sentences]
+    
+    return [
+        (sent, result) for sent, result in zip(
+            sentences, pipeline.extend_and_wait(sentences, stop = not persistent, ** kwargs)
+        )
+    ]
 

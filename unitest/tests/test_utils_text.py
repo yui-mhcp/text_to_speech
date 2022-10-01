@@ -10,8 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from utils.text.cleaners import *
+from tqdm import tqdm
 
+from utils.text.cleaners import *
 from unitest import Test, set_sequential, assert_equal, assert_function
 
 _default_sentences  = [
@@ -28,7 +29,7 @@ def _maybe_load_dataset():
     if _sentences is None:
         try:
             from datasets import get_dataset
-            _dataset = get_dataset('snli', modes = 'valid')['valid']
+            _dataset = get_dataset('snli', modes = 'valid').sample(1000, random_state = 0)
 
             _sentences = _dataset['text_x'].values.tolist() + _dataset['text_y'].values.tolist()
             _sentences = [sent.strip() for sent in _sentences]
@@ -54,7 +55,7 @@ def test_transformers_encoder(name):
     sentences = _maybe_load_dataset()
     
     set_sequential()
-    for sent in sentences:
+    for sent in tqdm(sentences):
         sent = sent.strip()
         
         assert_equal(transformers_encoder.tokenize, text_encoder.tokenize, sent, name = 'tokenize')

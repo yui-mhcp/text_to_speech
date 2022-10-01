@@ -19,6 +19,8 @@ import tensorflow as tf
 
 from utils import dump_json, load_json, to_json, plot_multiple
 
+logger = logging.getLogger(__name__)
+
 SLEEPING    = -1
 TRAINING    = 0
 VALIDATING  = 1
@@ -221,7 +223,7 @@ class History(tf.keras.callbacks.Callback):
         
     def plot(self, show_valid_step = False, ** kwargs):
         if self.epoch == -1:
-            logging.warning("No data to plot !")
+            logger.warning("No data to plot !")
             return
         
         history_with_none = {}
@@ -349,7 +351,7 @@ class History(tf.keras.callbacks.Callback):
         
         interrupted = False
         if len(self.__current_epoch_history) != 0:
-            logging.info("Training interrupted at epoch {} !".format(self.current_epoch))
+            logger.info("Training interrupted at epoch {} !".format(self.current_epoch))
             self.on_epoch_end(self.current_epoch)
         
         self.__current_training_config  = {}

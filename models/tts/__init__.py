@@ -48,8 +48,8 @@ def get_tts_model(lang = None, model = None, vocoder = _default_vocoder, ** kwar
         _vocoder = Vocoder()
     
     # Set new synthesizer / vocoder
-    _vocoder.set_vocoder(nom = vocoder)
-    _vocoder.set_synthesizer(nom = model)
+    _vocoder.set_vocoder(model = vocoder)
+    _vocoder.set_synthesizer(model = model)
     
     return _vocoder
 

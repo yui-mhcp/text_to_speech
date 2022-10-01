@@ -25,6 +25,8 @@ from loggers import timer
 from utils import load_json, load_embedding
 from datasets.dataset_utils import prepare_dataset
 
+logger = logging.getLogger(__name__)
+
 def add_default_rate(dataset):
     if len(dataset) == 0: raise ValueError("Dataset is empty !")
         
@@ -342,7 +344,7 @@ def make_siwis_mel(directory, stft_fn, target_rate, langue = 'fr', parts = [1, 2
     
     transformed = dataset[mel_dir_name].apply(lambda f: os.path.exists(f))
     
-    logging.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
+    logger.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
         len(dataset), transformed.sum(), len(dataset) - transformed.sum()
     ))
     
@@ -377,7 +379,7 @@ def make_CV_mel(directory, stft_fn, target_rate, file = 'validated.tsv'):
     
     transformed = dataset[mel_dir_name].apply(lambda f: os.path.exists(f))
     
-    logging.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
+    logger.info("# elements : {}\n  Already processed : {}\n  To transform : {}".format(
         len(dataset), transformed.sum(), len(dataset) - transformed.sum()
     ))
     

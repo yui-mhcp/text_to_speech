@@ -13,6 +13,8 @@
 import logging
 import tensorflow as tf
 
+logger = logging.getLogger(__name__)
+
 class PredictorCallback(tf.keras.callbacks.Callback):
     def __init__(self, method, generator, initial_step = 0, pred_every = 1000,
                  prefix = 'pred_step-{step:06d}_{batch}', 
@@ -35,7 +37,7 @@ class PredictorCallback(tf.keras.callbacks.Callback):
             self._predict(logs)
     
     def _predict(self, logs = None):
-        logging.info("\nMaking prediction at step {}".format(self.step))
+        logger.info("\nMaking prediction at step {}".format(self.step))
         if logs is None: logs = {}
         for i, batch in enumerate(self.batch_generator):
             prefix = self.prefix.format(batch = i, step = self.step, **logs)

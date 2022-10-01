@@ -26,7 +26,9 @@ from math import sqrt
 from sklearn.metrics import confusion_matrix
 from sklearn.manifold import TSNE
 
-_tick_label_limit = 20
+logger = logging.getLogger(__name__)
+
+_tick_label_limit = 30
 
 _numeric_type   = (int, float, np.integer, np.floating)
 _data_iterable  = (list, tuple, np.ndarray)
@@ -54,7 +56,22 @@ _default_cm_plot_config = {
     'title'     : 'Confusion Matrix',
     'xlabel'    : 'Predicted label',
     'ylabel'    : 'True label',
+    'factor_size'   : 0.75,
     'with_colorbar' : True
+}
+
+_default_matrix_plot_config = {
+    'title'     : 'Matrix',
+    'xtick_rotation'    : 45,
+    'ytick_rotation'    : 45,
+    'with_colorbar' : True
+}
+
+_default_classification_plot_config = {
+    'title'     : 'Top-k scores',
+    'xlabel'    : 'Label',
+    'ylabel'    : 'Score (%)',
+    'xtick_rotation'    : 45
 }
 
 _default_embedding_plot_config  = {
@@ -63,7 +80,6 @@ _default_embedding_plot_config  = {
     'tick_labels'   : [],
     'with_grid'     : True,
     'cmap'          : 'tab10'
-
 }
 
 def _normalize_colors(config):
@@ -134,7 +150,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         try:
             return getattr(ax, p_type)(* datas, ** kwargs)
         except Exception as e:
-            logging.error('Error while calling `plt.{}` with data {}\n  Config : {}'.format(
+            logger.error('Error while calling `plt.{}` with data {}\n  Config : {}'.format(
                 p_type, datas, kwargs
             ))
             raise e
@@ -245,7 +261,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
 
     if plot_type == 'imshow' and y.ndim == 3 and y.shape[-1] == 1:
         y = y[:,:,0]
-    if plot_type == 'scatter' and x is None:
+    if plot_type in ('bar', 'scatter') and x is None:
         x = np.arange(len(y))
     
     if x is not None and isinstance(x[0], datetime.datetime):
@@ -288,7 +304,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
             ymin, ymax = ylim
             ax.vlines(vlines, ymin, ymax, ** vlines_kwargs)
     
-    if with_colorbar:
+    if with_colorbar and plot_type == 'imshow':
         cb = ax.figure.colorbar(im, orientation = orientation, ax = ax)
         cb.ax.tick_params(
             axis = 'both', labelsize = labelsize, labelcolor = fontcolor, color = fontcolor
@@ -375,7 +391,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                 corr_config, corr_colors, corr_shapes = {}, None, None
                 if color_corr is not None:
                     if color_corr not in v.columns:
-                        logging.error('Color correlation {} is not in data !'.format(color_corr))
+                        logger.error('Color correlation {} is not in data !'.format(color_corr))
                     else:
                         unique_values = list(v[color_corr].unique())
                         corr_colors = [
@@ -383,7 +399,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                         ]
                         if color_order is not None:
                             if len(color_order) < len(unique_values):
-                                logging.warning('Not enough colors : {} vs {}'.format(
+                                logger.warning('Not enough colors : {} vs {}'.format(
                                     len(color_order), len(unique_values)
                                 ))
                             elif isinstance(color_order, dict):
@@ -396,7 +412,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                 
                 if shape_corr is not None:
                     if shape_corr not in v.columns:
-                        logging.error('Shape correlation {} is not in data !'.format(shape_corr))
+                        logger.error('Shape correlation {} is not in data !'.format(shape_corr))
                     else:
                         unique_values = list(v[shape_corr].unique())
                         corr_shapes = [
@@ -404,7 +420,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
                         ]
                         if shape_order is not None:
                             if len(shape_order) < len(unique_values):
-                                logging.warning('Not enough shapes : {} vs {}'.format(
+                                logger.warning('Not enough shapes : {} vs {}'.format(
                                     len(shape_order), len(unique_values)
                                 ))
                             elif isinstance(shape_order, dict):
@@ -487,7 +503,9 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
     
     use_subplots = use_subplots or kwargs.get('plot_type', '') == 'imshow'
     if use_subplots:
-        if nrows is not None or ncols is not None:
+        if len(datas) == 1:
+            ncols, nrows = 1, 1
+        elif nrows is not None or ncols is not None:
             if ncols is None: ncols = math.ceil(len(datas) / nrows)
             if nrows is None: nrows = math.ceil(len(datas) / ncols)
         elif horizontal:
@@ -513,6 +531,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
     
     default_axes_config = {'filename' : None,'show' : False,'close' : False,'new_fig' : False}
 
+    axes = []
     for i, (name, val) in enumerate(datas):
         ax = fig.add_subplot(nrows, ncols, i + 1) if use_subplots else None
         
@@ -530,7 +549,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
         config_ax.update(default_axes_config)
         plot_method = _plot_methods.get(config_ax.get('plot_type'), plot)
         
-        plot_method(** config_ax)
+        axes.append(plot_method(** config_ax)[0])
     
     if filename is not None:
         plt.savefig(
@@ -544,18 +563,19 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
 
 def plot_spectrogram(* args, ** kwargs):
     """
-        Call plot_multiple() after normalizing spectrograms : making them 2D images and rotate them by 90° to put the time on x-axis (as models usually generate [B, T, F] spectrograms
+        Call plot_multiple() after normalizing spectrograms : making them 2D images and rotate them by 90° to put the time on x-axis (as models usually generate [B, T, F] spectrograms)
     """
-    args = list(args)
-    for i, v in enumerate(args):
-        if isinstance(v, (np.ndarray, tf.Tensor)) and len(v.shape) in (2, 3):
-            if len(v.shape) == 3: v = np.squeeze(v)
-            args[i] = np.rot90(v)
+    def _normalize_spect(v):
+        if not isinstance(v, (np.ndarray, tf.Tensor)) or len(v.shape) not in (2, 3):
+            return v
+        if len(v.shape) == 3:
+            if len(v) > 1:
+                logger.warning('Spectrogram with shape {} : taking only spect[0]'.format(v.shape))
+            v = v[0]
+        return np.rot90(v)
     
-    for k, v in kwargs.items():
-        if isinstance(v, (np.ndarray, tf.Tensor)) and len(v.shape) in (2, 3):
-            if len(v.shape) == 3: v = np.squeeze(v)
-            kwargs[k] = np.rot90(v)
+    args    = [_normalize_spect(v) for v in args]
+    kwargs  = {k : _normalize_spect(v) for k, v in kwargs.items()}
     
     for k, v in _default_spectrogram_plot_config.items():
         kwargs.setdefault(k, v)
@@ -563,42 +583,74 @@ def plot_spectrogram(* args, ** kwargs):
     
     return plot_multiple(* args, ** kwargs)
 
-def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, norm = True,
-                          factor_size = 0.75, cmap = 'magma', ticksize = 13, 
-                          
-                          filename = None, show = True, close = True, ** kwargs
-                         ):
+def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, ** kwargs):
     """
         Plot a confusion matrix 
         Arguments : 
-            - cm    : the confusion matrix
-            - true / pred   : the true labels and predicted labels
-            - labels        : name for each label index
-            - ...   : other arguments refers to general plot() arguments
+            - cm    : the confusion matrix (2-D square array)
+            - true / pred   : the true labels and predicted labels (used to build `cm` if not provided)
+            - labels    : name for each label index
+            - kwargs    : forwarded to `plot_matrix`
+        
+        This function can be used as subplot in `plot_multiple` with `plot_type = 'cm'`
     """
     assert cm is not None or (true is not None and pred is not None)
     
     if cm is None:      cm = confusion_matrix(true, pred)
     if labels is None:  labels = range(cm.shape[0])
     
-    n = min(_tick_label_limit, len(labels))
     for k, v in _default_cm_plot_config.items():
         kwargs.setdefault(k, v)
-    kwargs.setdefault('figsize', (n * factor_size, n * factor_size))
-    kwargs.setdefault('tick_labels', labels)
+    
+    return plot_matrix(
+        cm, y_labels = labels, x_labels = labels, ** kwargs
+    )
+
+def plot_matrix(matrix = None, y_labels = None, x_labels = None, norm = False,
+                factor_size = 1., cmap = 'magma', ticksize = 13,
+                          
+                filename = None, show = True, close = True, ** kwargs
+               ):
+    """
+        Plots a matrix and possibly adds text (the matrix' values). It is a generalization of `plot_confusion_matrix` but with any 2-D matrix (not required to be square)
+        
+        Arguments :
+            - matrix    : the 2-D array of scores
+            - {y / x}_labels    : the labels associated with x / y matrix' axes
+            - norm      : whether to normalize rows such that sum(matrix[i]) == 1
+            - factor_size   : the factor to multiply the matrix' shape to determine `figsize`
+            - cmap  : the color map to use
+            - filename / show / close   : same as `plot`
+            - kwargs    : forwarded to `plot`
+        
+        This function can be used as subplot in `plot_multiple` with `plot_type = 'matrix'`
+    """
+    if hasattr(matrix, 'numpy'): matrix = matrix.numpy()
+    if norm: matrix = matrix.astype('float') / matrix.sum(axis = 1)[:, np.newaxis]
+    
+    if y_labels is None: y_labels = list(range(matrix.shape[0]))
+    if x_labels is None: x_labels = list(range(matrix.shape[1]))
+    
+    n_y = min(_tick_label_limit, matrix.shape[0])
+    n_x = min(_tick_label_limit, matrix.shape[1])
+    for k, v in _default_matrix_plot_config.items():
+        kwargs.setdefault(k, v)
+    kwargs.setdefault('figsize', (n_x * factor_size, n_y * factor_size))
+    kwargs.setdefault('ytick_labels', y_labels)
+    kwargs.setdefault('xtick_labels', x_labels)
     kwargs['plot_type'] = 'imshow'
     
-    ax, im = plot(cm, show = False, close = False, ** kwargs)
+    ax, im = plot(matrix, show = False, close = False, ** kwargs)
+    
+    if len(x_labels) <= _tick_label_limit and len(y_labels) <= _tick_label_limit:
+        matrix = np.around(matrix, decimals = 2)
         
-    if len(labels) <= _tick_label_limit:
-        if norm: cm = np.around(cm.astype('float') / cm.sum(axis = 1)[:, np.newaxis], decimals = 2)
-        
-        threshold = cm.max() / 2.
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                color = 'white' if cm[i, j] < threshold else 'black'
+        threshold = matrix.max() / 2.
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                color = 'white' if matrix[i, j] < threshold else 'black'
                 im.axes.text(
-                    j, i, str(cm[i, j]), color = color, fontsize = ticksize,
+                    j, i, str(matrix[i, j]), color = color, fontsize = ticksize,
                     verticalalignment = 'center', horizontalalignment = 'center'
                 )
     
@@ -607,6 +659,33 @@ def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, no
     if close: plt.close()
     else: return ax, im
 
+def plot_classification(scores, labels = None, k = 5, ** kwargs):
+    """
+        Plot classification's scores in decreasing order
+        
+        Arguments :
+            - scores    : 1-D array, the classes' scores
+            - labels    : 1-D array (or list), the labels associated to scores
+            - k     : the top-k to display
+            - kwargs    : forwarded to `plot`
+        
+        This function can be used inside `plot` or `plot_multiple` with `plot_type = 'classification'`
+    """
+    if hasattr(scores, 'numpy'): scores = scores.numpy()
+    if labels is None: labels = np.arange(len(scores))
+    
+    indexes = np.flip(np.argsort(scores))[:k]
+    
+    scores  = scores[indexes]
+    labels  = np.array(labels)[indexes]
+    
+    for k, v in _default_classification_plot_config.items():
+        kwargs.setdefault(k, v)
+    kwargs.setdefault('xtick_labels', labels)
+    kwargs['plot_type'] = 'bar'
+
+    return plot(scores, ** kwargs)
+    
 def plot_embedding(embeddings = None, ids = None, marker = None, random_state = None,
                    remove_extreme = False, x = None, ** kwargs):
     """
@@ -681,6 +760,8 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
 
 _plot_methods   = {
     'cm'    : plot_confusion_matrix,
+    'matrix'    : plot_matrix,
+    'classification'    : plot_classification,
     'confusion_matrix'  : plot_confusion_matrix,
     #'spectrogram'   : plot_spectrogram,
     'embedding' : plot_embedding

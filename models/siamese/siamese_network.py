@@ -27,6 +27,7 @@ from utils.distance import distance, KNN
 from utils.embeddings import load_embedding, save_embeddings, embed_dataset, embeddings_to_np
 from utils import normalize_filename, plot_embedding, pad_batch, sample_df
 
+logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
 
 def l2_normalize(x):
@@ -129,7 +130,7 @@ class SiameseNetwork(BaseModel):
             input_kwargs = {'input_shape' : encoder.input_shape[1:]}
         else:
             if normalize:
-                logging.warning("Encoder is not a `tf.keras.Sequential` so you have to handle `normalize` internally !")
+                logger.warning("Encoder is not a `tf.keras.Sequential` so you have to handle `normalize` internally !")
             input_kwargs = {'input_signature' : self.encoder_input_signature}
         
         siamese_config = {
@@ -534,7 +535,7 @@ class SiameseNetwork(BaseModel):
     def show_friends(self, n = 25, n_sample = 25, ** kwargs):
         friends = self.friends
 
-        logging.info("Number of friends : {} ({} embeddings)".format(
+        logger.info("Number of friends : {} ({} embeddings)".format(
             len(friends['id'].unique()), len(friends)
         ))
         

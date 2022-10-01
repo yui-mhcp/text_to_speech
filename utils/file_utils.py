@@ -14,11 +14,14 @@ import os
 import glob
 import json
 import pickle
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils.generic_utils import to_json, flatten
+from tqdm import tqdm
+
+from utils.generic_utils import to_json, flatten, convert_to_str
 
 try:
     from utils.image import _image_formats, _video_formats
@@ -30,6 +33,8 @@ try:
     from utils.audio import _audio_formats as _audio_ext
 except ImportError:
     _audio_ext = ()
+
+logger = logging.getLogger(__name__)
 
 def normalize_filename(filename, invalid_mode = 'error'):
     """
@@ -43,8 +48,7 @@ def normalize_filename(filename, invalid_mode = 'error'):
                 - tf.Tensor / np.ndarray    : string / bytes
     """
     if isinstance(filename, (dict, pd.Series)): filename = filename['filename']
-    if isinstance(filename, tf.Tensor): filename = filename.numpy()
-    if isinstance(filename, bytes): filename = filename.decode('utf-8')
+    filename = convert_to_str(filename)
     
     if isinstance(filename, (list, tuple)):
         outputs = flatten([normalize_filename(f) for f in filename])
@@ -62,6 +66,50 @@ def normalize_filename(filename, invalid_mode = 'error'):
             raise ValueError("Unknown type for `filename` : {}\n  {}".format(type(filename), filename))
         
     return [o for o in outputs if o is not None]
+
+def download_file(url, filename = None, directory = None, buffer_size = 8192, sha256 = None):
+    try:
+        import urllib
+    except ImportError as e:
+        logger.error('Please install `urllib` to download files !')
+        return None
+    
+    if not filename: filename = os.path.basename(url)
+    if directory:
+        os.makedirs(directory, exist_ok = True)
+        filename = os.path.join(directory, filename)
+
+    if os.path.exists(filename) and not os.path.isfile(filename):
+        raise RuntimeError(f"{filename} exists but is not a regular file")
+
+    if os.path.isfile(filename):
+        if not sha256: return filename
+        import hashlib
+        
+        with open(filename, 'rb') as file:
+            if hashlib.sha256(file.read()).hexdigest() == sha256:
+                return filename
+        
+        logger.warning('{} exists but has an invalid SHA256 : re-loading it'.format(filename))
+
+    
+    with urllib.request.urlopen(url) as source, open(filename, 'wb') as output_file:
+        with tqdm(total = int(source.info().get("Content-Length")), unit = 'iB', unit_scale = True, unit_divisor = 1024) as loop:
+            while True:
+                buffer = source.read(buffer_size)
+                if not buffer:
+                    break
+
+                output_file.write(buffer)
+                loop.update(len(buffer))
+
+    if sha256:
+        import hashlib
+        with open(filename, 'rb') as file:
+            if hashlib.sha256(file.read()).hexdigest() != sha256:
+                raise RuntimeError("The file has been downloaded but the SHA256 does not match")
+
+    return filename
 
 def load_data(filename, ** kwargs):
     ext = os.path.splitext(filename)[1][1:]
@@ -81,6 +129,11 @@ def load_json(filename, default = {}, ** kwargs):
         result = file.read()
     return json.loads(result)
 
+def load_npz(filename, ** kwargs):
+    with np.load(filename) as file:
+        data = {k : file[k] for k in file.files}
+    return data
+
 def load_pickle(filename, ** kwargs):
     with open(filename, 'rb') as file:
         return pickle.load(file)
@@ -99,7 +152,7 @@ def _load_audio(filename, rate = None, ** kwargs):
     
     return load_audio(filename, rate = rate, ** kwargs)
 
-def dump_data(filename, data, overwrite = False, ** kwargs):
+def dump_data(filename, data, overwrite = True, ** kwargs):
     if isinstance(data, tf.Tensor): data = data.numpy()
     ext = os.path.splitext(filename)[1][1:]
     if not ext:
@@ -143,6 +196,7 @@ _load_file_fn   = {
     'json'  : load_json,
     'txt'   : load_txt,
     'pkl'   : load_pickle,
+    'npz'   : load_npz,
     'npy'   : np.load,
     'csv'   : pd.read_csv,
     'tsv'   : lambda filename, ** kwargs: pd.read_csv(filename, sep = '\t', ** kwargs)
@@ -154,7 +208,8 @@ _dump_file_fn   = {
     'csv'   : lambda filename, data, ** kwargs: data.to_csv(filename, ** kwargs),
     'tsv'   : lambda filename, data, ** kwargs: data.to_csv(filename, sep = '\t', ** kwargs),
     'xlsx'  : lambda filename, data, ** kwargs: data.to_excel(filename, ** kwargs),
-    'npy'   : lambda filename, data, ** kwargs: np.save(filename, data, ** kwargs)
+    'npy'   : lambda filename, data, ** kwargs: np.save(filename, data, ** kwargs),
+    'npz'   : lambda filename, data, ** kwargs: np.savez(filename, ** data)
 }
 _default_ext    = {
     str     : 'txt',

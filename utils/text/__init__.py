@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -15,13 +14,17 @@ import logging
 
 from utils.text import cmudict
 
-from utils.text.text_encoder import TextEncoder, CHAR_LEVEL, TOKEN_LEVEL, WORD_LEVEL
+from utils.text.f1 import _normalize_text_f1, f1_score, exact_match
+from utils.text.bpe import bytes_to_unicode, bpe
+from utils.text.text_encoder import TextEncoder
 from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
 from utils.text.text_decoder import decode
 from utils.text.text_processing import *
 from utils.text.text_augmentation import random_mask
 
 from utils.text.document_parser import _wiki_cleaner, parse_document, parse_pdf, parse_docx, parse_html
+
+logger = logging.getLogger(__name__)
 
 _pad            = '_'
 _punctuation    = '!\'(),.:;? '
@@ -43,6 +46,11 @@ _arpabet = ['@' + s for s in cmudict.valid_symbols]
 en_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + _arpabet
 fr_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + list(_accents)
 
+_default_cleaners   = {
+    'en'    : 'english_cleaners',
+    'fr'    : 'french_cleaners'
+}
+
 accent_replacement_matrix = {
     'a' : {'à' : 0, 'â' : 0}, 'à' : {'a' : 0, 'â' : 0}, 'â' : {'a' : 0, 'à' : 0},
     'u' : {'ù' : 0}, 'ù' : {'u' : 0},
@@ -61,19 +69,23 @@ def get_encoder(lang, text_encoder = None, ** kwargs):
             text_encoder.setdefault('level', 'char')
         
         text_encoder.setdefault('use_sos_and_eos', False)
-        text_encoder.setdefault('cleaners', ['french_cleaners'] if lang == 'fr' else ['english_cleaners'])
+        text_encoder.setdefault('cleaners', _default_cleaners.get(lang, 'basic_cleaners'))
         
         encoder = TextEncoder(** text_encoder)
         
     elif isinstance(text_encoder, str):
         if os.path.exists(text_encoder):
             encoder = TextEncoder.load_from_file(text_encoder)
+        elif text_encoder == 'clip':
+            encoder = TextEncoder.from_clip_pretrained()
         else:
             encoder = TextEncoder.from_transformers_pretrained(text_encoder)
     elif isinstance(text_encoder, TextEncoder):
         encoder = text_encoder
     else:
-        raise ValueError("input encoder de type inconnu : {}".format(text_encoder))
+        raise ValueError("Unhandled `text_encoder` (type {}) : {}".format(
+            type(text_encoder), text_encoder
+        ))
     
     return encoder
 
@@ -106,7 +118,7 @@ def default_encoder(lang, ** kwargs):
     elif lang in ('en', 'english', 'anglais'):
         return default_english_encoder(** kwargs)
     else:
-        logging.warning("Unknown language : {} - return char-level encoder with default symbols".format(lang))
+        logger.warning("Unknown language : {} - return char-level encoder with default symbols".format(lang))
         return TextEncoder(get_symbols(lang), level = 'char', ** kwargs)
 
 def default_english_encoder(cleaners = ['english_cleaners'], level = 'char', ** kwargs):

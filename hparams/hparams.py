@@ -14,6 +14,8 @@ import logging
 
 from utils import load_json, dump_json, parse_args
 
+logger = logging.getLogger(__name__)
+
 class HParams:
     def __init__(self, _prefix = None, ** kwargs):
         self.__prefix   = _prefix
@@ -70,7 +72,7 @@ class HParams:
         self_config = self.get_config(with_prefix = True)
         for k in v_config.keys():
             if k in self_config and self[k] != v_config[k]:
-                logging.warning("Value {} is present in both HParams with different values ({} vs {}) !".format(k, self[k], v_config[k]))
+                logger.warning("Value {} is present in both HParams with different values ({} vs {}) !".format(k, self[k], v_config[k]))
         
         return HParams(** {** self_config, ** v_config})
     

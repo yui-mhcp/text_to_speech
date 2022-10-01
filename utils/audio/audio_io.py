@@ -15,7 +15,6 @@ import time
 import shutil
 import librosa
 import logging
-import pyaudio
 import subprocess
 import numpy as np
 import pandas as pd
@@ -28,6 +27,8 @@ from scipy.io.wavfile import write, read
 
 from utils.audio import audio_processing
 from utils.thread_utils import Consumer
+
+logger = logging.getLogger(__name__)
 
 TMP_FILENAME     = '__tmp_audio.wav'
 MAX_DISPLAY_TIME = 600
@@ -107,12 +108,12 @@ def resample_file(filename, new_rate, filename_out = None):
     try:
         rate, audio = read_audio(filename, target_rate = new_rate)
     except ValueError as e:
-        logging.error("Error while loading file {} !\n{}".format(filename, e))
+        logger.error("Error while loading file {} !\n{}".format(filename, e))
         return None
     try:
         write_audio(audio = audio, filename = filename_out, rate = rate)
     except ValueError as e:
-        logging.error("Error while writing file {} !\n{}".format(filename, e))
+        logger.error("Error while writing file {} !\n{}".format(filename, e))
         return None
     return filename_out
 
@@ -124,6 +125,7 @@ def play_audio(filename, rate = None, block = True):
         status = subprocess.run(['ffplay', '-nodisp', '-autoexit', filename])
         
         return status
+        #import pyaudio
         #assert rate is not None, 'You must provide audio rate when passing raw audio'
         #p = pyaudio.PyAudio()
 
@@ -220,7 +222,7 @@ def read_audio(filename,
     rate, audio = _supported_audio_formats[ext]['read'](filename)
     
     if len(audio) == 0:
-        logging.warning("Audio {} is empty !".format(filename))
+        logger.warning("Audio {} is empty !".format(filename))
         return np.zeros((rate,), dtype = np.float32)
     
     if target_rate is not None and target_rate != rate:
@@ -272,7 +274,7 @@ def read_video_audio(filename):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        logging.error("You must install moviepy : `pip install moviepy`")
+        logger.error("You must install moviepy : `pip install moviepy`")
         return None
 
     with VideoFileClip(filename) as video:
@@ -300,7 +302,7 @@ def write_audio(audio, filename, rate, normalize = True, factor = 32767, verbose
             [k for k, v in _supported_audio_formats.items() if 'write' in v], ext
         ))
         
-    logging.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
+    logger.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
     normalized = audio
     if normalize:

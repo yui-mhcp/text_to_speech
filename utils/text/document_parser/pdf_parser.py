@@ -24,6 +24,8 @@ except ImportError as e:
     DEV = 11
     logging.addLevelName(DEV, 'DEV')
 
+logger = logging.getLogger(__name__)
+
 _final_punctuation = re.compile(r"[\.\?\!,]\s*$")
 _final_space = re.compile(r'\s+$')
 
@@ -77,12 +79,12 @@ def parse_pdf(filename,
             paragraphes = []
             last_layout = None
             
-            logging.log(DEV, "Page #{} layout : {}".format(page_number, page_layout))
+            logger.log(DEV, "Page #{} layout : {}".format(page_number, page_layout))
             
             # split page into 2 columns (if page is structured in 2-column format). 
             page_h, page_w = page_layout.bbox[3], page_layout.bbox[2]
             
-            logging.log(DEV, "\nMargin filtering...")
+            logger.log(DEV, "\nMargin filtering...")
             left_col = sorted([
                 l for l in page_layout
                 if l.bbox[0] < page_w / 2 and not is_in_margin(l, page_h, page_w, skip_margin)
@@ -94,7 +96,7 @@ def parse_pdf(filename,
             
             cols  = left_col + [None] + right_col
                 
-            logging.log(DEV, "\nParagraphs processing")
+            logger.log(DEV, "\nParagraphs processing")
             # process each layout in page (beginning by left column)
             for layout_idx, l in enumerate(cols):
                 # For column change (avoid overlap between last paragraph of left col and 1st paragraph of right col)
@@ -104,7 +106,7 @@ def parse_pdf(filename,
                 elif isinstance(l, LTTextBox) and len(l.get_text().strip()) == 0:
                     continue
                 
-                logging.log(DEV, 'Layout {} (box : {}) :\n  {}'.format(
+                logger.log(DEV, 'Layout {} (box : {}) :\n  {}'.format(
                     layout_idx, [float('{:.2f}'.format(coord)) for coord in l.bbox], l
                 ))
                 
@@ -172,7 +174,7 @@ def is_overlap(last, new, page_h, max_diff_overlap = 0.05):
     _, _, _, y1 = new.bbox
     overlap = 1 if abs(y1 - y0) < max_diff_overlap or y1 > y0 else 0
     
-    logging.log(DEV, "Distance : {:.3f} (merging {})\n  Layout 1 : {}\n  Layout 2 : {}".format(
+    logger.log(DEV, "Distance : {:.3f} (merging {})\n  Layout 1 : {}\n  Layout 2 : {}".format(
         abs(y1 - y0), overlap, last, new
     ))
     return overlap
@@ -189,7 +191,7 @@ def is_in_margin(layout, page_h, page_w, skip_margin):
     if x0 / page_w < skip_w or x0 / page_w > (1. - skip_w): is_margin = True
 
     if is_margin:
-        logging.log(DEV, "Layout at position ({:.2f}, {:.2f}) is in margin ! (page shape : {})\n  {}".format(
+        logger.log(DEV, "Layout at position ({:.2f}, {:.2f}) is in margin ! (page shape : {})\n  {}".format(
             y0 / page_h, x0 / page_w, [page_h, page_w], layout
         ))
     return is_margin
@@ -233,10 +235,10 @@ def extract_lt_image(filename, page_idx, page_layout, img_layout, save_name = No
 
         return image, (image.height, image.width)
     except ImportError as e:
-        logging.error("Cannot import pdf2image so cannot process LTImage !\n  Error : {}".format(e))
+        logger.error("Cannot import pdf2image so cannot process LTImage !\n  Error : {}".format(e))
         return None, (-1, -1)
     except Exception as e:
-        logging.error("Error while processing image : {}".format(e))
+        logger.error("Error while processing image : {}".format(e))
         return None, (-1, -1)
 
 

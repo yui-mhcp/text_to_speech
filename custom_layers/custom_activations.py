@@ -32,7 +32,7 @@ def glu(x, axis = -1):
 
 def soft_gelu(x):
     """ Smoother Gaussian Error Linear Unit"""
-    cdf = 0.5 * (1.0 + f.tanh((tf.math.sqrt(2. / np.pi) * (x + 0.044715 * tf.pow(x, 3)))))
+    cdf = 0.5 * (1.0 + tf.tanh((tf.math.sqrt(2. / np.pi) * (x + 0.044715 * tf.pow(x, 3)))))
     return x * cdf
 
 def gelu_new(x):
@@ -49,6 +49,9 @@ def gelu_new(x):
 
     return x * cdf
 
+def quick_gelu(x):
+    return x * tf.sigmoid(1.702 * x)
+
 def swish(x):
     """ Swish activation """
     return x * tf.sigmoid(x)
@@ -60,6 +63,7 @@ LogSoftmax  = log_softmax
 GLU         = glu
 GeLU        = gelu
 SoftGeLU    = soft_gelu
+QuickGeLU   = quick_gelu
 GeLUNew     = gelu_new
 Swish       = swish
 Mish        = mish
@@ -74,6 +78,7 @@ _activations = {
     "gelu"          : GeLU,
     "gelu_new"      : gelu_new,
     "smooth_gelu"   : SoftGeLU,
+    "quick_gelu"    : quick_gelu,
     "swish"         : Swish,
     "mish"          : Mish
 }

@@ -18,6 +18,8 @@ import numpy as np
 
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
 @dataclass
 class VideoInfos:
     fps : int
@@ -58,7 +60,7 @@ def load_youtube_playlist(url, directory = 'youtube_playlist',
     try:
         from pytube import Playlist
     except ImportError:
-        logging.error("You must install pytube : `pip install pytube3`")
+        logger.error("You must install pytube : `pip install pytube3`")
         return None
     os.makedirs(directory, exist_ok = True)
     
@@ -80,7 +82,7 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
     try:
         from pytube import YouTube
     except ImportError:
-        logging.error("You must install pytube : `pip install pytube3`")
+        logger.error("You must install pytube : `pip install pytube3`")
         return None
 
     video = YouTube(url)
@@ -95,7 +97,7 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
     elif resolution == 'highest':
         stream = streams[-1]
     
-    logging.info('Downloading stream : {}'.format(stream))
+    logger.info('Downloading stream : {}'.format(stream))
     
     video_filename = 'tmp_video.mp4' if only_audio else  filename
     if not video_filename.endswith('.mp4'): video_filename += '.mp4'
@@ -134,7 +136,7 @@ def extract_audio(video_filename, filename = None):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        logging.error("You must install moviepy : `pip install moviepy`")
+        logger.error("You must install moviepy : `pip install moviepy`")
         return None
 
     if filename is None: filename = '{}_audio.mp3'.format(video_filename[:-4])

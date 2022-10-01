@@ -10,18 +10,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import time
+"""
+    WaveGlow classes (both supported in tf 2.x and pytorch)
+    Note that the tf2.x is not fully integrated with the new `BaseAudioModel` interface but it should still be trainable (but I recommand to use the pretrained model from NVIDIA)
+"""
+
 import numpy as np
 import tensorflow as tf
-
-from tqdm import tqdm
 
 from loggers import timer
 from models.interfaces import BaseModel
 from custom_architectures import get_architecture
 from models.weights_converter import pt_convert_model_weights
-from utils.generic_utils import limit_gpu_memory
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 
@@ -30,6 +30,8 @@ _pytorch_waveglow   = None
 def get_nvidia_waveglow():
     global _pytorch_waveglow
     if _pytorch_waveglow is None:
+        from utils.generic_utils import limit_gpu_memory
+
         limit_gpu_memory()
         _pytorch_waveglow = get_architecture('nvidia_waveglow')
     return _pytorch_waveglow
@@ -39,20 +41,14 @@ class WaveGlow(BaseModel):
                  audio_rate         = 22050,
                  n_mel_channels     = 80,
                  max_input_length   = DEFAULT_MAX_MEL_LENGTH,
-                 **kwargs
+                 ** kwargs
                 ):
         self.audio_rate         = audio_rate
         self.n_mel_channels     = n_mel_channels
         self.max_input_length   = max_input_length
 
-        super().__init__(**kwargs)
-        
-        if hasattr(self.vocoder, '_build'): self.vocoder._build()
-        
-    def init_train_config(self, max_input_length = None, ** kwargs):
-        if max_input_length: self.max_input_length   = max_input_length
-        super().init_train_config(** kwargs)
-        
+        super().__init__(** kwargs)
+    
     def _build_model(self, **kwargs):
         super()._build_model(
             vocoder = {
@@ -85,7 +81,7 @@ class WaveGlow(BaseModel):
     def call(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect)
     
-    @timer(name = 'inference')
+    @timer(name = 'WaveGlow inference')
     def infer(self, spect, * args, ** kwargs):
         if isinstance(spect, str): spect = np.load(spect)
         if len(spect.shape) == 2: spect = tf.expand_dims(spect, axis = 0)
@@ -97,9 +93,6 @@ class WaveGlow(BaseModel):
     
     def get_dataset_config(self, **kwargs):
         kwargs['pad_kwargs']    = {
-            'padded_shapes'     : (
-                (None, self.n_mel_channels), (None,)
-            ),
             'padding_values'    : (-11., 0.)
         }
         kwargs['padded_batch']      = True
@@ -132,10 +125,14 @@ class PtWaveGlow(object):
     def __init__(self, ** kwargs):
         self.waveglow = get_nvidia_waveglow()
     
+    @property
+    def audio_rate(self):
+        return 22050
+    
     def __call__(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect)
     
-    @timer(name = 'inference')
+    @timer(name = 'WaveGlow inference')
     def infer(self, mels):
         import torch
         

@@ -18,6 +18,8 @@ import requests
 from queue import Queue
 from threading import Thread, Lock
 
+logger  = logging.getLogger(__name__)
+
 API_URL = 'https://api.telegram.org/bot{token}/{method}'
 
 def get_chat_id(token):
@@ -42,7 +44,7 @@ class TelegramHandler(logging.Handler):
             raise ValueError("You must provide bot token (`TELEGRAM_BOT_TOKEN` env variable) !")
         self._maybe_get_chat_id()
         if self.chat_id is None:
-            logging.warning("You must give a `chat_id` (`TELEGRAM_CHAT_ID` env variable) or send a message to the bot to allow it to get chat id\n Note that it must be a message and not a command")
+            logger.warning("You must give a `chat_id` (`TELEGRAM_CHAT_ID` env variable) or send a message to the bot to allow it to get chat id\n Note that it must be a message and not a command")
     
     def _maybe_get_chat_id(self):
         if self.chat_id is not None: return

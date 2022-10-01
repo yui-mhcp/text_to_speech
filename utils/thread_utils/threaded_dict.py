@@ -1,4 +1,16 @@
-from collections import defaultdict
+# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
+# you may not use this file except in compliance with the License.
+# See the "LICENCE" file at the root of the directory for the licence information.
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import time
+
 from threading import Condition, RLock, Lock
 
 class ThreadedDict(dict):
@@ -6,6 +18,7 @@ class ThreadedDict(dict):
     def __init__(self, init = None, ** kwargs):
         self.__data = kwargs if init is None else {** init, ** kwargs}
         self.__cond = {}
+        self.__timestamps   = {}
         
         self.__mutex_data   = RLock()
         self.__mutex_cond   = Lock()
@@ -29,6 +42,7 @@ class ThreadedDict(dict):
     def __setitem__(self, key, value):
         with self.__mutex_data:
             self.__data[key] = value
+            self.__timestamps[key]  = time.time()
         self.notify_all(key)
     
     def __contains__(self, key):
@@ -45,6 +59,11 @@ class ThreadedDict(dict):
         cv = self.get_condition(key)
         with cv: cv.wait_for(cond, ** kwargs)
 
+    def wait_for_update(self, key, ** kwargs):
+        now = time.time()
+        is_updated  = lambda: now <= self.__timestamps.get(key, -1)
+        self.wait_for(key, cond = is_updated, ** kwargs)
+        
     def notify_all(self, key):
         cv = self.get_condition(key, create = False)
         if cv is not None:
@@ -67,18 +86,23 @@ class ThreadedDict(dict):
     def pop(self, key, * args):
         with self.__mutex_data: return self.__data.pop(key, * args)
     
+    def copy(self):
+        return self.__data.copy()
+    
     def items(self):
-        return self.__data.copy().items()
+        return self.copy().items()
     
     def keys(self):
-        return self.__data.copy().keys()
+        return self.copy().keys()
     
     def values(self):
-        return self.__data.copy().values()
+        return self.copy().values()
     
     def update(self, data):
+        now = time.time()
         with self.__mutex_data:
             self.__data.update(data)
+            self.__timestamps.update({k : now for k in data})
         for k, v in data.items():
             self.notify_all(k)
     

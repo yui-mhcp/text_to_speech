@@ -20,19 +20,21 @@ import xml.etree.ElementTree as ET
 
 from tqdm import tqdm
 from PIL import Image
+from multiprocessing import cpu_count
 
 from loggers import timer
-from utils import ThreadedQueue, load_json, dump_json
+from utils.thread_utils import Consumer
+from utils.file_utils import load_json, dump_json
+
+logger      = logging.getLogger(__name__)
+time_logger = logging.getLogger('timer')
 
 def _add_image_size(dataset):
     from utils.image import get_image_size
-    pool = ThreadedQueue(get_image_size, keep_result = True)
-    pool.start()
+    cons = Consumer(get_image_size, max_workers = cpu_count())
+    cons.start()
     
-    for idx, row in dataset.iterrows():
-        pool.append(image = row['filename'])
-    
-    sizes = pool.wait_result()
+    sizes = cons.extend_and_wait(dataset['filename'].values, stop = True)
     
     dataset['height']   = [h for h, _ in sizes]
     dataset['width']    = [w for _, w in sizes]
@@ -53,6 +55,8 @@ def _rectangularize_boxes(dataset):
 
 @timer(name = 'image dir loading')
 def preprocess_image_directory(directory, ** kwargs):
+    from utils.image import _image_formats
+    
     metadata = []
     for filename in os.listdir(directory):
         if os.path.isdir(os.path.join(directory, filename)):
@@ -60,7 +64,7 @@ def preprocess_image_directory(directory, ** kwargs):
                 {'filename' : os.path.join(directory, filename, f), 'label' : filename}
                 for f in os.listdir(os.path.join(directory, filename))
             ]
-        elif filename[-3:] in ('png', 'jpg'):
+        elif filename.endswith(_image_formats):
             metadata.append({'filename' : os.path.join(directory, filename)})
     
     return pd.DataFrame(metadata)
@@ -268,7 +272,7 @@ def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
 
         filename = glob.glob('{}/**/**/{}.npz'.format(directory, video_id))
         if len(filename) != 1:
-            logging.error('No / multiple result(s) for video ID {} : {}'.format(video_id, filename))
+            logger.error('No / multiple result(s) for video ID {} : {}'.format(video_id, filename))
             return []
 
         from utils.image import save_image
@@ -383,7 +387,7 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
         i += 1
         if not os.path.exists(img_filename):
             i += n_pers
-            logging.warning('{} is in annotation file but does not exist'.format(img_filename))
+            logger.warning('{} is in annotation file but does not exist'.format(img_filename))
             continue
             
         image = Image.open(img_filename)
@@ -609,80 +613,112 @@ def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False,
     return dataset
 
 @timer(name = 'coco loading')
-def preprocess_COCO_annots(filename, img_dir, one_line_per_box=False, box_mode=0, 
-                    accepted_labels=None, use_supercategory_as_label=False, 
-                    keep_empty=False, 
-                    columns_to_drop=["segmentation", "coco_url", "flickr_url", "iscrowd", 
-                                     "license", "id_x", "id_y", "date_captured", 
-                                     "rights_holder"], **kwargs):
+def preprocess_COCO_annots(directory,
+                           subset,
+                           
+                           keep_empty = False,
+                           accepted_labels = None,
+                           use_supercategory_as_label = False,
+                           
+                           box_mode = 0,
+                           one_line_per_box  = False,
+                           keep_segmentation = False,
+                           
+                           one_line_per_caption = False,
+                           
+                           columns_to_drop = [
+                               "coco_url", "flickr_url", "rights_holder",
+                               "iscrowd", "license", "id_x", "id_y", "date_captured"
+                           ],
+                           replace_name    = {
+                               'name' : 'category', 'file_name' : 'filename', 'bbox' : 'box'
+                           },
+                           ** kwargs
+                          ):
+    from utils.image.box_utils import convert_bbox
     assert box_mode in (0, 1, 2)
+    assert not (one_line_per_box and one_line_per_caption)
     
-    replace_name    = {"name" : "category", "file_name" : "filename", "bbox" : "box"}
+    if not keep_segmentation: columns_to_drop.append('segmentation')
+    columns_to_drop   = set(columns_to_drop)
+    columns_to_concat = set(['area', 'box', 'category_id', 'supercategory', 'category', 'label'])
     
-    columns_to_concat = ['area', 'box', 'category_id', 'supercategory', 'category', 'label']
-    
-    def build_row(row):
+    @timer
+    def update_row(row):
         label = row['name'] if not use_supercategory_as_label else row['supercategory']
-        if 'bbox' in row:
-            box = [int(b) for b in row['bbox']]
-            if box_mode == 0:
-                row['bbox'] = box + [label]
-            elif box_mode == 1:
-                x, y, w, h = box
-                row['bbox'] = [x, y, x+w, y+h, label]
-            elif box_mode == 2:
-                x, y, w, h = box
-                row['bbox'] = {'name':label, 'xmin':x, 'ymin':y, 'xmax':x+w, 
-                              'ymax':y+h, 'width':w, 'height':h}
-        
-        if accepted_labels is not None and label not in accepted_labels:
+        if accepted_labels and label not in accepted_labels:
             label = ''
-        
-        row['label'] = label
-            
-        row['filename'] = os.path.join(img_dir, row['file_name'])
-        
-        return row
-    
-    infos = load_json(filename)
-        
-    annotations = pd.DataFrame(infos['annotations'])
-    images      = pd.DataFrame(infos['images'])
-    categories  = pd.DataFrame(infos['categories'])
-    
-    metadata = pd.merge(annotations, images, left_on='image_id', right_on='id')
-    metadata = pd.merge(metadata, categories, left_on='category_id', right_on='id')
-    metadata['label'] = [''] * len(metadata)
-    if 'bbox' in metadata.columns: metadata['n_box'] = [1] * len(metadata)
-    
-    metadata = metadata.apply(build_row, axis=1)
-    metadata = metadata[metadata['label'] != '']
-    columns_to_drop = set(columns_to_drop).intersection(set(metadata.columns))
-    metadata = metadata.drop(columns=columns_to_drop)
-    metadata = metadata.rename(columns=replace_name)
-    
-    if not one_line_per_box:
-        new_metadata = {}
 
-        for idx, row in metadata.iterrows():
+        if 'bbox' in row:
+            row['bbox'] = convert_bbox(
+                * [int(c) for c in row['bbox']], label = label, mode = box_mode
+            )
+        
+        row.update({'n_box' : 1, 'label' : label, 'filename' : os.path.join(img_dir, row.pop('file_name'))})
+        
+        return {replace_name.get(k, k) : v for k, v in row.items() if k not in columns_to_drop}
+    
+    time_logger.start_timer('loading')
+
+    img_dir  = os.path.join(directory, subset)
+    
+    infos    = load_json(os.path.join(directory, 'annotations', 'instances_{}.json'.format(subset)))
+    captions = load_json(os.path.join(directory, 'annotations', 'captions_{}.json'.format(subset)))
+
+    time_logger.stop_timer('loading')
+    time_logger.start_timer('merging')
+    
+    cap = {}
+    for row in captions['annotations']:
+        cap.setdefault(row['image_id'], []).append(row['caption'])
+    
+    captions    = cap
+    categories  = {row['id'] : row for row in infos['categories']}
+    images      = {row['id'] : {** row, 'text' : cap[row['id']]} for row in infos['images']}
+    
+    metadata    = [
+        update_row({** row, ** categories[row['category_id']], ** images[row['image_id']]})
+        for row in infos['annotations']
+    ]
+    if not keep_empty:
+        metadata = [row for row in metadata if row['label']]
+    
+    time_logger.stop_timer('merging')
+
+    if not one_line_per_box:
+        time_logger.start_timer('flattening')
+
+        new_metadata = {}
+        for row in metadata:
             image_id = row['filename']
             if image_id not in new_metadata:
-                infos = {}
-                for k, v in row.items():
-                    if k in columns_to_concat: 
-                        infos[k] = [v]
-                    else: 
-                        infos[k] = v
-                new_metadata[image_id] = infos
+                new_metadata[image_id] = {
+                    k : v if k not in columns_to_concat else [v]
+                    for k, v in row.items()
+                }
             else:
-                for concat_name in columns_to_concat:
-                    new_metadata[image_id][concat_name] += [row[concat_name]]
+                for col_name in columns_to_concat:
+                    new_metadata[image_id][col_name] += [row[col_name]]
                 new_metadata[image_id]['n_box'] += 1
-        new_metadata = [{'filename':k, **values} for k, values in new_metadata.items()]
-        metadata = pd.DataFrame(new_metadata)
-                
+        
+        metadata = [{'filename' : k, ** v} for k, v in new_metadata.items()]
+
+        time_logger.stop_timer('flattening')
     
-    return metadata
+    if one_line_per_caption:
+        time_logger.start_timer('extending captions')
+        
+        new_metadata = []
+        for row in metadata:
+            new_metadata.extend([
+                {** row, 'text' : caption} for caption in row['text']
+            ])
+        
+        metadata = new_metadata
+        
+        time_logger.stop_timer('extending captions')
+    
+    return pd.DataFrame(metadata)
 
 _custom_image_datasets = {
     'anime_faces'   : {
@@ -699,12 +735,10 @@ _custom_image_datasets = {
     },
     'coco'      : {
         'train' : {
-            'filename'  : '{}/COCO/annotations/instances_train2017.json',
-            'img_dir'   : '{}/COCO/train2017'
+            'directory' : '{}/COCO', 'subset'    : 'train2017'
         },
         'valid' : {
-            'filename'  : '{}/COCO/annotations/instances_val2017.json',
-            'img_dir'   : '{}/COCO/val2017'
+            'directory' : '{}/COCO', 'subset'    : 'val2017'
         }
     },
     'essex'     : {

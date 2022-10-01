@@ -11,12 +11,16 @@
 # limitations under the License.
 
 import os
+import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from hparams import HParams
 from models.interfaces.base_model import BaseModel
-from utils import load_embedding, save_embeddings, select_embedding, sample_df
+from utils import convert_to_str, load_embedding, save_embeddings, select_embedding, sample_df
+
+logger  = logging.getLogger(__name__)
 
 _default_embeddings_filename = 'default_embeddings'
 
@@ -63,8 +67,8 @@ class BaseEmbeddingModel(BaseModel):
         return tf.TensorSpec(shape = (None, self.embedding_dim), dtype = tf.float32)
     
     @property
-    def training_hparams(self):
-        return super().training_hparams(
+    def training_hparams_embedding(self):
+        return HParams(
             augment_embedding   = False,
             use_label_embedding = None
         )
@@ -135,27 +139,42 @@ class BaseEmbeddingModel(BaseModel):
         
         self.set_embeddings(embeddings)
         
-    def embed(self, audios, ** kwargs):
-        return self.encoder.embed(audios, ** kwargs)
+    def embed(self, data, ** kwargs):
+        return self.encoder.embed(data, ** kwargs)
     
-    def get_embedding(self, data, label_embedding_key = 'label_embedding'):
+    def get_embedding(self, data, label_embedding_key = 'label_embedding', key = 'embedding',
+                      embed_if_not_exist = True, ** kwargs):
         """ This function is used in `encode_data` and must return a single embedding """
         def load_np(filename):
-            if hasattr(filename, 'numpy'): filename = filename.numpy().decode('utf-8')
+            filename = convert_to_str(filename)
             return np.load(filename)
         
         embedding = data
         if isinstance(data, (dict, pd.Series)):
             embedding_key = label_embedding_key
-            if not self.use_label_embedding and 'embedding' in data:
-                embedding_key = 'embedding'
-            embedding = data[embedding_key]
+            if not self.use_label_embedding and key in data:
+                embedding_key = key
+            if embedding_key in data:
+                embedding = data[embedding_key]
+            elif embed_if_not_exist:
+                logger.info('Embedding key {} is not in data, embedding it !'.format(embedding_key))
+                embedding = self.embed(data)
+            else:
+                logger.error('Embedding key {} is not present in data and `embed_if_not_exist = False`'.format(key))
+                return None
         
-        if isinstance(embedding, tf.Tensor) and embedding.dtype == tf.string:
+        elif isinstance(embedding, tf.Tensor) and embedding.dtype == tf.string:
             embedding = tf.py_function(load_np, [embedding], Tout = tf.float32)
             embedding.set_shape([self.embedding_dim])
-        elif isinstance(embedding, str):
+        elif isinstance(embedding, str) and embedding.endswith('.npy'):
             embedding = np.load(embedding)
+        elif not isinstance(embedding, (tf.Tensor, np.ndarray)):
+            if embed_if_not_exist:
+                logger.info('Embedding key {} is not in data, embedding it !'.format(key))
+                embedding = self.embed(data)
+            else:
+                logger.error('Unknown embedding type and `embed_if_not_exist = False` (type {}) : {}'.format(type(data), data))
+                return None
         
         return embedding
         

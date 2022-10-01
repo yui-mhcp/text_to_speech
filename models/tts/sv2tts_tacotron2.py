@@ -10,18 +10,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import numpy as np
-import pandas as pd
 import tensorflow as tf
 
-from loggers import timer
 from utils import select_embedding
 from models.tts.tacotron2 import Tacotron2
 from models.interfaces.base_embedding_model import BaseEmbeddingModel
-from models.weights_converter import partial_transfer_learning
 
 class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
+    """
+        This model is an extension of `Tacotron2` with an additional inputs : the speaker embedding.
+        A `speaker embedding` is an abstract representation of a speaker prosody (typically produced by a model, such as a `Siamese Network`). 
+        Adding this embedding as inputs aims to force the model to produce a mel-spectrogram with the same prosody as the speaker. 
+    """
     def __init__(self,
                  lang,
                  encoder_name   = None,
@@ -34,6 +34,12 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
                  
                  ** kwargs
                 ):
+        """
+            `speaker_encoder_name`, `speaker_embedding_dim` and `use_utterance_embedding` are deprecated, please use their associated argument (respectively `encoder_name`, `embedding_dim` and `use_label_embedding`)
+        """
+        assert encoder_name or speaker_encoder_name
+        assert embedding_dim or speaker_embedding_dim
+        
         should_update   = False
         if encoder_name is None:
             should_update, encoder_name         = True, speaker_encoder_name
@@ -64,10 +70,12 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
             tf.TensorSpec(shape = (None,), dtype = tf.int32),
         )
     
+    @property
+    def training_hparams(self):
+        return super().training_hparams(** self.training_hparams_embedding)
+    
     def __str__(self):
-        des = super().__str__()
-        des += self._str_embedding()
-        return des
+        return super().__str__() + self._str_embedding()
     
     def compile(self, loss_config = {}, ** kwargs):
         if 'mel_loss' in loss_config and 'similarity' in loss_config['mel_loss']:
@@ -76,9 +84,8 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         super().compile(loss_config = loss_config, ** kwargs)
     
-    @timer(name = 'inference')
     def infer(self, text, text_length, spk_embedding, * args, ** kwargs):
-        if tf.rank(spk_embedding) == 1:
+        if len(tf.shape(spk_embedding)) == 1:
             spk_embedding = tf.expand_dims(spk_embedding, axis = 0)
         if not isinstance(text, str) and tf.shape(spk_embedding)[0] < tf.shape(text)[0]:
             spk_embedding = tf.tile(spk_embedding, [tf.shape(text)[0], 1])
@@ -90,44 +97,25 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         return self.get_embedding(data, label_embedding_key = 'speaker_embedding')
         
     def encode_data(self, data):
-        text, text_length, mel_input, mel_length, mel_output, gate = super().encode_data(data)
+        inputs, outputs = super().encode_data(data)
         
         embedded_speaker = self.get_speaker_embedding(data)
         
-        return text, text_length, embedded_speaker, mel_input, mel_length, mel_output, gate
-        
-    def filter_data(self, text, text_length, embedded_speaker, mel_input, 
-                    mel_length, mel_output, gate):
-        return super().filter_data(
-            text, text_length, mel_input, mel_length, mel_output, gate
-        )
+        return inputs[:2] + (embedded_speaker, ) + inputs[-2:], outputs
     
-    def augment_embedding(self, embedding):
-        return tf.cond(
-            tf.random.uniform(()) < self.augment_prct,
-            lambda: embedding + tf.random.normal(tf.shape(embedding), stddev = 0.025),
-            lambda: embedding
-        )
+    def augment_data(self, inputs, outputs):
+        inputs, outputs = super().augment_data(inputs, outputs)
+
+        embedded_speaker    = self.maybe_augment_embedding(inputs[3])
         
-    def augment_data(self, text, text_length, embedded_speaker, mel_input, 
-                     mel_length, mel_output, gate):
-        mel_input = self.augment_audio(mel_input)
-        embedded_speaker    = self.maybe_augment_embedding(embedded_speaker)
+        return inputs[:2] + (embedded_speaker, ) + inputs[-2:], outputs
         
-        return text, text_length, embedded_speaker, mel_input, mel_length, mel_output, gate
-        
-    def preprocess_data(self, text, text_length, embedded_speaker, mel_input, 
-                        mel_length, mel_output, gate):
-        (text, text_length, mel_input, mel_length), target = super().preprocess_data(
-            text, text_length, mel_input, mel_length, mel_output, gate
-        )
-        
-        return (text, text_length, embedded_speaker, mel_input, mel_length), target
-                
     def get_dataset_config(self, ** kwargs):
         config = super().get_dataset_config(** kwargs)
         config['pad_kwargs']    = {
-            'padding_values'    : (self.blank_token_idx, 0, 0., 0., 0, 0., 1.)
+            'padding_values'    : (
+                (self.blank_token_idx, 0, 0., self.pad_mel_value, 0), (self.pad_mel_value, 1.)
+            )
         }
         
         return config
@@ -140,7 +128,7 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
     def get_pipeline(self, * args, embeddings = None, embedding_mode = {}, overwrite = True,
                      ** kwargs):
         """
-            See `Tacotron2.get_pipeline` for full information
+            See `Tacotron2.get_pipeline` for all the information
             
             Arguments :
                 - args / kwargs : args passed to super().get_pipeline()

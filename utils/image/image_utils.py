@@ -31,10 +31,10 @@ def _normalize_color(color, image = None):
     
     return color
 
-def resize_image(image, target_shape, preserve_aspect_ratio = False):
+def resize_image(image, target_shape, preserve_aspect_ratio = False, ** kwargs):
     """ Reshapes `image` to `target_shape` while possibly preserving aspect ratio """
     image = tf.image.resize(
-        image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio
+        image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio, ** kwargs
     )
     if preserve_aspect_ratio:
         pad_h = tf.cast(target_shape[0] - tf.shape(image)[0], tf.int32)

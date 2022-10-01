@@ -3,31 +3,40 @@
 ## Project structure
 
 ```bash
-├── custom_architectures/   : custom architectures
-├── custom_layers/          : custom layers
-├── custom_train_objects/   : custom objects for training
-│   ├── callbacks/          : custom callbacks
-│   ├── generators/         : custom data generators
-│   ├── losses/             : custom losses
-│   ├── optimizers/         : custom optimizers / lr schedulers
-├── datasets/               : utilities for dataset loading / processing
-│   ├── custom_datasets/    : where to save custom datasets processing
-├── hparams/                : utility class to define modulable hyper-parameters
-├── loggers/                : some logging utilities
-│   ├── tts_logger.py       : special TTS logger
-├── models/                 : main `BaseModel` subclasses directory
-│   ├── siamese/            : directory for `AudioSiamese` class* used in `SV2TTS`
-│   ├── tts/                : directory for Text-To-Speech models
-├── pretrained_models/      : saving directory for pretrained models
-├── unitest/                : custom unitest framework to test models' consistency
-└── utils/                  : utilities for data processing
+
+├── custom_architectures
+│   ├── tacotron2_arch.py
+│   └── waveglow_arch.py
+├── custom_layers
+├── custom_train_objects
+│   ├── losses
+│   │   └── tacotron_loss.py    : custom Tacotron2 loss
+├── datasets
+├── example_outputs         : some pre-computed audios to show you an example
+├── hparams
+├── loggers
+├── models
+│   ├── siamese             : the `AudioSiamese` is used as encoder for the SV2TTS model
+│   ├── tts
+│   │   ├── sv2tts_tacotron2.py : SV2TTS main class
+│   │   ├── tacotron2.py        : Tacotron2 main class
+│   │   ├── vocoder.py          : main functions for complete inference
+│   │   └── waveglow.py         : WaveGlow main class (both pytorch and tensorflow)
+├── pretrained_models
+├── unitest
+├── utils
+├── example_fine_tuning.ipynb
+├── example_sv2tts.ipynb
+├── example_tacotron2.ipynb
+├── example_waveglow.ipynb
+└── text_to_speech.ipynb
 ```
 
-See [my data_processing repo](https://github.com/yui-mhcp/data_processing) for more information on the `utils` module and `data processing` features.
+Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more information about the unextended modules / structure / main classes. 
 
-See [my base project](https://github.com/yui-mhcp/base_dl_project) for more information on the `BaseModel` class, supported datasets, project extension, ...
+\* Check my [Siamese Networks project](https://github.com/yui-mhcp/siamese_networks) for more information about the `models/siamese` module
 
-\* Check my [Siamese Networks project](https://github.com/yui-mhcp/siamese_networks) for more information
+Note that some parts of the training notebooks may not properly work as they are quite old but the main training scripts should work properly as well as the `speech_to_text` notebook. 
 
 ## Available features
 
@@ -54,6 +63,8 @@ Available architectures :
 
 \* The speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture.
 
+My SV2TTS models are fine-tuned from pretrained Tacotron2 models which speeds up a lot the training.
+
 ### Model weights
 
 | Name      | Language  | Dataset   | Synthesizer   | Vocoder   | Speaker Encoder   | Trainer   | Weights   |
@@ -67,7 +78,7 @@ You can download the `tensorflow` version of `WaveGlow` at [this link](https://d
 
 Models must be unzipped in the `pretrained_models/` directory !
 
-**Important Note** : the `NVIDIA` model available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :)
+**Important Note** : the `NVIDIA` models available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :smile:
 
 The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability and produce a voice with more intonation. 
 
@@ -102,6 +113,13 @@ You also have to install `ffmpeg` for audio loading / saving.
 - [ ] Add new languages support
 - [ ] Add new TTS architectures / models
 - [x] Add `consumer-producer` based support for prediction
+- [x] Add pipeline-based prediction
+
+## Pipeline-based prediction
+
+The `Tacotron2` model (as well as the vocoder inference) supports the pipeline-based prediction, meaning that all the tasks you see in the below graph are multi-threaded. Check the [data_processing project](https://github.com/yui-mhcp/data_processing) for a better understanding of the `producer-consumer` framework. 
+
+![Text-To-Speech pipeline](tts_pipeline.jpg)
 
 ## Multi-speaker Text-To-Speech
 

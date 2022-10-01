@@ -36,6 +36,8 @@ from custom_train_objects import get_optimizer, get_loss, get_metrics, get_callb
 from models.weights_converter import partial_transfer_learning
 from models.model_utils import _pretrained_models_folder, is_model_name, get_model_dir
 
+logger = logging.getLogger(__name__)
+
 _trackable_objects = (
     tf.keras.Model, 
     tf.keras.losses.Loss, 
@@ -53,7 +55,8 @@ class ModelInstances(type):
             pass
         elif not cls._is_restoring and kwargs.get('restore', True) and os.path.exists(os.path.join(_pretrained_models_folder, nom, 'config.json')):
             cls._is_restoring = True
-            cls.restore(nom)
+            kwargs['nom'] = nom
+            cls.restore(** kwargs)
             cls._is_restoring = False
         else:
             #cls._is_restoring = False
@@ -118,7 +121,7 @@ class BaseModel(metaclass = ModelInstances):
         else:
             self._build_model(** kwargs)
                 
-        if not os.path.exists(self.folder):
+        if not os.path.exists(self.config_file):
             self._init_folders()
             self.save()
         
@@ -126,7 +129,7 @@ class BaseModel(metaclass = ModelInstances):
         
         self.init_train_config()
         
-        logging.info("Model {} initialized successfully !".format(self.nom))
+        logger.info("Model {} initialized successfully !".format(self.nom))
     
     def __build_call_fn(self):
         if not hasattr(self, 'call_fn'):
@@ -153,7 +156,7 @@ class BaseModel(metaclass = ModelInstances):
         os.makedirs(self.pred_dir,      exist_ok=True)
         os.makedirs(self.save_dir,      exist_ok=True)
     
-    def _build_model(self, **kwargs):
+    def _build_model(self, ** kwargs):
         """
             Initialize models' variables
             Arguments :
@@ -167,7 +170,7 @@ class BaseModel(metaclass = ModelInstances):
             elif isinstance(model, dict):
                 return get_architecture(** model)
             else:
-                raise ValueError("Impossible d'initialiser le modèle !\nReçu : {}\nAcceptés : tf.keras.Model ou dict")
+                raise ValueError("Unhandled model type !\n  Accepted : (tf.keras.Model, dict)\n  Got : {}".format(model))
         
         def _set_single_model(model, name = None):
             if isinstance(model, dict):
@@ -178,8 +181,9 @@ class BaseModel(metaclass = ModelInstances):
                 if name is None: name = 'model'
                 setattr(self, name, model)
             else:
-                raise ValueError("Modele de type inconnu : {} (type : {})".format(model, type(model)))
+                raise ValueError("Unknown model type (type {}) : {}".format(type(model), model))
         
+        logger.info('Initializing model with kwargs : {}'.format(kwargs))
         for name, model_config in kwargs.items():
             models = _build_single_model(model_config)
             _set_single_model(models, name = name)
@@ -469,10 +473,10 @@ class BaseModel(metaclass = ModelInstances):
         
     def _init_trackable_variable(self, name, var):
         if not isinstance(var, _trackable_objects):
-            raise ValueError("Le type '{}' n'est pas une variable trackee !".format(type(var)))
+            raise ValueError("Type '{}' should not be tracked !".format(type(var)))
             
         if hasattr(self, name):
-            raise ValueError("La variable '{}' existe déjà et est une variable trackee ! Elle ne peut donc pas être modifiée. ".format(name))
+            raise ValueError("Variable '{}' already exists and is not mutable.".format(name))
             
         if isinstance(var, tf.keras.Model):
             self._init_model(name, var)
@@ -484,12 +488,14 @@ class BaseModel(metaclass = ModelInstances):
             self._init_metric(name, var)
         
     def _init_model(self, name, model):
-        assert isinstance(model, tf.keras.Model), "'model' doit être un tf.keras.Model !"
+        assert isinstance(model, tf.keras.Model), "'model' must be a `tf.keras.Model` instance !"
         if name in self.__models:
-            logging.warning("Submodel '{}' already exists !".format(name))
+            logger.warning("Submodel '{}' already exists !".format(name))
             return
         
-        logging.info("Initializing submodel : {} !".format(name))
+        if hasattr(model, '_build'): model._build()
+        
+        logger.info("Initializing submodel : `{}` !".format(name))
         
         config_model_file = os.path.join(self.save_dir, name + '.json')
         
@@ -504,43 +510,45 @@ class BaseModel(metaclass = ModelInstances):
         setattr(self.__ckpt, name, model)
         
     def _init_optimizer(self, name, optimizer):
-        assert isinstance(optimizer, tf.keras.optimizers.Optimizer), "'optimizer' doit êtreun tf.keras.optimizers.Optimizer !"
+        assert isinstance(optimizer, tf.keras.optimizers.Optimizer), "'optimizer' must be a `tf.keras.optimizers.Optimizer` instance !"
         
         if name in self.__optimizers:
-            logging.warning("Optimizer '{}' already exists !".format(name))
+            logger.warning("Optimizer '{}' already exists !".format(name))
             return
         
-        logging.info("Optimizer '{}' initilized successfully !".format(name))
+        logger.info("Optimizer '{}' initilized successfully !".format(name))
         
         self.__optimizers[name] = optimizer
         setattr(self.__ckpt, name, optimizer)
                 
     def _init_loss(self, name, loss):
-        assert isinstance(loss, tf.keras.losses.Loss) or callable(loss), "'loss' doit êtreun tf.keras.losses.Loss ou un callable !"
+        assert isinstance(loss, tf.keras.losses.Loss) or callable(loss), "'loss' must be a `tf.keras.losses.Loss` or a callable !"
         
         if name in self.__losses:
-            logging.warning("Loss '{}' already exists !".format(name))
+            logger.warning("Loss '{}' already exists !".format(name))
             return
         
         self.__losses[name] = loss
         
     def _init_metric(self, name, metric):
-        assert isinstance(metric, tf.keras.metrics.Metric) or callable(metric), "'metric' doit êtreun tf.keras.metrics.Metric ou un callable !"
+        assert isinstance(metric, tf.keras.metrics.Metric) or callable(metric), "'metric' must be a `tf.keras.metrics.Metric or a callable !"
         
         if name in self.__metrics:
-            logging.warning("Metric '{}' already exists !".format(name))
+            logger.warning("Metric '{}' already exists !".format(name))
             return
         
         self.__metrics[name] = metric
         
     def get_model(self, name = None):
         if name is None and len(self.__models) > 1:
-            raise ValueError("Pour récupérer un modèle quand il existe plusieurs sous-modèles, il faut l'identifier par son nom ! ou alors instancier un 'full_model' combinant les différents sous-modèles")
+            raise ValueError("When there are multiple sub-models, you must specify the model's name you want")
                 
         name = name if name is not None else self.model_names[0]
         
         if name not in self.__models:
-            raise ValueError("Le sous-modèle n'existe pas !\nReçu : {}\nAcceptés : {}".format(name, self.model_names))
+            raise ValueError("Sub-model does not exist !\n  Accepted : {}\n  Got : {}".format(
+                self.model_names, name
+            ))
             
         return self.__models[name]['model']
     
@@ -697,7 +705,9 @@ class BaseModel(metaclass = ModelInstances):
         elif type(model_name) is str and model_name in self.__models:
             self.compile_model(model_name, ** kwargs)
         else:
-            raise ValueError("Modele inconnu !\nReçu : {}\nAcceptés : {}".format(model_name, self.model_names))
+            raise ValueError("Unknown model !\n  Accepted : {}\n  Got : {}".format(
+                self.model_names, model_name
+            ))
             
     def compile_model(self,
                       model_name, 
@@ -707,7 +717,7 @@ class BaseModel(metaclass = ModelInstances):
                       verbose       = True
                      ):
         if self.is_compiled(model_name):
-            logging.warning("Model {} is already compiled !".format(model_name))
+            logger.warning("Model {} is already compiled !".format(model_name))
             return
         
         loss_config.setdefault('reduction', tf.keras.losses.Reduction.NONE)
@@ -739,7 +749,7 @@ class BaseModel(metaclass = ModelInstances):
         self.add_metric(model_metrics, met_name)
         
         str_loss = model_loss.get_config() if isinstance(model_loss, tf.keras.losses.Loss) else model_loss.__name__
-        logging.log(
+        logger.log(
             logging.INFO if verbose else DEV,
             "Submodel {} compiled !\n  Loss : {}\n  Optimizer : {}\n  Metrics : {}".format(
                 model_name, 
@@ -948,7 +958,7 @@ class BaseModel(metaclass = ModelInstances):
             
             self.history.set_params(train_hparams)
             
-            logging.info("Training config :\n{}\n".format(train_hparams))
+            logger.info("Training config :\n{}\n".format(train_hparams))
         else:
             config = kwargs
 
@@ -962,9 +972,9 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 _ = train_model.fit(* args, ** config)
         except KeyboardInterrupt as e:
-            logging.warning("Training interrupted ! Saving model...")
+            logger.warning("Training interrupted ! Saving model...")
         
-        logging.info("Training finished after {} !".format(time_to_string(time.time() - start)))
+        logger.info("Training finished after {} !".format(time_to_string(time.time() - start)))
         
         self.save()
         return self.history
@@ -1017,7 +1027,7 @@ class BaseModel(metaclass = ModelInstances):
         base_hparams.extract(config, pop = False)
         train_hparams.update(base_hparams)
         
-        logging.info("Training config :\n{}\n".format(train_hparams))
+        logger.info("Training config :\n{}\n".format(train_hparams))
         
         ##############################
         #     Dataset variables      #
@@ -1030,7 +1040,7 @@ class BaseModel(metaclass = ModelInstances):
         assert isinstance(valid_dataset, tf.data.Dataset) or valid_epoch <= 0
                 
         if strategy is not None:
-            logging.info("Running on {} GPU".format(strategy.num_replicas_in_sync))
+            logger.info("Running on {} GPU".format(strategy.num_replicas_in_sync))
             train_dataset   = strategy.experimental_distribute_dataset(train_dataset)
             valid_dataset   = strategy.experimental_distribute_dataset(valid_dataset)
         
@@ -1071,7 +1081,7 @@ class BaseModel(metaclass = ModelInstances):
         
         try:
             for epoch in range(init_epoch, last_epoch):
-                logging.info("\nEpoch {} / {}".format(epoch + 1, last_epoch))
+                logger.info("\nEpoch {} / {}".format(epoch + 1, last_epoch))
                 callbacks.on_epoch_begin(epoch)
                 
                 start_epoch_time = time.time()
@@ -1095,7 +1105,7 @@ class BaseModel(metaclass = ModelInstances):
                     if self.stop_training: break
                     
                     if verbose == 2 and (i+1) % verbose_step == 0:
-                        logging.info("Epoch {} step {} (avg time : {}) :\n  {}".format(
+                        logger.info("Epoch {} step {} (avg time : {}) :\n  {}".format(
                             epoch,
                             i+1, 
                             time_to_string((time.time() - last_print_time) / (int(self.current_step) - last_print_step)), 
@@ -1117,7 +1127,7 @@ class BaseModel(metaclass = ModelInstances):
                 callbacks.on_epoch_end(epoch, logs = self.__history.training_logs)
                 
                 if verbose == 2:
-                    logging.info("\nEpoch {} / {} - Time : {} - Remaining time : {}\n{}".format(
+                    logger.info("\nEpoch {} / {} - Time : {} - Remaining time : {}\n{}".format(
                         epoch, last_epoch,
                         time_to_string(epoch_time),
                         time_to_string(epoch_time * (last_epoch - epoch)),
@@ -1125,12 +1135,12 @@ class BaseModel(metaclass = ModelInstances):
                     ))
 
         except KeyboardInterrupt:
-            logging.warning("Training interrupted ! Saving model...")
+            logger.warning("Training interrupted ! Saving model...")
         
         callbacks.on_train_end()
         
         total_training_time = time.time() - start_training_time
-        logging.info("Training finished after {} !".format(time_to_string(total_training_time)))
+        logger.info("Training finished after {} !".format(time_to_string(total_training_time)))
         
         self.save()
         
@@ -1197,7 +1207,7 @@ class BaseModel(metaclass = ModelInstances):
         
         test_hparams.update(base_hparams)
         
-        logging.info("Testing config :\n{}\n".format(test_hparams))
+        logger.info("Testing config :\n{}\n".format(test_hparams))
                 
         ##################################
         #     Dataset initialization     #
@@ -1245,12 +1255,12 @@ class BaseModel(metaclass = ModelInstances):
                 dataset, eval_function, callbacks, tqdm, prefix = prefix
             )
         except KeyboardInterrupt:
-            logging.warning("Testing interrupted !")
+            logger.warning("Testing interrupted !")
         
         self.save_history()
         
         total_test_time = time.time() - start_test_time
-        logging.info("Testing finished after {} !".format(time_to_string(total_test_time)))
+        logger.info("Testing finished after {} !".format(time_to_string(total_test_time)))
         
         return self.__history
     
@@ -1350,10 +1360,10 @@ class BaseModel(metaclass = ModelInstances):
     
     def restore_models(self, directory = None, checkpoint = None, compile = True):
         if directory is not None:
-            logging.info("Model restoration from {}...".format(directory))
+            logger.info("Model restoration from {}...".format(directory))
             filename = os.path.join(directory, "config_models.json")
         else:
-            logging.info("Model restoration...")
+            logger.info("Model restoration...")
             filename = self.config_models_file
         
         variables_to_restore = load_json(filename)
@@ -1381,7 +1391,10 @@ class BaseModel(metaclass = ModelInstances):
                 name, kw = infos['metric'], infos['metric_config']
                 setattr(self, met_name, get_metrics(name, **kw))
         
-        self.load_checkpoint(directory = directory, checkpoint = checkpoint)
+        try:
+            self.load_checkpoint(directory = directory, checkpoint = checkpoint).assert_consumed()
+        except AssertionError as e:
+            logger.warning('[WARNING] Some layers have not bene restored from the checkpoint ! Run `model.load_checkpoint().assert_consumed()` to check if it is a critical error or not')
     
     def load_checkpoint(self, directory = None, checkpoint = None):
         if directory is None and checkpoint is None:
@@ -1394,7 +1407,7 @@ class BaseModel(metaclass = ModelInstances):
                 checkpoint = tf.train.latest_checkpoint(directory)
             else:
                 checkpoint = os.path.join(directory, checkpoint)
-            logging.info('Loading checkpoint {}'.format(checkpoint))
+            logger.info('Loading checkpoint {}'.format(checkpoint))
 
         return self.checkpoint.restore(checkpoint)
 
@@ -1472,7 +1485,9 @@ class BaseModel(metaclass = ModelInstances):
     def save_model(self, model_name, filename = None, save_weights = False, ** kwargs):
         if filename is None and type(model_name) is str: 
             if model_name not in self.models:
-                raise ValueError("Le modèle est inconnu !\nReçu : {}\nExistants : {}".format(model_name, self.model_names))
+                raise ValueError("Unknown model !\n  Accepted : {}\n  Got : {}".format(
+                    self.model_names, model_name
+                ))
             
             filename = self.model_infos[model_name]['save_path']
         
@@ -1484,7 +1499,7 @@ class BaseModel(metaclass = ModelInstances):
         if save_weights:
             self.__models[model_name]['model'].save_weights(filename, **kwargs)
             
-        logging.info("Submodel {} saved in {} !".format(model_name, config_filename))
+        logger.info("Submodel {} saved in {} !".format(model_name, config_filename))
                 
     def save_config(self, with_trackable_variables = True, directory = None):
         config = {
@@ -1516,7 +1531,7 @@ class BaseModel(metaclass = ModelInstances):
         if compile_infos is not None:
             self.compile(model_name = name, ** compile_infos, verbose = False)
 
-        logging.info("Successfully restored {} from {} !".format(name, filename))
+        logger.info("Successfully restored {} from {} !".format(name, filename))
     
     def destroy(self, ask = True):
         """ Destroy the model and all its folders """
@@ -1576,7 +1591,7 @@ class BaseModel(metaclass = ModelInstances):
         return instance
 
     @classmethod
-    def restore(cls, nom):
+    def restore(cls, nom, ** kwargs):
         folder = get_model_dir(nom)
         if not os.path.exists(folder): return None
         
@@ -1585,7 +1600,7 @@ class BaseModel(metaclass = ModelInstances):
         if config['class_name'] != cls.__name__:
             raise ValueError("Model {} already exists but is not the expected class !\n  Expected : {}\n  Got : {}".format(nom, config['class_name'], cls.__name__))
         
-        return cls(** config['config'])
+        return cls(** {** kwargs, ** config['config']})
     
     @staticmethod
     def rename(nom, new_name):

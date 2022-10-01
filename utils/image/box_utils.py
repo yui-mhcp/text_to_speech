@@ -10,6 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import cv2
 import enum
 import logging
@@ -24,7 +25,9 @@ from utils.generic_utils import to_json, get_enum_item
 from utils.plot_utils import plot, plot_multiple
 from utils.image.mask_utils import apply_mask
 from utils.image.image_utils import _normalize_color
-from utils.image.image_io import load_image, get_image_size
+from utils.image.image_io import load_image, save_image, get_image_size
+
+logger = logging.getLogger(__name__)
 
 _numeric_types  = (int, float, np.integer, np.floating)
 
@@ -109,7 +112,20 @@ class BoundingBox:
     
     def to_image(self, image_w, image_h):
         return [self.x1 * image_w, self.y1 * image_h, self.x2 * image_w, self.y2 * image_h]
+
+def convert_bbox(x, y, w, h, label, mode):
+    assert mode in (0, 1, 2)
+    
+    if mode == 0:
+        return [x, y, w, h, label]
+    elif mode == 1:
+        return [x, y, x + w, h + y, label]
+    return {
+        'xmin' : x, 'xmax' : x + w, 'ymin' : y, 'ymax' : y + h,
+        'width' : w, 'height' : h, 'name' : label
+    }
         
+    
 def bbox_iou(box1, box2):
     """ Computes the Intersect Over Union (IOU) of 2 bounding boxes """
     xmin1, ymin1, w1, h1 = get_box_pos(box1)
@@ -293,7 +309,7 @@ def get_box_pos(box,
         label   = box['name'] if 'name' in box else box['label']
         score   = 1
     else:
-        logging.error("Unsupported box format (type {}) : {} ".format(type(box), box))
+        logger.error("Unsupported box format (type {}) : {} ".format(type(box), box))
         return 0, 0, 0, 0
     
     x1, y1, w, h    = dezoom_box(x1, y1, w, h, dezoom_factor, image_h = image_h, image_w = image_w)
@@ -336,7 +352,7 @@ def crop_box(filename, box, show = False, ** kwargs):
         Returns a tuple `(box_image, box_pos)` box `box_pos` is a tuple (x, y, w, h, label, score)
         `box` can be a list of boxes then the result will be a list of the above (single) result
     """
-    image = load_image(filename)
+    image = load_image(filename) if isinstance(filename, str) else filename
     
     if _is_box_list(box):
         box_images = [crop_box(image, b, ** kwargs) for b in box]
@@ -356,6 +372,40 @@ def crop_box(filename, box, show = False, ** kwargs):
         
     return box_image, (x, y, w, h, label, score)
 
+def extract_boxes(filename, boxes, image = None, directory = None,
+                  file_format = '{}_box_{}.jpg', ** kwargs):
+    kwargs['show'] = False
+    
+    if image is None: image = load_image(filename)
+    if hasattr(image, 'numpy'): image = image.numpy()
+    
+    if directory and not file_format.startswith(directory):
+        file_format = os.path.join(directory, file_format)
+    
+    if isinstance(filename, str):
+        basename = os.path.splitext(os.path.basename(filename))[0]
+    else:
+        if not directory: directory = '.'
+        basename = 'image_{}'.format(len(set([
+            f.split('_')[1] for f in os.listdir(directory)
+            if f.startswith('image_') and '_box_' in f
+        ])))
+    
+    infos = {}
+    for i, box in enumerate(boxes):
+        box_img, box_pos = crop_box(image, box, ** kwargs)
+
+        box_filename = file_format.format(basename, i)
+        save_image(filename = box_filename, image = box_img)
+        
+        infos[box_filename] = {
+            'box'   : box_pos[:4],
+            'label' : box_pos[4],
+            'height'    : box_pos[2],
+            'width'     : box_pos[3]
+        }
+    return infos
+
 def draw_boxes(filename,
                boxes,
                shape    = Shape.RECTANGLE,
@@ -368,7 +418,8 @@ def draw_boxes(filename,
               ):
     shape = get_enum_item(shape, Shape)
     
-    image = load_image(filename).numpy()
+    image = load_image(filename) if isinstance(filename, str) else filename
+    if hasattr(image, 'numpy'): image = image.numpy()
     image_h, image_w, _ = image.shape
     
     if not isinstance(color, list): color = [color]
@@ -414,10 +465,11 @@ def draw_boxes(filename,
     return image
 
 def box_as_mask(filename, boxes, mask_background = False, ** kwargs):
-    image = load_image(filename).numpy()
+    image = load_image(filename) if isinstance(filename, str) else filename
+    if hasattr(image, 'numpy'): image = image.numpy()
     image_h, image_w, _ = image.shape
     
-    mask = tf.zeros((image_h, image_w, 3), dtype = tf.float32)
+    mask = np.zeros((image_h, image_w, 3), dtype = np.float32)
     
     mask = draw_boxes(mask, boxes, color = 255, thickness = -1, ** kwargs)
     
@@ -428,14 +480,16 @@ def box_as_mask(filename, boxes, mask_background = False, ** kwargs):
     return mask
 
 def mask_boxes(filename, boxes, shape = Shape.RECTANGLE, dezoom_factor = 1., ** kwargs):
-    image   = load_image(filename)
+    image = load_image(filename) if isinstance(filename, str) else filename
+    if hasattr(image, 'numpy'): image = image.numpy()
     
     mask    = box_as_mask(image, boxes, shape = shape, dezoom_factor = dezoom_factor)
     
     return apply_mask(image, mask, ** kwargs)
 
 def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
-    image = load_image(filename).numpy()
+    image = load_image(filename) if isinstance(filename, str) else filename
+    if hasattr(image, 'numpy'): image = image.numpy()
     image_h, image_w = get_image_size(image)
     
     pairs = []
@@ -480,8 +534,8 @@ def save_boxes(filename, boxes, labels, append = True, ** kwargs):
             box, image_h = image_h, image_w = image_w, with_label = True, labels = labels,
             normalize_mode = NORMALIZE_WH, ** kwargs
         )
-            
-                
+        
+        
         description += "{} {} {} {} {}\n".format(x, y, w, h, label)
 
     with open(filename, open_mode) as fichier:

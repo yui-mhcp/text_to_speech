@@ -19,8 +19,25 @@ logger = logging.getLogger(__name__)
 
 MAX_MATRIX_SIZE = 512 * 1024 * 1024
 
-def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
-             force_distance = True, ** kwargs):
+def _maybe_expand_for_matrix(x, y, as_matrix = False):
+    if as_matrix and len(tf.shape(x)) == len(tf.shape(y)):
+        y = tf.expand_dims(y, axis = -3)
+    
+    if len(tf.shape(x)) == len(tf.shape(y)) - 1:
+        x = tf.expand_dims(x, axis = -2)
+
+    return x, y
+
+def distance(x,
+             y,
+             method,
+             force_distance = True,
+
+             as_matrix  = False,
+             max_matrix_size    = MAX_MATRIX_SIZE,
+             
+             ** kwargs
+            ):
     """
         Compute distance between `x` and `y` with `method` function
         
@@ -80,21 +97,16 @@ def distance(x, y, method, as_matrix = False, max_matrix_size = MAX_MATRIX_SIZE,
     
     return distances if not force_distance or method not in _similarity_methods else -distances
 
-def _maybe_expand_for_matrix(x, y, as_matrix = False):
-    if as_matrix:
-        if len(tf.shape(x)) == 2: x = tf.expand_dims(x, axis = 1)
-        if len(tf.shape(y)) == 2: y = tf.expand_dims(y, 0)
-    elif len(tf.shape(x)) == 2 and len(tf.shape(y)) == 3:
-        x = tf.expand_dims(x, axis = 1)
-
-    return x, y
+def cosine_similarity(x, y, as_matrix = False, ** kwargs):
+    return dot_product(
+        tf.math.l2_normalize(x, axis = -1),
+        tf.math.l2_normalize(y, axis = -1),
+        as_matrix = as_matrix, ** kwargs
+    )
 
 def dot_product(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = not as_matrix)
-    if not as_matrix: y = tf.transpose(y, [1, 0, 2])
-    
-    dp = tf.matmul(x, y, transpose_b = True)
-    return tf.squeeze(dp, axis = 1) if not as_matrix else dp
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
+    return tf.reduce_sum(x * y, axis = -1)
 
 def l1_distance(x, y, as_matrix = False, ** kwargs):
     x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
@@ -210,6 +222,7 @@ _str_distance_method    = {
 }
 
 _similarity_methods = {
+    'cosine'    : cosine_similarity,
     'dp'    : dot_product
 }
 

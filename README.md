@@ -114,6 +114,7 @@ You also have to install `ffmpeg` for audio loading / saving.
 - [ ] Add new TTS architectures / models
 - [x] Add `consumer-producer` based support for prediction
 - [x] Add pipeline-based prediction
+- [ ] Train a `SV2TTS` model based on an encoder trained with the `GE2E` loss
 
 ## Pipeline-based prediction
 

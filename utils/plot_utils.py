@@ -12,7 +12,6 @@
 
 import cv2
 import math
-import umap
 import logging
 import datetime
 import matplotlib
@@ -22,7 +21,6 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-from math import sqrt
 from sklearn.metrics import confusion_matrix
 from sklearn.manifold import TSNE
 
@@ -723,6 +721,8 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
     #tsne_embeddings = tsne.fit_transform(embeddings)
     
     
+    import umap
+    
     assert embeddings is not None or x is not None
     if embeddings is None: embeddings = x
 
@@ -748,7 +748,7 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
     kwargs.update({'x' : x, 'y' : y, 'plot_type' : 'scatter', 'marker' : marker})
     if ids is not None:
         unique_ids  = np.unique(ids).tolist()
-        size = min(sqrt(len(unique_ids)) * 2, 10)
+        size = min(math.sqrt(len(unique_ids)) * 2, 10)
         
         kwargs.setdefault('figsize', (size, size))
         kwargs.update({'label' : ids, 'c' : [unique_ids.index(i) for i in ids]})

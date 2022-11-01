@@ -17,13 +17,39 @@ import pandas as pd
 
 from loggers import timer
 from utils import load_json
-from datasets.sqlite_dataset import preprocess_sqlite_database
+from datasets.custom_datasets import add_dataset
 from datasets.custom_datasets.preprocessing import parse_nq_annots
 
 logger  = logging.getLogger(__name__)
 
 _siamese_renaming = {'sentence1' : 'text_x', 'sentence2' : 'text_y'}
 _spaces = (' ', '\n', '\t')
+
+TRANS   = 'Translation'
+QnA_EN  = 'Q&A (English)'
+QnA_FR  = 'Q&A (French)'
+TEXT_COMP   = 'Text comparison'
+
+def text_dataset_wrapper(name, task, ** default_config):
+    def wrapper(dataset_loader):
+        @timer(name = '{} loading'.format(name))
+        def _load_and_process(directory, * args, ** kwargs):
+            dataset = dataset_loader(directory, * args, ** kwargs)
+            
+            dataset['dataset_name'] = name
+            
+            return dataset
+        
+        from datasets.custom_datasets import add_dataset
+        
+        fn = _load_and_process
+        fn.__name__ = dataset_loader.__name__
+        fn.__doc__  = dataset_loader.__doc__
+        
+        add_dataset(name, processing_fn = fn, task = task, ** default_config)
+        
+        return fn
+    return wrapper
 
 def _clean_paragraph(para):
     from utils.text.cleaners import remove_control
@@ -62,7 +88,11 @@ def _select_answer(candidates, keep_mode):
     return sorted(candidates, key = lambda a: len(a), reverse = keep_mode == 'longest')[0]
     
 
-@timer(name = 'CoQA loading')
+@text_dataset_wrapper(
+    name    = 'CoQA', task = QnA_EN,
+    train   = {'directory' : '{}/CoQA', 'subset' : 'train'},
+    valid   = {'directory' : '{}/CoQA', 'subset' : 'dev'}
+)
 def preprocess_coqa_annots(directory, subset, keep_mode = 'longest', ** kwargs):
     assert subset in ('train', 'dev'), 'Unknown subset : {}'.format(subset)
     
@@ -87,8 +117,10 @@ def preprocess_coqa_annots(directory, subset, keep_mode = 'longest', ** kwargs):
             
     return pd.DataFrame(dataset)
 
-@timer(name = 'europarl loading')
-def preprocess_europarl_annots(directory, base_name, input_lang, output_lang):
+@text_dataset_wrapper(
+    name = 'europarl', task = TRANS, directory = '{}/Europarl', base_name = 'europarl-v7.fr-en'
+)
+def preprocess_europarl_annots(directory, base_name, input_lang = 'en', output_lang = 'fr'):
     input_filename = os.path.join(directory, '{}.{}'.format(base_name, input_lang))
     output_filename = os.path.join(directory, '{}.{}'.format(base_name, output_lang))
     
@@ -101,7 +133,11 @@ def preprocess_europarl_annots(directory, base_name, input_lang, output_lang):
     datas = [[inp, out] for inp, out in zip(inputs, outputs)]
     return pd.DataFrame(data = datas, columns = [input_lang, output_lang])
 
-@timer(name = 'natural questions loading')
+@text_dataset_wrapper(
+    name    = 'NQ', task = QnA_EN,
+    train   = {'directory' : '{}/NaturalQuestions', 'subset' : 'train'},
+    valid   = {'directory' : '{}/NaturalQuestions', 'subset' : 'dev'}
+)
 def preprocess_nq_annots(directory,
                          subset     = 'train',
                          file_no    = -1,
@@ -162,7 +198,11 @@ def preprocess_nq_annots(directory,
 
     return dataset
 
-@timer(name = 'NewsQA loading')
+@text_dataset_wrapper(
+    name    = 'NewsQA', task = QnA_EN,
+    train   = {'directory' : '{}/newsqa', 'subset' : 'train'},
+    valid   = {'directory' : '{}/newsqa', 'subset' : 'dev'}
+)
 def preprocess_newsqa_annots(directory, subset, keep_mode = 'longest', ** kwargs):
     assert subset in ('train', 'dev', 'test'), "Unknown subset : {}".format(subset)
     
@@ -197,7 +237,11 @@ def preprocess_newsqa_annots(directory, subset, keep_mode = 'longest', ** kwargs
             
     return pd.DataFrame(dataset)
 
-@timer(name = 'parade loading')
+@text_dataset_wrapper(
+    name    = 'PARADE', task = TEXT_COMP,
+    train   = {'directory' : '{}/PARADE', 'subset' : 'train'},
+    valid   = {'directory' : '{}/PARADE', 'subset' : 'validation'}
+)
 def preprocess_parade_annots(directory, subset = 'train', rename_siamese = True, ** kwargs):
     filename = os.path.join(directory, 'PARADE_{}.txt'.format(subset))
     
@@ -211,7 +255,11 @@ def preprocess_parade_annots(directory, subset = 'train', rename_siamese = True,
     
     return dataset
 
-@timer(name = 'paws loading')
+@text_dataset_wrapper(
+    name    = 'PAWS', task = TEXT_COMP,
+    train   = {'directory' : '{}/PAWS', 'subset' : 'train'},
+    valid   = {'directory' : '{}/PAWS', 'subset' : 'dev'}
+)
 def preprocess_paws_annots(directory, subset = 'train', rename_siamese = True, ** kwargs):
     filename = os.path.join(directory, '{}.tsv'.format(subset))
     
@@ -225,7 +273,11 @@ def preprocess_paws_annots(directory, subset = 'train', rename_siamese = True, *
     
     return dataset
 
-@timer(name = 'QAngaroo loading')
+@text_dataset_wrapper(
+    name    = 'QAngaroo', task = QnA_EN,
+    train   = {'directory' : '{}/qangaroo_v1.1', 'subset' : 'train'},
+    valid   = {'directory' : '{}/qangaroo_v1.1', 'subset' : 'dev'}
+)
 def preprocess_qangaroo_annots(directory, subset, mode = 'wiki', keep_mode = 'longest', ** kwargs):
     assert mode in ('wiki', 'med')
     assert subset in ('train', 'dev'), "Unknown subset : {}".format(subset)
@@ -247,7 +299,9 @@ def preprocess_qangaroo_annots(directory, subset, mode = 'wiki', keep_mode = 'lo
     
     return pd.DataFrame(dataset)
 
-@timer(name = 'quora question pairs loading')
+@text_dataset_wrapper(
+    name    = 'QQP', task = TEXT_COMP, directory = '{}/QQP', subset = 'train'
+)
 def preprocess_qqp_annots(directory, subset = 'train', rename_siamese = True, ** kwargs):
     filename = os.path.join(directory, '{}.csv'.format(subset))
     
@@ -262,7 +316,11 @@ def preprocess_qqp_annots(directory, subset = 'train', rename_siamese = True, **
     
     return dataset
 
-@timer(name = 'snli loading')
+@text_dataset_wrapper(
+    name    = 'SNLI', task = TEXT_COMP,
+    train   = {'directory' : '{}/snli_1.0', 'subset' : 'train'},
+    valid   = {'directory' : '{}/snli_1.0', 'subset' : 'dev'}
+)
 def preprocess_snli_annots(directory, subset, version = '1.0', skip_parsed = True,
                            skip_sub_labels = True, skip_ukn_label = True, skip_id = True,
                            rename = _siamese_renaming, ** kwargs):
@@ -290,7 +348,11 @@ def preprocess_snli_annots(directory, subset, version = '1.0', skip_parsed = Tru
     
     return dataset.dropna()
 
-@timer(name = 'sts loading')
+@text_dataset_wrapper(
+    name    = 'STS', task = TEXT_COMP,
+    train   = {'directory' : '{}/sts_benchmark', 'subset' : 'train'},
+    valid   = {'directory' : '{}/sts_benchmark', 'subset' : 'dev'}
+)
 def process_sts_annots(directory, subset, rename = _siamese_renaming, ** kwargs):
     if isinstance(subset, (list, tuple)):
         return pd.concat([preprocess_snli_annots(
@@ -311,12 +373,18 @@ def process_sts_annots(directory, subset, rename = _siamese_renaming, ** kwargs)
     
     return dataset
 
-@timer(name = 'squad loading')
+@text_dataset_wrapper(
+    name    = 'SQUAD', task = QnA_EN,
+    train   = {'directory' : '{}/SQUAD2.0', 'subset' : 'train'},
+    valid   = {'directory' : '{}/SQUAD2.0', 'subset' : 'dev'}
+)
 def preprocess_SQUAD_annots(directory, subset, version = '2.0', skip_impossible = False,
                             clean_text = True, keep_mode = 'longest', ** kwargs):
     assert keep_mode in ('all', 'longest', 'shortest', 'one_per_line')
     
-    filename = os.path.join(directory, '{}-v{}.json'.format(subset, version))
+    filename = subset
+    if version: filename += '-v{}'.format(version)
+    filename = os.path.join(directory, '{}.json'.format(filename))
     metadata = load_json(filename)['data']
     
     dataset = []
@@ -331,7 +399,7 @@ def preprocess_SQUAD_annots(directory, subset, version = '2.0', skip_impossible 
                     'context' : para['context'], 'question' : qa['question']
                 }
                 
-                if  qa['is_impossible']:
+                if  qa.get('is_impossible', False):
                     if not skip_impossible:
                         dataset.append({
                             ** _base_infos, 'answers' : '', 'answer_start' : -1
@@ -354,7 +422,11 @@ def preprocess_SQUAD_annots(directory, subset, version = '2.0', skip_impossible 
     
     return dataset
 
-@timer(name = 'triviaqa loading')
+@text_dataset_wrapper(
+    name    = 'TriviaQA', task = QnA_EN,
+    train   = {'directory' : '{}/TriviaQA', 'subset' : 'train'},
+    valid   = {'directory' : '{}/TriviaQA', 'subset' : 'dev'}
+)
 def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True,
                                load_context = False, keep_doc_mode = 'one_per_line', subset = 'train',
                                tqdm = lambda x: x, ** kwargs):
@@ -417,80 +489,26 @@ def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True,
     
     return pd.DataFrame(metadata)
 
-@timer(name = 'parsed wikipedia loading')
-def preprocess_parsed_wiki_annots(directory, ** kwargs):
-    filename = os.path.join(directory, 'psgs_w100.tsv')
-    return pd.read_csv(filename, sep = '\t')
 
+add_dataset(
+    'French SQUAD', processing_fn = 'squad', task = QnA_FR,
+    train   = {
+        'directory' : '{}/French_SQUAD', 'subset' : 'SQuAD',
+        'version' : '1.1-train_fr_ss999_awstart2_net'
+    },
+    valid   = {
+        'directory' : '{}/French_SQUAD', 'subset' : 'SQuAD',
+        'version' : '1.1-dev_fr_ss999_awstart2_net'
+    }
+)
 
-_custom_text_datasets = {
-    'coqa'      : {
-        'train' : {'directory' : '{}/CoQA', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/CoQA', 'subset' : 'dev'}
-    },
-    'europarl'  : {
-        'directory' : '{}/Europarl',
-        'base_name' : 'europarl-v7.fr-en',
-        'input_lang'    : 'en',
-        'output_lang'   : 'fr'
-    },
-    'newsqa'    : {
-        'train' : {'directory' : '{}/newsqa', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/newsqa', 'subset' : 'dev'}
-    },
-    'nq'        : {
-        'train' : {'directory' : '{}/NaturalQuestions', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/NaturalQuestions', 'subset' : 'dev'}
-    },
-    'parade'    : {
-        'train' : {'directory' : '{}/PARADE', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/PARADE', 'subset' : 'validation'}
-    },
-    'paws'  : {
-        'train' : {'directory' : '{}/PAWS', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/PAWS', 'subset' : 'dev'}
-    },
-    'qangaroo'  : {
-        'train' : {'directory' : '{}/qangaroo_v1.1', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/qangaroo_v1.1', 'subset' : 'dev'}
-    },
-    'qqp'   : {
-        'directory' : '{}/QQP',
-        'subset'    : 'train'
-    },
-    'snli'  : {
-        'train' : {'directory' : '{}/snli_1.0', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/snli_1.0', 'subset' : 'dev'}
-    },
-    'sts'   : {
-        'train' : {'directory' : '{}/sts_benchmark', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/sts_benchmark', 'subset' : 'dev'}
-    },
-    'squad' : {
-        'train' : {'directory' : '{}/SQUAD2.0', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/SQUAD2.0', 'subset' : 'dev'}
-    },
-    'triviaqa'  : {
-        'train' : {'directory' : '{}/TriviaQA', 'subset' : 'train'},
-        'valid' : {'directory' : '{}/TriviaQA', 'subset' : 'dev'}
-    },
-    'wikipedia' : {'directory' : '{}/wikipedia', 'filename' : 'docs.db'},
-    'wikipedia_parsed'  : {'directory' : '{}/wikipedia'}
-}
+add_dataset(
+    'FQUAD', processing_fn = 'squad', task = QnA_FR,
+    train   = {'directory' : '{}/FQUAD1.0', 'subset' : 'train', 'version' : ''},
+    valid   = {'directory' : '{}/FQUAD1.0', 'subset' : 'valid', 'version' : ''}
+)
 
-_text_dataset_processing  = {
-    'coqa'          : preprocess_coqa_annots,
-    'europarl'      : preprocess_europarl_annots,
-    'newsqa'        : preprocess_newsqa_annots,
-    'nq'            : preprocess_nq_annots,
-    'parade'        : preprocess_parade_annots,
-    'paws'          : preprocess_paws_annots,
-    'qangaroo'      : preprocess_qangaroo_annots,
-    'qqp'           : preprocess_qqp_annots,
-    'snli'          : preprocess_snli_annots,
-    'sts'           : process_sts_annots,
-    'squad'         : preprocess_SQUAD_annots,
-    'triviaqa'      : preprocess_triviaqa_annots,
-    'wikipedia'     : preprocess_sqlite_database,
-    'wikipedia_parsed'  : preprocess_parsed_wiki_annots
-}
+add_dataset(
+    'piaf', processing_fn = 'squad', task = QnA_FR,
+    directory = '{}/piaf', subset = 'piaf', version = '1.1'
+)

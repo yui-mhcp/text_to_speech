@@ -11,7 +11,6 @@
 # limitations under the License.
 
 import os
-import sqlite3
 import pandas as pd
 
 class SQLiteDataset(object):
@@ -30,12 +29,14 @@ class SQLiteDataset(object):
     @property
     def connection(self):
         if self.__connection is None:
+            import sqlite3
             self.__connection = sqlite3.connect(self.path)
         return self.__connection
     
     @property
     def cursor(self):
         if self.__cursor is None:
+            import sqlite3
             self.__cursor = self.connection.cursor()
             self.__cursor.row_factory = sqlite3.Row
         return self.__cursor

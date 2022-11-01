@@ -24,7 +24,8 @@ from tqdm import tqdm
 from loggers import timer
 from models.interfaces import BaseModel
 from utils.distance import distance, KNN
-from utils.embeddings import load_embedding, save_embeddings, embed_dataset, embeddings_to_np
+from utils.thread_utils import Pipeline
+from utils.embeddings import _embedding_filename, _default_embedding_ext, load_embedding, save_embeddings, embeddings_to_np
 from utils import normalize_filename, plot_embedding, pad_batch, sample_df
 
 logger      = logging.getLogger(__name__)
@@ -289,11 +290,8 @@ class SiameseNetwork(BaseModel):
         
         return super().get_dataset_config(**kwargs)
         
-    def _get_train_config(self, * args, test_size = 1,
-                          test_batch_size = 32, ** kwargs):
-        """
-        Set new default test_batch_size to embed 128 data (32 same + 32 not-same pairs) 
-        """
+    def _get_train_config(self, * args, test_size = 1, test_batch_size = 1., ** kwargs):
+        """ Set new default test_batch_size to embed 128 data (32 same + 32 not-same pairs)  """
         return super()._get_train_config(
             * args, test_size = test_size, test_batch_size = test_batch_size, ** kwargs
         )
@@ -513,17 +511,20 @@ class SiameseNetwork(BaseModel):
         """
         return 1. - self.pred_similarity_matrix(embeddings)
     
-    @timer
-    def embed_dataset(self, directory, dataset, ** kwargs):
-        """ Call the `embed_dataset` function with `self.embed` as embedding function """
-        return embed_dataset(
-            directory   = directory, 
-            dataset     = dataset, 
-            embed_fn    = self.embed, 
-            embedding_dim   = self.embedding_dim, 
+    def embed_dataset(self, directory, dataset, embedding_name = None, ** kwargs):
+        """
+            Calls `self.predict` and save the result to `{directory}/embeddings/{embedding_name}` (`embedding_name = self.nom` by default)
+        """
+        if not directory.endswith('embeddings'): directory = os.path.join(directory, 'embeddings')
+        
+        return self.predict(
+            dataset,
+            save    = True,
+            directory   = directory,
+            embedding_name  = embedding_name if embedding_name else self.nom,
             ** kwargs
         )
-            
+    
     def load_friends(self):
         if not os.path.exists(self.embeddings_file):
             return pd.DataFrame([], columns = ['id', 'embedding'])
@@ -608,8 +609,67 @@ class SiameseNetwork(BaseModel):
         
         return dropped
     
-    def predict(self, * args, ** kwargs):
-        return self.recognize(* args, ** kwargs)
+    def get_pipeline(self,
+                     id_key = 'filename',
+                     batch_size = 1,
+                     
+                     save   = True,
+                     directory  = None,
+                     embedding_name = _embedding_filename,
+                     ** kwargs
+                    ):
+        @timer
+        def preprocess(row, ** kw):
+            inputs = self.get_input(row)
+            if not isinstance(row, (dict, pd.Series)): row = {}
+            row['processed'] = inputs
+            return row
+        
+        @timer
+        def inference(inputs, ** kw):
+            batch_inputs = inputs if isinstance(inputs, list) else [inputs]
+            
+            batch = [inp.pop('processed') for inp in batch_inputs]
+            batch = pad_batch(batch) if not isinstance(batch[0], (list, tuple)) else [
+                pad_batch(b) for b in zip(* batch)
+            ]
+            batch = self.preprocess_input(batch)
+            
+            embeddings = encoder(batch, training = False)
+
+            for row, embedding in zip(batch_inputs, embeddings): row['embedding'] = embedding
+            
+            return inputs
+        
+        if save:
+            embedding_file = embedding_name
+            if '{}' in embedding_file: embedding_file = embedding_file.format(self.embedding_dim)
+            if not os.path.splitext(embedding_file)[1]: embedding_file += _default_embedding_ext
+            if directory is None: directory = self.pred_dir
+            filename = os.path.join(directory, embedding_file)
+        
+        encoder = self.encoder
+
+        pipeline = Pipeline(** {
+            ** kwargs,
+            'filename'  : None if not save else filename,
+            'id_key'    : id_key,
+            'save_keys' : ['id', 'embedding'],
+            'as_list'   : True,
+            
+            'tasks'     : [
+                preprocess,
+                {'consumer' : inference, 'batch_size' : batch_size, 'allow_multithread' : False}
+            ]
+        })
+        pipeline.start()
+        return pipeline
+    
+    @timer
+    def predict(self, data, ** kwargs):
+        pipeline = self.get_pipeline(** kwargs)
+        
+        return pipeline.extend_and_wait(data, ** kwargs)
     
     @timer
     def recognize(self,

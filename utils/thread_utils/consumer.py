@@ -319,13 +319,16 @@ class Consumer(Producer):
         if not self.run_main_thread:
             super().run(* args, ** kwargs)
     
-    def extend_and_wait(self, items, * args, stop = False, ** kwargs):
+    def extend_and_wait(self, items, * args, stop = False, tqdm = None, ** kwargs):
         def append_and_wake_up(item, idx):
             result[idx] = item
             clock.release()
+            if tqdm is not None: tqdm.update()
         
         def get_callback(idx):
             return lambda item: append_and_wake_up(item, idx)
+        
+        if tqdm is not None: tqdm = tqdm(total = len(items), unit = 'item')
         
         result = [None] * len(items)
         clock  = Semaphore(0)

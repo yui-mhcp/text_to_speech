@@ -25,9 +25,157 @@ from multiprocessing import cpu_count
 from loggers import timer
 from utils.thread_utils import Consumer
 from utils.file_utils import load_json, dump_json
+from datasets.custom_datasets import add_dataset
 
 logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
+
+GAN = 'image generation'
+CLASS   = 'object classification'
+DETECT  = 'object detection'
+SEGMENT = 'object segmentation'
+CAPTION = 'image captioning'
+FACE_RECOGN = 'face recognition'
+
+BOX_KEY     = 'box'
+N_BOX_KEY   = 'nb_box'
+
+def image_dataset_wrapper(name, task, ** default_config):
+    def wrapper(dataset_loader):
+        """
+            Wraps a function that loads the image dataset and then apply some post-processing
+            The function must return a dict {filename : infos} where `infos` can contain :
+                - (optional) label  : the label(s) in the image
+                - (optional) box    : the bounding box(es) in the image (in mode [x, y, w, h])
+                - (optional) box_infos  : the box(es)' information
+                - (optional) segmentation   : the object's segmentation(s)
+                
+                - (optional) text   : the image's caption(s)
+        """
+        @timer(name = '{} loading'.format(name))
+        def _load_and_process(directory,
+                              * args,
+                              add_image_size = None,
+                              
+                              keep_empty    = True,
+                              accepted_labels   = None,
+                              labels_subtitutes = None,
+                              
+                              box_mode  = 'xywh',
+                              min_box_per_image = -1,
+                              max_box_per_image = -1,
+                              one_line_per_box  = False,
+                              
+                              one_line_per_caption  = False,
+                              
+                              ** kwargs
+                             ):
+            assert not (one_line_per_box and one_line_per_caption)
+            
+            dataset = dataset_loader(directory, * args, ** kwargs)
+            
+            dataset = [
+                {'filename' : file, ** row} for file, row in dataset.items()
+            ]
+            
+            if 'label' in dataset[0]:
+                dataset = _replace_labels(dataset, labels_subtitutes)
+
+                dataset = _filter_labels(dataset, accepted_labels, keep_empty)
+
+                if any(BOX_KEY in row for row in dataset):
+                    for row in dataset: row.setdefault(BOX_KEY, [])
+                    
+                    if min_box_per_image > 0 or max_box_per_image > 0:
+                        if max_box_per_image <= 0: max_box_per_image = float('inf')
+                        dataset = [
+                            row for row in dataset if (
+                                len(row[BOX_KEY]) >= min_box_per_image 
+                                and len(row[BOX_KEY]) <= max_box_per_image
+                            )
+                        ]
+                
+                    if one_line_per_box:
+                        dataset = _flatten_dataset(
+                            dataset, keys = ['label', BOX_KEY, 'box_infos', 'segmentation']
+                        )
+            
+            if one_line_per_caption and 'text' in dataset[0]:
+                dataset = _flatten_dataset(dataset, keys = 'text')
+            
+            dataset = pd.DataFrame(dataset)
+
+            if BOX_KEY in dataset.columns:
+                dataset[N_BOX_KEY] = dataset[BOX_KEY].apply(len) if not one_line_per_box else 1
+            
+            if add_image_size is None: add_image_size = True if BOX_KEY in dataset.columns else False
+            if add_image_size and 'width' not in dataset.columns:
+                dataset = _add_image_size(dataset)
+            
+            dataset = _maybe_load_embedding(directory, dataset, ** kwargs)
+            dataset['dataset_name'] = name
+            
+            return dataset
+        
+        
+        from datasets.custom_datasets import add_dataset
+        
+        fn = _load_and_process
+        fn.__name__ = dataset_loader.__name__
+        fn.__doc__  = dataset_loader.__doc__
+        
+        add_dataset(name, processing_fn = fn, task = task, ** default_config)
+        
+        return fn
+    return wrapper
+
+def _replace_labels(dataset, labels_subtitutes):
+    if not labels_subtitutes: return dataset
+    
+    for row in dataset:
+        if 'label' not in row: continue
+        if not isinstance(row['label'], list):
+            row['label'] = labels_subtitutes.get(row['label'], row['label'])
+        else:
+            row['label'] =  [
+                labels_subtitutes.get(l, l) for l in row['label']
+            ]
+    return dataset
+
+def _filter_labels(dataset, accepted_labels, keep_empty):
+    if not accepted_labels:
+        return dataset if keep_empty else [row for row in dataset if row.get('label', None)]
+    
+    if not isinstance(accepted_labels, list): accepted_labels = [accepted_labels]
+    
+    for row in dataset:
+        if 'label' not in row: continue
+        if not isinstance(row['label'], list):
+            row['label'] = None if row['label'] not in accepted_labels else row['label']
+        else:
+            for i in reversed(range(len(row['label']))):
+                if row['label'][i] not in accepted_labels:
+                    for k in ['label', 'box', 'box_infos', 'segmentation']:
+                        if k not in row: continue
+                        row[k].pop(i)
+        
+    return dataset if keep_empty else [row for row in dataset if row.get('label', None)]
+
+def _flatten_dataset(dataset, keys):
+    if not isinstance(keys, list): keys = [keys]
+    if any(not isinstance(dataset[0].get(k, []), list) for k in keys): return dataset
+    
+    flat = []
+    for row in dataset:
+        if all(k not in row for k in keys):
+            flat.append(row)
+            continue
+        
+        for i in range(len(row[keys[0]])):
+            flat.append({
+                k : v if k not in keys else v[i] for k, v in row.items()
+            })
+    return flat
 
 def _add_image_size(dataset):
     from utils.image import get_image_size
@@ -39,6 +187,12 @@ def _add_image_size(dataset):
     dataset['height']   = [h for h, _ in sizes]
     dataset['width']    = [w for _, w in sizes]
     
+    return dataset
+
+def _maybe_load_embedding(directory, dataset, ** kwargs):
+    if 'embedding' in dataset.columns: return dataset
+    if 'embedding_name' in kwargs or 'embedding_dim' in kwargs:
+        return load_embedding(directory, dataset = dataset, ** kwargs)
     return dataset
 
 def _rectangularize_boxes(dataset):
@@ -53,24 +207,25 @@ def _rectangularize_boxes(dataset):
     
     return dataset.apply(to_rectangular_box, axis = 1)
 
-@timer(name = 'image dir loading')
+@image_dataset_wrapper('image directory', task = CLASS)
 def preprocess_image_directory(directory, ** kwargs):
     from utils.image import _image_formats
     
-    metadata = []
+    metadata = {}
     for filename in os.listdir(directory):
         if os.path.isdir(os.path.join(directory, filename)):
-            metadata += [
-                {'filename' : os.path.join(directory, filename, f), 'label' : filename}
+            metadata.update({
+                os.path.join(directory, filename, f) : {'label' : filename}
                 for f in os.listdir(os.path.join(directory, filename))
-            ]
+                if f.endswith(_image_formats)
+            })
         elif filename.endswith(_image_formats):
-            metadata.append({'filename' : os.path.join(directory, filename)})
+            metadata[os.path.join(directory, filename)] = {}
     
-    return pd.DataFrame(metadata)
+    return metadata
             
 
-@timer(name = 'yolo output loading')
+@timer(name = 'yolo output')
 def preprocess_annotation_annots(directory, img_dir = None, one_line_per_box = False, ** kwargs):
     """
         Directory of the form
@@ -114,42 +269,22 @@ def preprocess_annotation_annots(directory, img_dir = None, one_line_per_box = F
     
     return dataset
 
-@timer(name = 'essex loading')
-def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0, 
-                            one_line_per_box=True, accepted_labels=None, 
-                            labels_substituts=None, ** kwargs):
-    """
-        Retourne une DataFrame avec les colonnes suivantes : 
-            - label     : l'identifiant de la personne. 
-            - chemin    : le chemin complet d'accès à l'image. 
-            - difficulte    : la difficulté de classification (1 à 4)
-            - sexe      : le sexe de la personne (si mentionné 'M', 'F', None)
-            - width     : largeur de l'image
-            - height    : hauteur de l'image
-    """
-    def process_dir(dir_path, difficulte, sexe):
-        metadata    = []
+@image_dataset_wrapper(name = 'essex', task = FACE_RECOGN, directory = '{}/faces_essex')
+def preprocess_essex_annots(directory, ** kwargs):
+    """ Returns a dict {filename : infos} where `infos` contains keys {label:, difficulty:, sex:} """
+    def process_dir(dir_path, diff, sex):
+        metadata    = {}
         for identifiant in os.listdir(dir_path):
-            label = identifiant
-            if labels_substituts is not None:
-                if label in labels_substituts: 
-                    label = labels_substituts[label]
-                elif '*' in labels_substituts:
-                    label = labels_substituts['*']
-                    
-            if accepted_labels is not None and label not in accepted_labels:
-                continue
-                    
             for img_name in os.listdir(os.path.join(dir_path, identifiant)):
-                if '.jpg' not in img_name: continue
-                image_path = os.path.join(dir_path, identifiant, img_name)
-                image = Image.open(image_path)
-                image_w, image_h = image.size
+                if not img_name.endswith(_image_formats): continue
                 
-                metadata.append([image_path, label, difficulte, sexe, image_w, image_h])
+                metadata[os.path.join(dir_path, identifiant, img_name)] = {
+                    'label' : identifiant, 'difficulty' : diff, 'sex' : sex
+                }
         return metadata
-                
-    columns = ["filename", "label", "difficulte", "sexe", "width", "height"]
+    
+    from utils.image import _image_formats
+    
     folders = [
         [os.path.join("faces94", "male"), 1, 'M'],
         [os.path.join("faces94", "female"), 1, 'F'],
@@ -158,34 +293,18 @@ def preprocess_essex_annots(annotation_dir, box_filename=None, box_mode=0,
         ["faces96", 3, None],
         ["grimace", 4, None]
     ]
-    metadata = []
     
-    for folder, difficulte, sexe in folders:
-        data = process_dir(os.path.join(annotation_dir, folder), difficulte, sexe)
-        
-        metadata += data
-                    
-    metadata_df = pd.DataFrame(metadata, columns=columns)
+    metadata = {}
+    for folder, diff, sex in folders:
+        metadata.update(process_dir(os.path.join(directory, folder), diff, sex))
     
-    if box_filename is not None:
-        boxes_df = preprocess_yolo_output(os.path.join(chemin, box_filename), 
-                                          image_path        = None, 
-                                          box_mode          = box_mode, 
-                                          one_line_per_box  = one_line_per_box
-                                         )
-        
-        metadata_df['box'] = [None] * len(metadata_df)
-        metadata_df['n_box'] = [0] * len(metadata_df)
-        for idx, row in metadata_df.iterrows():
-            box = boxes_df[boxes_df['filename'] == row['filename']].reset_index()
-            if len(box) == 0: continue
-            box = box.at[0, 'box']
-            metadata_df.at[idx, 'box'] = box
-            metadata_df.at[idx, 'n_box'] = len(box) if not one_line_per_box else 1
-            
-    return metadata_df
+    return metadata
 
-@timer(name = 'CelebA loading')
+@image_dataset_wrapper(
+    name = 'CelebA', task = FACE_RECOGN,
+    train   = {'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba', 'subset' : 'train'},
+    valid   = {'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba', 'subset' : 'valid'}
+)
 def preprocess_celeba_annots(directory, img_dir, subset, ** kwargs):
     if subset == 'train':   subset = '0'
     elif subset == 'valid': subset = '1'
@@ -200,7 +319,7 @@ def preprocess_celeba_annots(directory, img_dir, subset, ** kwargs):
         if len(line) == 0: continue
         img, celeb_id = line.split()
         
-        metadata[img] = {'filename' : os.path.join(directory, img_dir, img), 'id' : celeb_id}
+        metadata[img] = {'filename' : os.path.join(directory, img_dir, img), 'label' : celeb_id}
     
     with open(os.path.join(directory, 'list_eval_partition.txt'), 'r', encoding = 'utf-8') as file:
         lines = file.read().split('\n')
@@ -212,11 +331,16 @@ def preprocess_celeba_annots(directory, img_dir, subset, ** kwargs):
         
         eval_split[img] = mode
     
-    metadata = [v for k, v in metadata.items() if eval_split.get(k, -1) == subset]
+    return {
+        v['filename'] : {'label' : v['label']}
+        for k, v in metadata.items() if eval_split.get(k, -1) == subset 
+    }
 
-    return pd.DataFrame(metadata)
-
-@timer(name = 'TDFace loading')
+@image_dataset_wrapper(
+    name    = 'TDFace', task = FACE_RECOGN,
+    train   = {'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : [1, 2, 3]},
+    valid   = {'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : 4}
+)
 def preprocess_td_face_annots(directory, subsets, acquisition, ** kwargs):
     """
         Dataset with the following structure :
@@ -229,37 +353,39 @@ def preprocess_td_face_annots(directory, subsets, acquisition, ** kwargs):
         The `subset` argument refers to the type of acquisition (typically RGB_E, RGB_A, ...) and `sets` refer to (a list of) set number (from 1 to 4 in general)
         By default, sets [1, 2, 3] are used as "train set" and set 4 is used for validation
     """
+    metadata = {}
     if isinstance(acquisition, (list, tuple)):
-        return pd.concat([
-            preprocess_td_face_annots(directory, subsets = subsets, acquisition = acq, ** kwargs)
-            for acq in acquisition
-        ], axis = 0, ignore_index = True)
+        for acq in acquisition:
+            metadata.update(preprocess_td_face_annots(
+                directory, subsets = subsets, acquisition = acq, ** kwargs
+            ))
+        return metadata
     if isinstance(subsets, (list, tuple)):
-        return pd.concat([
-            preprocess_td_face_annots(directory, subsets = s, acquisition = acquisition, ** kwargs)
-            for s in subsets
-        ], axis = 0, ignore_index = True)
+        for s in subsets:
+            metadata.update(preprocess_td_face_annots(
+                directory, subsets = s, acquisition = acquisition, ** kwargs
+            ))
+        return metadata
     
     set_dir = os.path.join(directory, 'TD_{}_Set{}'.format(acquisition, subsets))
     metadata = preprocess_image_directory(set_dir)
-    metadata = metadata.rename(columns = {'label' : 'id'})
     
     if 'E' in acquisition:
-        metadata['expression'] = metadata['filename'].apply(
-            lambda f: f[:-4].split('_')[-1]
-        )
+        for file, row in metadata.items(): row['expression'] = file[:-4].split('_')[-1]
     elif 'A' in acquisition:
-        metadata['position'] = metadata['filename'].apply(
-            lambda f: f[:-4].split('_')[-1]
-        )
-        metadata['expression'] = metadata['filename'].apply(
-            lambda f: f.split('_')[-2]
-        )
-
+        for file, row in metadata.items():
+            row.update({
+                'position'  : file[:-4].split('_')[-1],
+                'expression'    : file.split('_')[-2]
+            })
     
     return metadata
 
-@timer(name = 'Youtube Faces with keypoints loading')
+@image_dataset_wrapper(
+    name    = 'Youtube Faces', task = [DETECT, FACE_RECOGN],
+    train   = {'directory'  : '{}/YoutubeFaces', 'subsets' : [1, 2, 3]},
+    valid   = {'directory'  : '{}/YoutubeFaces', 'subsets' :  4}
+)
 def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
                                     skip_frames = -1, frames_per_video = -1,
                                     tqdm = lambda x: x, ** kwargs):
@@ -282,7 +408,7 @@ def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
 
         os.makedirs(video_dir, exist_ok = True)
 
-        infos = []
+        infos = {}
         for i, img in enumerate(np.transpose(video['colorImages'], [3, 0, 1, 2])):
             img_name = os.path.join(video_dir, 'frame_{}.jpg'.format(i))
             save_image(filename = img_name, image = img)
@@ -302,9 +428,9 @@ def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
         dump_json(metadata_filename, infos)
         return infos
     
-    def convert_bbox_format(box):
+    def convert_bbox(box):
         x1, y1, x2, y2 = [int(c) for c in box]
-        return np.array([x1, y1, x2 - x1, y2 - y1])
+        return [x1, y1, x2 - x1, y2 - y1]
     
     if not isinstance(subsets, (list, tuple)): subsets = [subsets]
     
@@ -313,7 +439,7 @@ def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
 
     infos = pd.read_csv('{}/youtube_faces_with_keypoints_full.csv'.format(directory))
     
-    metadata = []
+    metadata = {}
     for idx, row in tqdm(infos.iterrows()):
         frames = extract_frames(
             row['videoID'], person_id = row['personName'], height = row['imageHeight'], width = row['imageWidth']
@@ -322,11 +448,12 @@ def preprocess_youtube_faces_annots(directory, subsets, overwrite = False,
         if step <= 1 and frames_per_video > 0: step = max(1, len(frames) // frames_per_video)
         if step > 1: frames = frames[::step]
         if frames_per_video > 0: frames = frames[:frames_per_video]
-        metadata.extend(frames)
+        
+        metadata.update({
+            frame['filename'] : frame for frame in frames if frame['subset'] in subsets
+        })
     
-    metadata = pd.DataFrame(metadata)
-    metadata = metadata[metadata['subset'].isin(subsets)]
-    metadata['bbox'] = metadata['bbox'].apply(lambda b: convert_bbox_format(b))
+    for _, frame in metadata.items(): frame[BOX_KEY] = convert_bbox(frame.pop('bbox'))
     
     return metadata
 
@@ -429,25 +556,20 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
                 
     return pd.DataFrame(datas, columns=columns)
 
-@timer(name = 'wider faces loading')
-def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
-                            box_as_dict = False, label_name = 'face', keep_empty = False,
-                            min_box_per_image = 0, max_box_per_image = 1000, 
-                            keep_invalid = False, rectangular_boxes = False,
-                            with_infos = False, ** kwargs):
+@image_dataset_wrapper(
+    name    = 'Wider', task = DETECT,
+    train   = {'directory' : '{}/Wider_Face', 'subset' : 'train'},
+    valid   = {'directory' : '{}/Wider_Face', 'subset' : 'val'}
+)
+def preprocess_wider_annots(directory, subset, label_name = 'face', keep_invalid = False,
+                            ** kwargs):
     """
         Arguments :
             - filename  : the annotation filename
             - img_dir   : directory where images are stored
-            - one_line_per_box  : whether to group images for a single image or not
-            - box_as_dict       : whether to put boxes as [x, y, w, h] or dict
             - label_name        : all are faces but you can specify another name
-            - {min / max}_box_per_image : min / max boxes perimage (other are skipped)
-            - rectangular_boxes : whether to padd boxes (necessary for tf.data.Dataset)
-            - with_infos        : whether to include 'box_infos' column or not
         Return :
-            - pd.DataFrame with columns :
-                [filename, height, width, nb_box, box, label, category, box_infos]
+            - dict {filename : infos}
     
         Annotation format :
             image_filename
@@ -456,6 +578,8 @@ def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
             x, y, w, h, blur, expression, illumination, invalid, occlusion, pose = infos
             ...
     """
+    assert subset in ('train', 'val')
+    
     box_info_expl = {
         "blur"          : {0: "clear", 1: "normal", 2: "heavy"},
         "expression"    : {0: "typical", 1: "exagerate"},
@@ -464,12 +588,17 @@ def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
         "pose"          : {0: "typical", 1: "atypical"},
         "invalid"       : {0: "false", 1: "true"}
     }
+
+    filename = os.path.join(
+        directory, 'wider_face_split', 'wider_face_{}_bbx_gt.txt'.format(subset)
+    )
+    img_dir = os.path.join(directory, 'WIDER_{}'.format(subset), 'images')
     
     with open(filename, 'r', encoding='utf-8') as fichier_annot:
         lines = fichier_annot.read().split('\n')
     
     i = 0
-    metadata = []
+    metadata = {}
     while i < len(lines):
         if lines[i] == '': break
         
@@ -478,9 +607,6 @@ def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
         nb_box      = int(lines[i + 1])
         
         i += 2
-        if nb_box > max_box_per_image or nb_box < min_box_per_image:
-            i += nb_box
-            continue
         
         boxes, labels, boxes_infos = [], [], []
         for j in range(nb_box):
@@ -500,58 +626,38 @@ def preprocess_wider_annots(filename, img_dir, one_line_per_box = False,
             for info_name, value in box_infos.items():
                 box_infos[info_name] = box_info_expl[info_name][value]
             
-            box = [x, y, w, h] if not box_as_dict else {
-                'xmin' : x, 'ymin' : y, 'xmax' : x + w, 'ymax' : y + h,
-                'label' : label_name, 'width' : w, 'height' : h
-            }
-                
-            if one_line_per_box:
-                metadata.append({
-                    'filename' : img_filename, 'label' : label_name, 'box' : box,
-                    'nb_box' : 1, 'category' : category, ** box_infos
-                })
-            else:
-                labels.append(label_name)
-                boxes.append(box)
-                boxes_infos.append(box_infos)
+            box = [x, y, w, h]
+            
+            labels.append(label_name)
+            boxes.append(box)
+            boxes_infos.append(box_infos)
         
-        if not one_line_per_box:
-            if len(boxes) > 0 or keep_empty:
-                metadata.append({
-                    'filename' : img_filename, 'label' : labels, 'box' : boxes,
-                    'nb_box' : len(boxes), 'category' : category
-                })
-                if with_infos: metadata[-1]['box_infos'] = boxes_infos
-                
-    dataset = pd.DataFrame(metadata)
+        metadata[img_filename] = {
+            'label' : labels,
+            BOX_KEY : boxes,
+            'box_infos' : boxes_infos,
+            'category'  : category
+        }
     
-    dataset = _add_image_size(dataset)
-    
-    if not box_as_dict and rectangular_boxes:
-        dataset = _rectangularize_boxes(dataset)
-    
-    return dataset
+    return metadata
                     
-@timer(name = 'pascal voc loading')
-def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False, 
-                          one_line_per_box = False, accepted_labels = None,
-                          aliases = None, keep_empty = False, 
-                          rectangular_boxes = False, ** kwargs):
+@image_dataset_wrapper(
+    name = 'VOC', task = DETECT, directory = '{}/VOC2012',
+    annotation_dir = 'Annotations', img_dir = 'JPEGImages'
+)
+def preprocess_VOC_annots(directory, annotation_dir = 'Annotations', img_dir = 'JPEGImages',
+                          ** kwargs):
     """
         Arguments :
-            - annotation_dir    : directory of annotations' files
-            - img_dir           : images' directory
-            - box_as_dict       : whether to put box as [x, y, w, h] or dict
-            - one_line_per_box  : whether to group boxes for a same image or not
-            - accepted_labels   : accepted labels (other are skipped)
-            - aliases       : dict containing new name for labels
-            - keep_empty        : whether to keep images with 0 box
-            - rectangular_boxes : whether to padd boxes (necessary for tf.data.Dataset)
-        Return :
-            - pd.DataFrame with columns :
-                [filename, height, width, nb_box, box, label]
+            - directory : main directory
+            - subset    : the dataset's version (default to VOC2012)
     """
-    metadata = []
+    from utils.image import _image_formats
+    
+    annotation_dir  = os.path.join(directory, annotation_dir)
+    img_dir         = os.path.join(directory, img_dir)
+    
+    metadata = {}
     for ann in sorted(os.listdir(annotation_dir)):
         img_filename, image_w, image_h = None, None, None
 
@@ -561,22 +667,14 @@ def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False,
         for elem in tree.iter():
             if 'filename' in elem.tag:
                 img_filename = os.path.join(img_dir, str(elem.text))
-                if not img_filename.endswith('.jpg'): img_filename += '.jpg'
+                if not img_filename.endswith(_image_formats): img_filename += '.jpg'
             if 'width' in elem.tag:     image_w = int(elem.text)
             if 'height' in elem.tag:    image_h = int(elem.text)
             if 'object' in elem.tag or 'part' in elem.tag:
                 for attr in list(elem):
                     if 'name' in attr.tag:
                         label = str(attr.text)
-                        if aliases is not None:
-                            if label in aliases:
-                                label = aliases[label]
-                            elif '*' in aliases:
-                                label = aliases['*']
-                        
-                        if accepted_labels is not None and label not in accepted_labels:
-                            break
-                        
+                    
                     if 'bndbox' in attr.tag:
                         x0, y0, x1, y1 = 0, 0, 0, 0
                         for dim in list(attr):
@@ -585,228 +683,92 @@ def preprocess_VOC_annots(annotation_dir, img_dir, box_as_dict = False,
                             if 'xmax' in dim.tag: x1 = int(round(float(dim.text)))
                             if 'ymax' in dim.tag: y1 = int(round(float(dim.text)))
                         
-                        box = [x0, y0, x1 - x0, y1 - y0] if not box_as_dict else {
-                            'xmin' : x0, 'xmax' : x1, 'ymin' : y0, 'ymax' : y1,
-                            'width' : x1 - x0, 'height' : y1 - y0, 'label' : label
-                        }
-                        if one_line_per_box:
-                            metadata.append({
-                                'filename' : img_filename, 'nb_box' : 1, 'box' : box, 
-                                'label' : label, 'height' : image_h, 'width' : image_w
-                            })
-                        else:
-                            labels.append(label)
-                            boxes.append(box)
+                        labels.append(label)
+                        boxes.append([x0, y0, x1 - x0, y1 - y0])
 
-        if not one_line_per_box:
-            if len(boxes) > 0 or keep_empty:
-                metadata.append({
-                    'filename' : img_filename, 'label' : labels, 'box' : boxes,
-                    'nb_box' : len(boxes), 'height' : image_h, 'width' : image_w
-                })
-
-    dataset = pd.DataFrame(metadata)
-
-    if not box_as_dict and rectangular_boxes:
-        dataset = _rectangularize_boxes(dataset)
+        metadata[img_filename] = {
+            'label' : labels, 'height' : image_h, 'width' : image_w, 'box' : boxes
+        }
     
-    return dataset
+    return metadata
 
-@timer(name = 'coco loading')
+@image_dataset_wrapper(
+    name = 'COCO', task = [DETECT, SEGMENT, CAPTION],
+    train   = {
+        'directory' : '{}/COCO', 'img_dir' : 'train2017',
+        'annot_file'    : os.path.join('annotations', 'instances_train2017.json')
+    },
+    valid   = {
+        'directory' : '{}/COCO', 'img_dir' : 'val2017',
+        'annot_file'    : os.path.join('annotations', 'instances_val2017.json')
+    }
+)
 def preprocess_COCO_annots(directory,
-                           subset,
+                           annot_file,
+                           img_dir,
                            
-                           keep_empty = False,
-                           accepted_labels = None,
+                           keep_labels  = True,
+                           keep_boxes   = True,
+                           keep_caption = True,
+                           keep_segmentation    = False,
                            use_supercategory_as_label = False,
                            
-                           box_mode = 0,
-                           one_line_per_box  = False,
-                           keep_segmentation = False,
-                           
-                           one_line_per_caption = False,
-                           
-                           columns_to_drop = [
-                               "coco_url", "flickr_url", "rights_holder",
-                               "iscrowd", "license", "id_x", "id_y", "date_captured"
-                           ],
-                           replace_name    = {
-                               'name' : 'category', 'file_name' : 'filename', 'bbox' : 'box'
-                           },
                            ** kwargs
                           ):
-    from utils.image.box_utils import convert_bbox
-    assert box_mode in (0, 1, 2)
-    assert not (one_line_per_box and one_line_per_caption)
+    img_dir = os.path.join(directory, img_dir) if img_dir else directory
+    annot_file  = os.path.join(directory, annot_file)
     
-    if not keep_segmentation: columns_to_drop.append('segmentation')
-    columns_to_drop   = set(columns_to_drop)
-    columns_to_concat = set(['area', 'box', 'category_id', 'supercategory', 'category', 'label'])
+    infos    = load_json(os.path.join(directory, annot_file))
     
-    @timer
-    def update_row(row):
-        label = row['name'] if not use_supercategory_as_label else row['supercategory']
-        if accepted_labels and label not in accepted_labels:
-            label = ''
-
-        if 'bbox' in row:
-            row['bbox'] = convert_bbox(
-                * [int(c) for c in row['bbox']], label = label, mode = box_mode
+    metadata = {}
+    for image in infos['images']:
+        metadata[image['id']] = {
+            'filename'  : os.path.join(img_dir, image['file_name']),
+            'height'    : image['height'],
+            'width'     : image['width']
+        }
+    
+    if keep_caption:
+        captions = load_json(os.path.join(directory, annot_file.replace('instances', 'captions')))
+        for row in captions['annotations']:
+            metadata[row['image_id']].setdefault('text', []).append(row['caption'])
+    
+    if keep_segmentation or keep_boxes or keep_labels:
+        categories  = {row['id'] : row for row in infos['categories']}
+        for row in infos['annotations']:
+            category = categories[row['category_id']]
+            
+            metadata[row['image_id']].setdefault('label', []).append(
+                category['name'] if not use_supercategory_as_label else category['supercategory']
             )
-        
-        row.update({'n_box' : 1, 'label' : label, 'filename' : os.path.join(img_dir, row.pop('file_name'))})
-        
-        return {replace_name.get(k, k) : v for k, v in row.items() if k not in columns_to_drop}
+            
+            if keep_boxes:
+                metadata[row['image_id']].setdefault(BOX_KEY, []).append(
+                    [int(c) for c in row['bbox']]
+                )
+            
+            if keep_segmentation:
+                metadata[row['image_id']].setdefault('segmentation', []).append(row['segmentation'])
     
-    time_logger.start_timer('loading')
+    return {row['filename'] : {** row, 'id' : k} for k, row in metadata.items()}
 
-    img_dir  = os.path.join(directory, subset)
-    
-    infos    = load_json(os.path.join(directory, 'annotations', 'instances_{}.json'.format(subset)))
-    captions = load_json(os.path.join(directory, 'annotations', 'captions_{}.json'.format(subset)))
 
-    time_logger.stop_timer('loading')
-    time_logger.start_timer('merging')
-    
-    cap = {}
-    for row in captions['annotations']:
-        cap.setdefault(row['image_id'], []).append(row['caption'])
-    
-    captions    = cap
-    categories  = {row['id'] : row for row in infos['categories']}
-    images      = {row['id'] : {** row, 'text' : cap[row['id']]} for row in infos['images']}
-    
-    metadata    = [
-        update_row({** row, ** categories[row['category_id']], ** images[row['image_id']]})
-        for row in infos['annotations']
-    ]
-    if not keep_empty:
-        metadata = [row for row in metadata if row['label']]
-    
-    time_logger.stop_timer('merging')
+add_dataset(
+    'anime_faces', processing_fn = 'image_directory', task = GAN, directory = '{}/anime_faces/images'
+)
 
-    if not one_line_per_box:
-        time_logger.start_timer('flattening')
+add_dataset(
+    'fungi', processing_fn = 'coco', task = DETECT,
+    train   = {'directory' : '{}/Fungi', 'img_dir' : '', 'annot_file' : 'train.json'},
+    valid   = {'directory' : '{}/Fungi', 'img_dir' : '', 'annot_file' : 'val.json'}
+)
 
-        new_metadata = {}
-        for row in metadata:
-            image_id = row['filename']
-            if image_id not in new_metadata:
-                new_metadata[image_id] = {
-                    k : v if k not in columns_to_concat else [v]
-                    for k, v in row.items()
-                }
-            else:
-                for col_name in columns_to_concat:
-                    new_metadata[image_id][col_name] += [row[col_name]]
-                new_metadata[image_id]['n_box'] += 1
-        
-        metadata = [{'filename' : k, ** v} for k, v in new_metadata.items()]
+add_dataset(
+    'kangaroo', processing_fn = 'voc', task = DETECT,
+    directory = '{}/kangaroo-master', annotation_dir = 'annots', img_dir = 'images'
+)
 
-        time_logger.stop_timer('flattening')
-    
-    if one_line_per_caption:
-        time_logger.start_timer('extending captions')
-        
-        new_metadata = []
-        for row in metadata:
-            new_metadata.extend([
-                {** row, 'text' : caption} for caption in row['text']
-            ])
-        
-        metadata = new_metadata
-        
-        time_logger.stop_timer('extending captions')
-    
-    return pd.DataFrame(metadata)
-
-_custom_image_datasets = {
-    'anime_faces'   : {
-        'type_annots'   : 'directory',
-        'directory'     : '{}/anime_faces/images'
-    },
-    'celeba'   : {
-        'train' : {
-            'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba',  'subset' : 'train'
-        },
-        'valid' : {
-            'directory'  : '{}/CelebA', 'img_dir' : 'img_align_celeba',  'subset' : 'valid'
-        }
-    },
-    'coco'      : {
-        'train' : {
-            'directory' : '{}/COCO', 'subset'    : 'train2017'
-        },
-        'valid' : {
-            'directory' : '{}/COCO', 'subset'    : 'val2017'
-        }
-    },
-    'essex'     : {
-        'annotation_dir' : '{}/faces_essex'
-    },
-    'fungi'     : {
-        'type_annots'   : 'coco',
-        'train' : {
-            'filename'  : '{}/Fungi/train.json', 
-            'img_dir'   : '{}/Fungi'
-        },
-        'valid' : {
-            'filename'  : '{}/Fungi/val.json', 
-            'img_dir'   : '{}/Fungi'
-        }
-    },
-    'kangaroo'  : {
-        'type_annots'   : 'voc',
-        'annotation_dir'    : '{}/kangaroo-master/annots',
-        'img_dir'       : '{}/kangaroo-master/images'
-    },
-    'raccoon'   : {
-        'type_annots'   : 'voc',
-        'annotation_dir'    : '{}/raccoon-master/annots',
-        'img_dir'       : '{}/raccoon-master/images'
-    },
-    'td_face'   : {
-        'train' : {
-            'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : [1, 2, 3]
-        },
-        'valid' : {
-            'directory'  : '{}/TDFace', 'acquisition' : 'RGB_A', 'subsets' : 4
-        }
-    },
-    'voc'       : {
-        'annotation_dir'   : '{}/VOC2012/Annotations',
-        'img_dir'   : '{}/VOC2012/JPEGImages'
-    },
-    'wider'     : {
-        'train' : {
-            'filename'  : '{}/Wider_Face/wider_face_split/wider_face_train_bbx_gt.txt', 
-            'img_dir'   : '{}/Wider_Face/WIDER_train/images'
-        },
-        'valid' : {
-            'filename'  : '{}/Wider_Face/wider_face_split/wider_face_val_bbx_gt.txt', 
-            'img_dir'   : '{}/Wider_Face/WIDER_val/images'
-        }
-    },
-    'yolo_output'   : {},
-    'youtube_faces' : {
-        'train' : {
-            'directory'  : '{}/YoutubeFaces', 'subsets' : [1, 2, 3]
-        },
-        'valid' : {
-            'directory'  : '{}/YoutubeFaces', 'subsets' :  4
-        }
-    }
-}
-
-_image_dataset_processing  = {
-    'img_annots'    : preprocess_annotation_annots,
-    'coco'          : preprocess_COCO_annots,
-    'celeba'        : preprocess_celeba_annots,
-    'directory'     : preprocess_image_directory,
-    'essex'         : preprocess_essex_annots,
-    'td_face'       : preprocess_td_face_annots,
-    'voc'           : preprocess_VOC_annots,
-    'wider'         : preprocess_wider_annots,
-    'yolo_output'   : preprocess_yolo_output_annots,
-    'youtube_faces' : preprocess_youtube_faces_annots
-}
+add_dataset(
+    'raccoon', processing_fn = 'voc', task = DETECT,
+    directory = '{}/raccoon-master', annotation_dir = 'annots', img_dir = 'images'
+)

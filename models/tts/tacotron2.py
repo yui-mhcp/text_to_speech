@@ -132,7 +132,8 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         assert text_length is not None, "You must specify `text_length` or pas a `list`"
         
-        pred = self.tts_model.infer(text, text_length, * args, ** kwargs)
+        #pred = self.tts_model.infer(text, text_length, * args, ** kwargs)
+        pred = self.tts_model.infer(text, text_length)
         return pred if len(pred) != 2 else pred[0]
     
     def compile(self, loss = 'tacotronloss', metrics = [], **kwargs):
@@ -365,9 +366,10 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         def sentence_splitter(text, ** kwargs):
             """ Splits `text` in sentences of at most `max_text_length` caracters """
             kwargs.setdefault('to_expand_acronyms', expand_acronyms)
+            max_length = kwargs.pop('max_text_length', max_text_length)
             splitted    = [
                 self.clean_text(s, to_expand_acronys = expand_acronyms, ** kwargs)
-                for s in split_text(text, max_text_length)
+                for s in split_text(text, max_length)
             ]
             return (text, splitted if splitted else [''])
         

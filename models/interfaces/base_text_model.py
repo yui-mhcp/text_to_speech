@@ -330,7 +330,7 @@ class BaseTextModel(BaseModel):
         if not kwargs:
             kwargs = convert_to_str({k : v for k, v in zip(_keys, _values)})
         kwargs = {k : v if isinstance(v, (list, tuple, np.ndarray)) else [v] for k, v in kwargs.items()}
-        
+
         nb_texts    = max([len(v) for v in kwargs.values()])
         encoded, lengths    = list(zip(* [
             self.split_and_format_text(
@@ -392,7 +392,7 @@ class BaseTextModel(BaseModel):
     def tf_split_and_format_text(self, text_format, split_key, data, keys = ['text'],
                                  max_sentences_length = -1, split_mode = 'sentence', ** kwargs):
         keys, values = _get_key_value_format(data, keys = keys, ** kwargs)
-        
+
         encoded_text, lengths = tf.numpy_function(
             self.split_and_format_text,
             [text_format, split_key, keys, values, max_sentences_length, split_mode],
@@ -458,7 +458,7 @@ class BaseTextModel(BaseModel):
         encoded_texts.set_shape([None, None, None])
         lengths.set_shape([None, None])
         
-        if max_sentences > 0 and tf.shape(texts)[1] > max_sentences:
+        if max_sentences > 0 and tf.shape(encoded_texts)[1] > max_sentences:
             nb_sent = tf.reduce_sum(tf.cast(lengths > 0, tf.int32), axis = -1)
             valids  = nb_sent <= max_sentences
             
@@ -466,7 +466,7 @@ class BaseTextModel(BaseModel):
                 tf.print('Valid texts (max_sentences filtering) :', valids)
             
             encoded_texts   = tf.boolean_mask(encoded_texts, valids)
-            lengths         = tf.boolean_mask(encoded_texts, valids)
+            lengths         = tf.boolean_mask(lengths, valids)
         
         encoded_texts, lengths = filter_texts(encoded_texts, lengths, ** kwargs)
         

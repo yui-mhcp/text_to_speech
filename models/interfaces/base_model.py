@@ -428,6 +428,10 @@ class BaseModel(metaclass = ModelInstances):
         var = []
         for _, model in self.models.items():
             var += model.trainable_variables
+        
+        for _, loss in self.losses.items():
+            if isinstance(loss, tf.keras.losses.Loss) and hasattr(loss, 'trainable_variables'):
+                var += loss.trainable_variables
         return var
     
     @property
@@ -684,7 +688,7 @@ class BaseModel(metaclass = ModelInstances):
     def count_params(self):
         return sum([model.count_params() for name, model in self.models.items()])
     
-    def compile(self, model_name = None, **kwargs):
+    def compile(self, model_name = None, ** kwargs):
         """
             compile sub model(s) with given loss, optimizer, metrics and their respective configuration 
             See `compile_model` for accepted kwargs names
@@ -865,6 +869,8 @@ class BaseModel(metaclass = ModelInstances):
         valid_config.setdefault('cache', False)
         
         test_kwargs = kwargs.copy()
+        if isinstance(test_batch_size, float):
+            test_batch_size = int(valid_config['batch_size'] * test_batch_size)
         test_kwargs.update({
             'batch_size' : test_batch_size, 'train_batch_size' : None, 'valid_batch_size' : None,
             'cache' : False, 'is_validation' : True

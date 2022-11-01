@@ -83,11 +83,13 @@ class Pipeline(Consumer):
     def __init__(self,
                  tasks,
                  * args,
-
+                 
                  filename   = None,
                  id_key     = 'id',
                  save_every = -1,
+                 as_list    = False,
                  expected_keys  = None,
+                 save_keys      = None,
                  do_not_save_keys   = None,
                  
                  track_items    = None,
@@ -156,7 +158,9 @@ class Pipeline(Consumer):
         self.filename   = filename
         self.id_key     = id_key
         self.save_every = save_every
+        self.as_list    = as_list
         self.expected_keys  = expected_keys if expected_keys is not None else []
+        self.save_keys      = save_keys if save_keys is not None else []
         self.do_not_save_keys   = do_not_save_keys if do_not_save_keys is not None else []
         
         if track_items is None: track_items = True if filename is not None else False
@@ -173,6 +177,8 @@ class Pipeline(Consumer):
         if filename is not None:
             if not isinstance(self.expected_keys, (list, tuple)):
                 self.expected_keys = [self.expected_keys]
+            if not isinstance(self.save_keys, (list, tuple)):
+                self.save_keys = [self.save_keys]
             if not isinstance(self.do_not_save_keys, (list, tuple)):
                 self.do_not_save_keys = [self.do_not_save_keys]
 
@@ -185,8 +191,10 @@ class Pipeline(Consumer):
             self.do_not_save_keys   = set(self.do_not_save_keys)
             
             self.mutex_db   = RLock()
-            self.__database = load_data(self.filename, default = {})
-        
+            self.__database = self.load_database()
+            
+            self.add_listener(self.save_database, on = 'stop')
+            
         if track_items:
             if keep_order is None:
                 keep_order = False if isinstance(self.buffer, PriorityQueue) else True
@@ -211,6 +219,25 @@ class Pipeline(Consumer):
         logger.debug('[PIPELINE CREATED {}] {} consumers successfully initialized !'.format(
             self.name, len(self.consumers)
         ))
+    
+    def load_database(self):
+        db = load_data(self.filename, default = {})
+        
+        if isinstance(db, pd.DataFrame): db = db.to_dict('record')
+        if isinstance(db, list):
+            self.as_list = True
+            db = {row[self.id_key] : row for row in db}
+        
+        return db
+    
+    def save_database(self):
+        with self.mutex_db:
+            if not self.__saved:
+                self.__saved = True
+                data = data if not self.as_list else [
+                    {** v, self.id_key : k} for k, v in self.__database.items()
+                ]
+                dump_data(filename = self.filename, data = data)
     
     def _get_from_database(self, item, * args):
         if not self.filename:
@@ -269,7 +296,11 @@ class Pipeline(Consumer):
             return
         
         data_to_save = item.data
-        if self.do_not_save_keys:
+        if self.save_keys:
+            data_to_save = {
+                k : v for k, v in data_to_save.items() if k in self.save_keys
+            }
+        elif self.do_not_save_keys:
             data_to_save = {
                 k : v for k, v in data_to_save.items() if k not in self.do_not_save_keys
             }
@@ -280,8 +311,7 @@ class Pipeline(Consumer):
             if (
                 (self.save_every > 0 and len(self.__database) % self.save_every == 0)
                 or (self.save_every == -1 and all(cons.empty() for cons in self.consumers))):
-                self.__saved = True
-                dump_data(filename = self.filename, data = self.__database, indent = 4)
+                self.save_database()
         
         logger.debug('[PIPELINE DB ADD {}] Add ID `{}` in database'.format(self.name, item_id))
     
@@ -528,13 +558,6 @@ class Pipeline(Consumer):
         for cons in self.consumers: cons.wait(* args, ** kwargs)
         super().wait(* args, ** kwargs)
 
-    def on_stop(self):
-        if self.filename:
-            with self.mutex_db:
-                if not self.__saved:
-                    dump_data(filename = self.filename, data = self.__database, indent = 4)
-        super().on_stop()
-        
     def plot(self, graph = None, node_graph = None, node_id = 0,
              name = None, filename = None, view = False, ** kwargs):
         import graphviz as gv

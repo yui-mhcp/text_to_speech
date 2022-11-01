@@ -13,14 +13,17 @@
 import os
 import json
 import gzip
+import logging
 
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
-from utils import ThreadedQueue, load_json, dump_json
-from datasets.custom_datasets.audio_datasets import *
+from utils import load_json, dump_json
+from utils.thread_utils import Consumer
 
-def _resample_dataset(dataset, new_rate, max_workers = cpu_count()):
+logger  = logging.getLogger(__name__)
+
+def _resample_dataset(dataset, new_rate, max_workers = cpu_count(), tqdm = None):
     from utils.audio import resample_file
 
     new_col = 'wavs_{}'.format(new_rate)
@@ -29,19 +32,21 @@ def _resample_dataset(dataset, new_rate, max_workers = cpu_count()):
     
     to_process = dataset[~processed]
     
-    print("Resampling dataset to {}\n  {} files already processed\n  {} files to process".format(
+    logger.info("Resampling dataset to {}\n  {} files already processed\n  {} files to process".format(
         new_rate, processed.sum(), len(to_process)
     ))
     
-    pool = ThreadedQueue(resample_file, keep_result = False, max_workers = max_workers)
+    callback = None
+    if tqdm is not None:
+        tqdm = tqdm(total = len(to_process), unit = 'file')
+        callback    = lambda it: tqdm.update()
+    
+    pool = Consumer(resample_file, keep_result = False, max_workers = max_workers)
     pool.start()
     
     for idx, row in to_process.iterrows():
-        pool.append(
-            filename = row['filename'], new_rate = new_rate, filename_out = row[new_col]
-        )
+        pool(row['filename'], new_rate = new_rate, filename_out = row[new_col], callback = callback)
 
-    pool.stop()
     pool.join()
     
     return dataset
@@ -52,9 +57,9 @@ def resample_commonvoice(directory, new_rate, file = 'validated.tsv', ** kwargs)
     os.makedirs(os.path.join(directory, new_col), exist_ok = True)
     
     dataset = pd.read_csv(os.path.join(directory, file), sep = '\t')
-    dataset['path'] = dataset['path'].apply(lambda f: os.path.join(directory, 'clips', f))
+    dataset['filename'] = dataset['path'].apply(lambda f: os.path.join(directory, 'clips', f))
     
-    dataset[new_col] = dataset['path'].apply(
+    dataset[new_col] = dataset['filename'].apply(
         lambda f: f.replace('clips', new_col).replace('.mp3', '.wav')
     )
     
@@ -63,6 +68,7 @@ def resample_commonvoice(directory, new_rate, file = 'validated.tsv', ** kwargs)
     return dataset
 
 def resample_siwis(directory, new_rate, langue = 'fr', parts = [1, 2, 3, 5], ** kwargs):
+    from datasets.custom_datasets.audio_datasets import preprocess_SIWIS_annots
     new_col = 'wavs_{}'.format(new_rate)
         
     dataset = preprocess_SIWIS_annots(directory, langue = langue, parts = parts)
@@ -87,6 +93,9 @@ def resample_voxforge(directory, new_rate, langue = 'fr', max_workers = cpu_coun
         if ext == 'flac':
             f = f.replace('flac', 'wav')
         return f.replace('{}wav'.format(os.path.sep), '{}{}'.format(os.path.sep, new_col))
+    
+    from datasets.custom_datasets.audio_datasets import preprocess_VoxForge_annots
+
     dataset = preprocess_VoxForge_annots(directory, langue = langue)
 
     new_col = 'wavs_{}'.format(new_rate)
@@ -103,6 +112,8 @@ def resample_voxforge(directory, new_rate, langue = 'fr', max_workers = cpu_coun
 
 def resample_mls(path, new_rate, langue = 'fr', subset = ['train', 'test', 'dev'], 
                  ** kwargs):
+    from datasets.custom_datasets.audio_datasets import preprocess_mls_annots
+    
     if not isinstance(subset, (tuple, list)): subset = [subset]
     new_col = 'wavs_{}'.format(new_rate)
     
@@ -128,6 +139,8 @@ def resample_mls(path, new_rate, langue = 'fr', subset = ['train', 'test', 'dev'
 def resample_librispeech(directory, new_rate,
                          subset = ['train-clean-100', 'train-clean-360', 'test-clean'],
                          ** kwargs):
+    from datasets.custom_datasets.audio_datasets import preprocess_LibriSpeech_annots
+
     if not isinstance(subset, (tuple, list)): subset = [subset]
     new_col = 'wavs_{}'.format(new_rate)
     

@@ -499,7 +499,7 @@ def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
     
     for box in boxes:
         box_img, (x1, y1, w, h, label, score) = crop_box(
-            image, box, labels = labels,dezoom_factor = dezoom_factor
+            image, box, labels = labels, dezoom_factor = dezoom_factor
         )
                 
         if isinstance(label, int) and labels is not None: 

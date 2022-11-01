@@ -695,7 +695,7 @@ class TextEncoder(object):
 
     @classmethod
     def from_transformers_pretrained(cls, name, ** kwargs):
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer
         
         pretrained = AutoTokenizer.from_pretrained(name, use_fast = False)
         
@@ -706,7 +706,7 @@ class TextEncoder(object):
         _default_cleaners = []
         if hasattr(pretrained, 'do_lower_case') and pretrained.do_lower_case:
             _default_cleaners.insert(0, 'lowercase')
-        
+
         if isinstance(pretrained, BertTokenizer):
             kwargs.update({
                 'vocab' : pretrained.vocab.keys(),
@@ -715,7 +715,7 @@ class TextEncoder(object):
                 'sos_token'         : pretrained.cls_token,
                 'eos_token'         : pretrained.sep_token
             })
-        elif isinstance(pretrained, GPT2Tokenizer):
+        elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer)):
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             kwargs.update({
                 'vocab' : pretrained.encoder.keys(),
@@ -725,6 +725,19 @@ class TextEncoder(object):
                 'cleaners'          : _default_cleaners,
                 'bpe_pairs'         : list(pretrained.bpe_ranks.keys()),
                 'byte_encoder'      : pretrained.byte_encoder,
+                'sos_token'         : pretrained.bos_token,
+                'eos_token'         : pretrained.eos_token
+            })
+        elif isinstance(pretrained, BarthezTokenizer):
+            from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
+            cls = SentencePieceTextEncoder
+            kwargs.update({
+                'vocab' : [
+                    pretrained.sp_model.id_to_piece(i)
+                    for i in range(pretrained.sp_model.get_piece_size())
+                ],
+                'tokenizer' : pretrained.sp_model,
+                'sub_word_prefix'   : '',
                 'sos_token'         : pretrained.bos_token,
                 'eos_token'         : pretrained.eos_token
             })

@@ -16,9 +16,8 @@ import tensorflow as tf
 def l2_norm(x, axis = -1):
     return tf.math.l2_normalize(x, axis = axis)
 
-def log_softmax(x, epsilon = 1e-6, axis = -1):
-    """ Log softmax (inspired from pytorch version) """
-    return tf.math.log(tf.nn.softmax(x, axis = axis) + epsilon)
+def log_softmax(x, axis = -1):
+    return tf.math.log_softmax(x, axis = axis)
 
 def gelu(x):
     """ Gaussian Error Linear Unit """

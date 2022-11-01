@@ -10,14 +10,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 import numpy as np
 import tensorflow as tf
 import librosa.util as librosa_util
 
 from scipy.signal import get_window
-from scipy.ndimage.morphology import binary_dilation
+
+from utils.generic_utils import get_enum_item
 
 max_int16 = (2 ** 15) - 1
+
+class WindowType(enum.IntEnum):
+    MEAN    = 0
+    LINEAR  = 1
+    TRIANGULAR  = 2
 
 def trim_silence(audio, method = 'window', ** kwargs):
     """
@@ -30,21 +37,11 @@ def trim_silence(audio, method = 'window', ** kwargs):
             - trimmed_audio
         
         Method available :
-        - window    : trim silence start / end by using a convolutional window in order to smooth the audios and reduce impactof 'tic' noise at thebeginning / end. 
+        - window    : trim silence start / end by using a convolutional window in order to smooth the audios and reduce the impact of 'tic' noise at the beginning / end. 
         - remove    : use the same concept as the window version but allowto remove silence longer than a maximum 'max_silence' time
-        - vad       : use the voice activity detection but not working well
         - default   : will use the 'simple' method which trims silence at start / end just by thresholding
     """
-    if method == 'window':
-        return trim_silence_window(audio, ** kwargs)
-    elif method == 'mel':
-        return trim_silence_mel(audio, ** kwargs)
-    elif method == 'remove':
-        return remove_silence(audio, ** kwargs)
-    elif method == 'vad':
-        return trim_silence_vad(audio, ** kwargs)
-    else:
-        return trim_silence_simple(audio, ** kwargs)
+    return _trimming_methods.get(method, trim_silence_simple)(audio, ** kwargs)
 
 def remove_silence(audio, rate = 22050, threshold = 0.025, max_silence = 0.15, 
                    ** kwargs):
@@ -59,38 +56,77 @@ def remove_silence(audio, rate = 22050, threshold = 0.025, max_silence = 0.15,
     
     return audio[conv > min(threshold, np.mean(conv) / 2)]
     
-def trim_silence_window(audio, rate = 22050, mode = 'start_end', threshold = 0.1,
-                        window_type = 'triangular', window_length = 0.2, 
-                        debug = False, plot_kwargs = {}, ** kwargs):
-    assert window_type in ('mean', 'linear', 'triangular')
+def trim_silence_window(audio,
+                        rate    = 22050,
+                        power   = 2,
+                        mode    = 'start_end',
+                        
+                        threshold   = 0.1,
+                        adaptive_threshold  = True,
+                        
+                        window_type = WindowType.TRIANGULAR,
+                        window_length   = 0.2,
+                        add_start   = 0,
+                        add_end     = 1.5,
+                        
+                        max_trim_factor = 5,
+                        
+                        debug       = False,
+                        plot_kwargs = {},
+                        ** kwargs
+                       ):
+    """
+        Trims silences at start / end (or both) with windowed-based thresholding
+        
+        Arguments :
+            - audio : the audio to trim
+            - rate  : the audio rate (only used if `window_length` is a float)
+            - power : the power to use to smooth the audio
+            - mode  : either 'start', 'end' or 'start_end' (where to trim)
+            - threshold : the threshold to use
+            - adaptive_threshold    : if True, the threshold is the median between `threshold`, `thredho / 25` and `np.mean(conv[...]) * 5`. It allows to dynamically reduce the threshold if the start / end of the audio is already small
+            - window_type   : the shape for the convolution window
+            - window_length : the length for the window (if float, `window_length = int(window_length * rate)`)
+            - max_trim_factor   : returns the original audio if the trimmed length is smaller than the length of the original audio divided by this value
+            - debug / plot_kwargs   : whether to plot the trimming
+            - kwargs    : unused
+        Returns : the trimmed audio
+    """
     assert mode in ('start', 'end', 'start_end')
+    window_type = get_enum_item(window_type, WindowType)
+    
     if isinstance(window_length, float): window_length = int(window_length * rate)
     
-    if window_type == 'mean':
-        mask = np.ones((window_length,)) / window_length
-    elif window_type == 'linear':
-        mask = np.arange(window_length) / window_length
-    elif window_type == 'triangular':
-        mask = np.concatenate([
+    if window_type == WindowType.MEAN:
+        window = np.ones((window_length,)) / window_length
+    elif window_type == WindowType.LINEAR:
+        window = np.arange(window_length) / window_length
+    elif window_type == WindowType.TRIANGULAR:
+        window = np.concatenate([
             np.linspace(0, 1, window_length // 2),
             np.linspace(1, 0, window_length // 2)
         ]) / (window_length // 2)
 
-    squared = np.square(audio)
-    conv    = np.convolve(np.square(audio), mask, mode = 'valid')
+    powered = np.power(audio, power)
+    conv    = np.convolve(powered, window, mode = 'valid')
 
     trimmed = audio
+    idx_start, idx_end = [], []
+    th_start, th_end = threshold, threshold
     if 'end' in mode:
-        th_end = min(threshold, max(np.mean(conv[-window_length:]) * 5, threshold / 25))
+        if adaptive_threshold:
+            th_end  = min(threshold, max(np.mean(conv[-window_length:]) * 5, threshold / 50))
+        
         idx_end = np.where(conv > th_end)[0]
         if len(idx_end) > 0:
-            trimmed = trimmed[:idx_end[-1] + int(window_length * 1.5)]
+            trimmed = trimmed[:idx_end[-1] + int(window_length * add_end)]
     
     if 'start' in mode:
-        th_start = min(threshold, max(np.mean(conv[: window_length]) * 5, threshold / 25))
+        if adaptive_threshold:
+            th_start = min(threshold, max(np.mean(conv[: window_length]) * 5, threshold / 50))
         idx_start = np.where(conv > th_start)[0]
         if len(idx_start) > 0:
-            trimmed = trimmed[idx_start[0] :]
+            trimmed = trimmed[max(0, idx_start[0] - int(window_length * add_start)) :]
     
     if debug:
         from utils.plot_utils import plot_multiple
@@ -99,13 +135,13 @@ def trim_silence_window(audio, rate = 22050, mode = 'start_end', threshold = 0.1
         plot_kwargs.setdefault('x_size', 10)
         plot_kwargs.setdefault('vlines_kwargs', {'colors' : 'w'})
         plot_multiple(
-            squared_audio = squared,
-            convolved = conv, ylim = (0, threshold),
-            vlines = (idx_start[0], idx_end[-1]),
-            use_subplots = True, ** plot_kwargs
+            powered_audio = powered, convolved = conv,
+            ylim = (0, threshold), hlines = (th_start, th_end), vlines = (
+                idx_start[0] if len(idx_start) else 0, idx_end[-1] if len(idx_start) else len(audio)
+            ), use_subplots = True, ** plot_kwargs
         )
     
-    return trimmed if len(trimmed) > len(audio) // 4 else audio
+    return trimmed if len(trimmed) > len(audio) // max_trim_factor else audio
 
 def trim_silence_simple(audio, threshold = 0.1, mode = 'start_end', ** kwargs):
     assert mode in ('start', 'end', 'start_end')
@@ -164,7 +200,7 @@ def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, use_v1 =
     
 
 def tf_normalize_audio(audio, max_val = 1., dtype = tf.float32):
-    return tf.cast((audio / tf.reduce_max(tf.abs(audio))) * max_val, dtype)
+    return tf.cast((audio / tf.maximum(tf.reduce_max(tf.abs(audio)), 1e-6)) * max_val, dtype)
 
 def normalize_audio(audio, max_val = 32767, dtype = np.int16, normalize_by_mean = False):
     """
@@ -270,3 +306,9 @@ def dynamic_range_decompression(x, C = 1):
     C: compression factor used to compress
     """
     return tf.exp(x) / C
+
+_trimming_methods   = {
+    'window'    : trim_silence_window,
+    'mel'       : trim_silence_mel,
+    'remove'    : remove_silence
+}

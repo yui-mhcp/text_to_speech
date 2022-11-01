@@ -41,6 +41,7 @@ class WaveGlow(BaseModel):
                  audio_rate         = 22050,
                  n_mel_channels     = 80,
                  max_input_length   = DEFAULT_MAX_MEL_LENGTH,
+                 run_eagerly    = False,
                  ** kwargs
                 ):
         self.audio_rate         = audio_rate
@@ -48,6 +49,8 @@ class WaveGlow(BaseModel):
         self.max_input_length   = max_input_length
 
         super().__init__(** kwargs)
+        
+        if hasattr(self.vocoder, 'dummy_inputs'): self.vocoder(self.vocoder.dummy_inputs)
     
     def _build_model(self, **kwargs):
         super()._build_model(

@@ -479,8 +479,8 @@ def name_based_partial_transfer_learning(target_model,
         var_layer   = _get_layer_name(v.name, all_var_names)
 
         mapping_infos[v.name] = {'layer' : var_layer, 'shape' : tuple(v.shape)}
-        
-        map_layer   = mapping[var_layer]
+
+        map_layer   = mapping.get(var_layer, [])
         if len(map_layer) == 0:
             logger.info('Variable {} from layer {} does not have any mapping : re-using its current weights'.format(v.name, var_layer))
             new_weights.append(v.numpy())

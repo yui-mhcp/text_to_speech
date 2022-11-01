@@ -36,6 +36,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _to_df(data):
+    return data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
+
 def normalize_filename(filename, invalid_mode = 'error'):
     """
         Return (list of) str filenames extracted from multiple formats
@@ -118,6 +121,9 @@ def load_data(filename, ** kwargs):
         raise ValueError("Unhandled extension !\n  Accepted : {}\n  Got : {}".format(
             tuple(_load_file_fn.keys()), ext
         ))
+    if 'default' in kwargs:
+        if not os.path.exists(filename): return kwargs['default']
+        kwargs.pop('default')
     
     return _load_file_fn[ext](filename, ** kwargs)
     
@@ -199,15 +205,18 @@ _load_file_fn   = {
     'npz'   : load_npz,
     'npy'   : np.load,
     'csv'   : pd.read_csv,
-    'tsv'   : lambda filename, ** kwargs: pd.read_csv(filename, sep = '\t', ** kwargs)
+    'tsv'   : lambda filename, ** kwargs: pd.read_csv(filename, sep = '\t', ** kwargs),
+    'xlsx'  : lambda filename, ** kwargs: pd.read_excel(filename, ** kwargs),
+    'pdpkl' : lambda filename, ** kwargs: pd.read_pickle(filename, ** kwargs)
 }
 _dump_file_fn   = {
     'json'  : dump_json,
     'txt'   : dump_txt,
     'pkl'   : dump_pickle,
-    'csv'   : lambda filename, data, ** kwargs: data.to_csv(filename, ** kwargs),
-    'tsv'   : lambda filename, data, ** kwargs: data.to_csv(filename, sep = '\t', ** kwargs),
-    'xlsx'  : lambda filename, data, ** kwargs: data.to_excel(filename, ** kwargs),
+    'csv'   : lambda filename, data, ** kwargs: _to_df(data).to_csv(filename, ** kwargs),
+    'tsv'   : lambda filename, data, ** kwargs: _to_df(data).to_csv(filename, sep = '\t', ** kwargs),
+    'xlsx'  : lambda filename, data, ** kwargs: _to_df(data).to_excel(filename, ** kwargs),
+    'pdpkl' : lambda filename, data, ** kwargs: _to_df(data).to_pickle(filename, ** kwargs),
     'npy'   : lambda filename, data, ** kwargs: np.save(filename, data, ** kwargs),
     'npz'   : lambda filename, data, ** kwargs: np.savez(filename, ** data)
 }

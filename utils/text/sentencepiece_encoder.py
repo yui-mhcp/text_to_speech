@@ -63,8 +63,7 @@ class SentencePieceTextEncoder(TextEncoder):
                 remove_tokens = remove_tokens
             ) for s in sequence]
         
-        if isinstance(sequence, np.ndarray): sequence = sequence.tolist()
-        sequence = [tok for tok in sequence if tok != self.blank_token_idx]
+        sequence = [int(tok) for tok in sequence if tok != self.blank_token_idx]
         return self.tokenizer.decode_ids(sequence)
 
 

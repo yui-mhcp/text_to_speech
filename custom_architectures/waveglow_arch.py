@@ -160,7 +160,8 @@ class WaveGlow(tf.keras.Model):
                  n_layers       = 8,
                  n_channels     = 512,
                  kernel_size    = 3,
-                 ** kwargs):
+                 ** kwargs
+                ):
         super().__init__(** kwargs)
         assert(n_group % 2 == 0)
 

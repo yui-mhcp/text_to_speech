@@ -14,7 +14,7 @@ from loggers import timer
 from utils.generic_utils import print_objects
 
 from datasets.dataset_utils import *
-from datasets.custom_datasets import set_dataset_dir, load_dataset, _custom_datasets
+from datasets.custom_datasets import set_dataset_dir, get_dataset_dir, show_datasets, load_dataset, _custom_datasets
 from datasets.sqlite_dataset import SQLiteDataset
 
 _keras_datasets = {
@@ -50,5 +50,5 @@ def get_dataset(ds_name, ds_type = 'tf', ** kwargs):
     return dataset
 
 def print_datasets():
+    show_datasets()
     print_objects(_keras_datasets, 'keras datasets')
-    print_objects(_custom_datasets, 'custom datasets')

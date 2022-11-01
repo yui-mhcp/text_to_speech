@@ -45,16 +45,20 @@ _accepted_datasets_types = {
 def _get_infos(tensor, level = 0):
     indent = ' ' * level
     if isinstance(tensor, (list, tuple)):
-        return ''.join(['\n{}Element {} : {}'.format(indent, i, _get_infos(t, level+1)) 
-                        for i, t in enumerate(tensor)])
-        return ''.join(['\n{}Element {} : {}'.format(indent, k, _get_infos(t, level+1)) 
-                        for k, t in tensor.items()])
-    return 'shape : {} - type : {} - min : {:.3f} - max : {:.3f}'.format(
-        tensor.shape,
-        tensor.dtype,
-        np.min(tensor),
-        np.max(tensor)
-    )
+        return ''.join([
+            '\n{}Item {} : {}'.format(indent, i, _get_infos(t, level+1)) 
+            for i, t in enumerate(tensor)
+        ])
+    elif isinstance(tensor, dict):
+        return ''.join([
+            '\n{}Item {} : {}'.format(indent, k, _get_infos(t, level+1)) 
+            for k, t in tensor.items()
+        ])
+
+    infos = 'shape : {} - type : {}'.format(tensor.shape, tensor.dtype.name)
+    if tensor.dtype != tf.string:
+        infos += '- min : {:.3f} - max : {:.3f}'.format(np.min(tensor), np.max(tensor))
+    return infos
 
 def _infer_type_spec(item):
     if isinstance(item, dict):
@@ -134,6 +138,7 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
     elif isinstance(data, tf.keras.utils.Sequence):
         if hasattr(data, 'output_types'): kwargs['output_types'] = data.output_types
         if hasattr(data, 'output_shapes'): kwargs['output_shapes'] = data.output_shapes
+        if hasattr(data, 'output_signature'): kwargs['output_signature'] = data.output_signature
         if not callable(data): data = default_generator_fn(data)
         dataset = tf.data.Dataset.from_generator(data, **kwargs)
     elif callable(data):

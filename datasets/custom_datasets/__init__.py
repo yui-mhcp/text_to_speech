@@ -10,40 +10,72 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import logging
 import pandas as pd
 
 from sklearn.utils import shuffle as sklearn_shuffle
 
-from datasets.custom_datasets.audio_datasets import _custom_audio_datasets
-from datasets.custom_datasets.audio_datasets import _audio_dataset_processing
-
-from datasets.custom_datasets.image_datasets import _custom_image_datasets
-from datasets.custom_datasets.image_datasets import _image_dataset_processing
-
-from datasets.custom_datasets.text_datasets import _custom_text_datasets
-from datasets.custom_datasets.text_datasets import _text_dataset_processing
-
 from datasets.custom_datasets.preprocessing import *
 
 logger  = logging.getLogger(__name__)
 
-_dataset_dir = os.environ.get('DATASET_DIR', 'D:/datasets')
+_dataset_dir = os.environ.get(
+    'DATASET_DIR', 'D:/datasets' if os.path.exists('D:/datasets') else '/storage'
+)
+
+def __load():
+    for module_name in os.listdir('datasets/custom_datasets'):
+        if module_name in ['__init__.py', '__pytache__']: continue
+        module_name = 'datasets.custom_datasets.' + module_name.replace('.py', '')
+
+        module = __import__(module_name)
+
+def add_dataset(name, processing_fn, task, ** kwargs):
+    global _custom_datasets, _custom_processing, _dataset_tasks
+    
+    name = name.lower().replace(' ', '_')
+    
+    if kwargs:
+        _custom_datasets[name] = kwargs
+    if processing_fn is not None:
+        if isinstance(processing_fn, str): processing_fn = _custom_processing[processing_fn]
+        _custom_processing[name]    = processing_fn
+    
+    if not isinstance(task, (list, tuple)): task = [task]
+    for t in task: _dataset_tasks.setdefault(t, []).append(name)
 
 def set_dataset_dir(dataset_dir):
     global _dataset_dir
     _dataset_dir = dataset_dir
 
-def load_dataset(ds_name, dataset_dir = None, type_annots = None,
-                 modes = ['train', 'valid'], train_kw = {}, valid_kw = {}, 
-                 size = None, shuffle = False, random_state = 10, ** kwargs):
-    def format_kwargs(kwargs):
-        formatted = {}
-        for k, v in kwargs.items():
-            formatted[k] = v.format(dataset_dir) if type(v) is str else v
-        return formatted
+def get_dataset_dir():
     global _dataset_dir
-    if dataset_dir is None: dataset_dir = _dataset_dir
+    return _dataset_dir
+
+def load_dataset(ds_name,
+                 dataset_dir    = None,
+                 type_annots    = None,
+
+                 modes  = ['train', 'valid'],
+                 train_kw   = {},
+                 valid_kw   = {}, 
+
+                 size   = None,
+                 shuffle    = False,
+                 random_state   = 10,
+                 ** kwargs
+                ):
+    def format_kwargs(kwargs):
+        return {k : v.format(dataset_dir) if isinstance(v, str) else v for k, v in kwargs.items()}
+    
+    def load_and_shuffle(config):
+        data = process_fn(** config)
+        if shuffle: data = sklearn_shuffle(data, random_state = random_state)
+        if size:    data = data.iloc[:size]
+        return data
+        
+    if dataset_dir is None: dataset_dir = get_dataset_dir()
     
     if isinstance(ds_name, (list, tuple)):
         datasets = {}
@@ -68,73 +100,60 @@ def load_dataset(ds_name, dataset_dir = None, type_annots = None,
             if not isinstance(dataset, dict): dataset = {'train' : dataset}
             
             for mode, data in dataset.items():
-                data['dataset'] = name if not isinstance(name, dict) else name['ds_name']
-                datasets.setdefault(mode, [])
-                datasets[mode].append(data)
+                datasets.setdefault(mode, []).append(data)
         
-        for mode in datasets.keys():
-            dataset = pd.concat(datasets[mode], ignore_index = True).dropna(axis = 'columns')
+        for mode, datas in datasets.keys():
+            dataset = pd.concat(datas, ignore_index = True, sort = False).dropna(axis = 'columns')
             if shuffle: dataset = sklearn_shuffle(dataset, random_state = random_state)
             datasets[mode] = dataset
         
         return datasets if len(datasets) > 1 else list(datasets.values())[0]
     
     if ds_name not in _custom_datasets and type_annots is None:
-        raise ValueError("Unknown dataset !\n  Got : {}\n  Accepted : {}".format(ds_name, list(_custom_datasets.keys())))
+        raise ValueError("Unknown dataset !\n  Got : {}\n  Accepted : {}".format(
+            ds_name, list(_custom_datasets.keys())
+        ))
     
     if type_annots is None:
         type_annots = _custom_datasets[ds_name].get('type_annots', ds_name)
     
     if type_annots not in _custom_processing:
-        raise ValueError("Annotation type unknown !\n  Got : {}\n  Accepted : {}".format(type_annots, list(_custom_processing.keys())))
+        raise ValueError("Unknown annotation type !\n  Got : {}\n  Accepted : {}".format(
+            type_annots, list(_custom_processing.keys())
+        ))
         
     process_fn = _custom_processing[type_annots]
     
     logger.info('Loading dataset {}...'.format(ds_name))
     
     if 'train'  not in _custom_datasets.get(ds_name, {}):
-        ds_kwargs = {**_custom_datasets.get(ds_name, {}), ** kwargs}
-        ds_kwargs = format_kwargs(ds_kwargs)
-
-        datasets = process_fn(** ds_kwargs)
-        
-        if shuffle: datasets = sklearn_shuffle(datasets, random_state = random_state)
-        if size: datasets = datasets[:size]
+        datasets = load_and_shuffle(format_kwargs({**_custom_datasets.get(ds_name, {}), ** kwargs}))
     else:
         datasets = {}
         
         if 'train' in modes:
-            train_kwargs = {** _custom_datasets[ds_name]['train'], ** kwargs, ** train_kw}
-            train_kwargs = format_kwargs(train_kwargs)
+            datasets['train'] = load_and_shuffle(format_kwargs({
+                ** _custom_datasets[ds_name]['train'], ** kwargs, ** train_kw
+            }))
 
-            train_dataset = process_fn(** train_kwargs)
-            if shuffle: train_dataset = sklearn_shuffle(train_dataset, random_state = random_state)
-            if size: train_dataset = train_dataset[:size]
-            
-            datasets['train'] = train_dataset
-            
         if 'valid' in modes:
-            valid_kwargs = {** _custom_datasets[ds_name]['valid'], ** kwargs, ** valid_kw}
-            valid_kwargs = format_kwargs(valid_kwargs)
+            datasets['valid'] = load_and_shuffle(format_kwargs({
+                ** _custom_datasets[ds_name]['valid'], ** kwargs, ** valid_kw
+            }))
 
-            valid_dataset = process_fn(** valid_kwargs)
-            if shuffle: valid_dataset = sklearn_shuffle(valid_dataset, random_state = random_state)
-            if size: valid_dataset = valid_dataset[:size]
-            
-            datasets['valid'] = valid_dataset
-        
         if len(datasets) == 1: datasets = list(datasets.values())[0]
     
     return datasets
 
-_custom_datasets = {
-    ** _custom_audio_datasets,
-    ** _custom_image_datasets,
-    ** _custom_text_datasets
-}
+def show_datasets(task = None):
+    global _dataset_tasks
+    
+    for t, datasets in _dataset_tasks.items():
+        if task and t not in tasks: continue
+        print('Task {} :\t{}'.format(t, tuple(datasets)))
 
-_custom_processing  = {
-    ** _audio_dataset_processing,
-    ** _image_dataset_processing,
-    ** _text_dataset_processing
-}
+_custom_processing  = {}
+_custom_datasets    = {}
+_dataset_tasks      = {}
+
+__load()

@@ -64,7 +64,7 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
     
     @property
     def input_signature(self):
-        return self.text_signature + (
+        return self.text_signature[:1] + (
             self.embedding_signature,
             self.audio_signature,
             tf.TensorSpec(shape = (None,), dtype = tf.int32),
@@ -84,13 +84,18 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         super().compile(loss_config = loss_config, ** kwargs)
     
-    def infer(self, text, text_length, spk_embedding, * args, ** kwargs):
+    def infer(self, text, spk_embedding, * args, ** kwargs):
+        if isinstance(text, str):
+            text    = tf.expand_dims(self.encode_text(text), axis = 0)
+        elif len(tf.shape(text)) == 1:
+            text    = tf.expand_dims(text, axis = 0)
+        
         if len(tf.shape(spk_embedding)) == 1:
             spk_embedding = tf.expand_dims(spk_embedding, axis = 0)
-        if not isinstance(text, str) and tf.shape(spk_embedding)[0] < tf.shape(text)[0]:
+        if tf.shape(spk_embedding)[0] < tf.shape(text)[0]:
             spk_embedding = tf.tile(spk_embedding, [tf.shape(text)[0], 1])
         
-        return super().infer([text, spk_embedding], text_length, * args, ** kwargs)
+        return super().infer([text, spk_embedding], * args, ** kwargs)
     
     def get_speaker_embedding(self, data):
         """ This function is used in `encode_data` and returns a single embedding """
@@ -101,20 +106,20 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         embedded_speaker = self.get_speaker_embedding(data)
         
-        return inputs[:2] + (embedded_speaker, ) + inputs[-2:], outputs
+        return inputs[:-2] + (embedded_speaker, ) + inputs[-2:], outputs
     
     def augment_data(self, inputs, outputs):
         inputs, outputs = super().augment_data(inputs, outputs)
 
-        embedded_speaker    = self.maybe_augment_embedding(inputs[3])
+        embedded_speaker    = self.maybe_augment_embedding(inputs[-3])
         
-        return inputs[:2] + (embedded_speaker, ) + inputs[-2:], outputs
+        return inputs[:-3] + (embedded_speaker, ) + inputs[-2:], outputs
         
     def get_dataset_config(self, ** kwargs):
         config = super().get_dataset_config(** kwargs)
         config['pad_kwargs']    = {
             'padding_values'    : (
-                (self.blank_token_idx, 0, 0., self.pad_mel_value, 0), (self.pad_mel_value, 1.)
+                (self.blank_token_idx, 0., self.pad_mel_value, 0), (self.pad_mel_value, 1.)
             )
         }
         

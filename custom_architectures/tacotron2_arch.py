@@ -20,34 +20,29 @@ from tensorflow.keras.layers import *
 
 from utils import plot, get_enum_item
 from hparams import HParamsTacotron2, HParamsTacotron2Decoder
-from custom_layers import LocationSensitiveAttention, FasterEmbedding
-from custom_architectures.current_blocks import Conv1DBN
-from custom_architectures.dynamic_decoder import BaseDecoder, dynamic_decode
+from custom_layers import FasterEmbedding, ConcatEmbedding, ConcatMode, LocationSensitiveAttention
 
-class ConcatMode(enum.IntEnum):
-    CONCAT  = 0
-    ADD     = 1
-    SUB     = 2
-    MUL     = 3
-    DIV     = 4
-
-_rnn_impl = 2
-
-TacotronDecoderCellState = collections.namedtuple(
-    "TacotronDecoderCellState",
-    [
+Tacotron2DecoderCellState = collections.namedtuple(
+    "Tacotron2DecoderCellState", [
         "time",
         "attention_rnn_state",
         "decoder_rnn_state",
         "attention_context",
-        "attention_weights",
-        "attention_weights_cum",
-        "alignment_history",
+        "attention_state",
+        "alignment_history"
     ]
 )
 
-TacotronDecoderOutput = collections.namedtuple(
-    "TacotronDecoderOutput", ("mel_output", "token_output", "sample_id")
+Tacotron2DecoderState = collections.namedtuple(
+    "Tacotron2DecoderState", [
+        "time",
+        "last_frame",
+        "finished",
+        "cell_state",
+        "outputs",
+        "stop_tokens",
+        "lengths"
+    ]
 )
 
 
@@ -55,166 +50,6 @@ def _get_var(_vars, i):
     if callable(_vars): return _vars(i)
     elif isinstance(_vars, list): return _vars[i]
     else: return _vars
-    
-class Tacotron2Sampler:
-    """ Tacotron2 sampler (inspired from tftts Tacotron2Sampler) """
-    def __init__(self, hparams):
-        self.n_mel_channels = hparams.n_mel_channels
-        self.n_frames_per_step  = hparams.n_frames_per_step
-        self.add_go_frame   = hparams.add_go_frame
-        self.remove_last_frame  = hparams.remove_last_frame
-        self.early_stopping    = hparams.early_stopping
-        self.teacher_forcing_mode   = hparams.teacher_forcing_mode
-        
-        self.step   = tf.Variable(
-            hparams.init_step, dtype = tf.float32, trainable = False, name = 'step'
-        )
-        self.init_ratio = tf.constant(hparams.init_ratio, dtype = tf.float32)
-        self.final_ratio    = tf.constant(hparams.final_ratio, dtype = tf.float32)
-        
-        self.init_decrease_step = tf.constant(hparams.init_decrease_step, dtype = tf.float32)
-        self.decreasing_steps = tf.constant(hparams.decreasing_steps, dtype = tf.float32)
-        self.final_decrease_step = self.init_decrease_step + self.decreasing_steps
-        
-        self.decrease_factor    = tf.constant(
-            (self.init_ratio - self.final_ratio) / hparams.decreasing_steps,
-            dtype = tf.float32
-        )
-        
-        self._ratio = tf.Variable(
-            self.get_ratio(self.step), dtype = tf.float32, trainable = False,
-            name = 'teacher_forcing_ratio'
-        )
-        self._teacher_forcing   = False
-    
-    def set_step(self, step):
-        self.step.assign(tf.cast(step, tf.float32))
-        self._ratio.assign(self.get_ratio(step))
-        
-    def get_ratio(self, step, teacher_forcing_mode = None):
-        if teacher_forcing_mode is None: teacher_forcing_mode = self.teacher_forcing_mode
-        step = tf.cast(step, tf.float32)
-        if teacher_forcing_mode == 'constant':
-            return self.init_ratio
-        elif teacher_forcing_mode == 'linear':
-            if step < self.init_decrease_step:
-                return self.init_ratio
-            elif step > self.final_decrease_step:
-                return self.final_ratio
-            else:
-                return self.init_ratio - self.decrease_factor * (step - self.init_decrease_step)
-        elif teacher_forcing_mode == 'random':
-            return tf.random.uniform(
-                (), minval = self.final_ratio, maxval = self.init_ratio
-            )
-        elif teacher_forcing_mode == 'random_linear':
-            if step < self.init_decrease_step:
-                return self.init_ratio
-            elif step > self.final_decrease_step:
-                return tf.random.uniform(
-                    (), minval = self.final_ratio, maxval = self.init_ratio
-                )
-            else:
-                return tf.random.uniform(
-                    (), 
-                    maxval = self.init_ratio, 
-                    minval = self.init_ratio - self.decrease_factor * (step - self.init_decrease_step)
-                )
-            
-    def plot(self, steps = None, teacher_forcing_mode = None,
-             title = 'teacher forcing ratio over steps', 
-             xlabel = 'steps', ylabel = 'ratio', ylim = (0,1), ** kwargs):
-        if steps is None: steps = self.step
-        data = [float(self.get_ratio(i, teacher_forcing_mode)) for i in range(int(steps))]
-        
-        return plot(
-            data, title = title, xlabel = xlabel, ylabel = ylabel, ylim = ylim, ** kwargs
-        )
-        
-    def finish_training_step(self):
-        self.step.assign_add(1.)
-        self._ratio.assign(self.get_ratio(self.step))
-    
-    def setup_target(self, mel_target, mel_lengths):
-        """Setup ground-truth mel outputs for decoder."""
-        frame_0 = self.n_frames_per_step - 1 if self.add_go_frame else 0
-        self.mel_lengths    = mel_lengths
-        self.mel_target     = mel_target[
-            :, frame_0 :: self.n_frames_per_step, :
-        ]
-        
-        self.set_batch_size(tf.shape(mel_target)[0])
-        self.max_lengths = tf.tile([tf.shape(self.mel_target)[1]], [self._batch_size])
-        if self.remove_last_frame:
-            self.max_lengths = self.max_lengths - 1
-        self._teacher_forcing   = True        
-
-    @property
-    def batch_size(self):
-        return self._batch_size
-
-    @property
-    def sample_ids_shape(self):
-        return tf.TensorShape([])
-
-    @property
-    def sample_ids_dtype(self):
-        return tf.int32
-
-    @property
-    def reduction_factor(self):
-        return self.n_frames_per_step
-
-    def set_batch_size(self, batch_size):
-        self._teacher_forcing   = False
-        self._batch_size = batch_size
-
-    def initialize(self):
-        """ Return (Finished, next_inputs). """
-        if self._teacher_forcing and not self.add_go_frame:
-            initial_input = self.mel_target[:,0,:]
-        else:
-            initial_input = tf.tile([[0.0]], [self._batch_size, self.n_mel_channels])
-        
-        return (
-            tf.tile([False], [self._batch_size]),
-            initial_input
-        )
-
-    def sample(self, time, outputs, state):
-        return tf.tile([0], [self._batch_size])
-
-    def next_inputs(self,
-                    time,
-                    pred_outputs,
-                    state,
-                    sample_ids,
-                    stop_token_prediction,
-                    training    = False,
-                    **kwargs,
-                   ):
-        if self._teacher_forcing:
-            if not self.add_go_frame: time = time + 1
-            finished = time >= self.max_lengths
-            if tf.reduce_all(finished):
-                if training: self.finish_training_step()
-    
-                next_inputs = tf.zeros(
-                    [self._batch_size, self.n_mel_channels], dtype = tf.float32
-                )
-            else:
-                next_inputs = (
-                    self._ratio * self.mel_target[:, time, :]
-                    + (1.0 - self._ratio) * pred_outputs[:, -self.n_mel_channels :]
-                )
-            next_state = state
-            return (finished, next_inputs, next_state)
-        else:
-            finished = tf.cast(tf.round(stop_token_prediction), tf.bool)
-            finished = tf.math.logical_and(tf.reduce_all(finished), self.early_stopping)
-            next_inputs = pred_outputs[:, -self.n_mel_channels :]
-            next_state = state
-            return (finished, next_inputs, next_state)
 
 class Prenet(tf.keras.Model):
     def __init__(self,
@@ -226,7 +61,7 @@ class Prenet(tf.keras.Model):
                  name       = 'prenet',
                  **kwargs
                 ):
-        super(Prenet, self).__init__(name = name)
+        super().__init__(name = name)
         
         self.sizes      = sizes
         self.use_bias   = use_bias
@@ -235,273 +70,140 @@ class Prenet(tf.keras.Model):
         self.deterministic  = deterministic
         
         self.denses = [
-            Dense(
-                size, use_bias = use_bias, activation = activation, 
-                name = '{}_layer_{}'.format(name, i+1)
+            tf.keras.layers.Dense(
+                size,
+                use_bias    = _get_var(use_bias, i),
+                activation  = _get_var(activation, i),
+                name        = '{}_layer_{}'.format(name, i+1)
             ) for i, size in enumerate(sizes)
         ]
-        self.dropout = Dropout(drop_rate)
+        self.dropout = tf.keras.layers.Dropout(drop_rate)
     
     def set_deterministic(self, deterministic, seed = 0):
         self.deterministic = deterministic
-        #self.dropout = Dropout(self.drop_rate, seed = seed if deterministic else None)
 
     def call(self, inputs, training = False):
         x = inputs
         for layer in self.denses:
-            x = layer(x)
-            x = self.dropout(x, training = not self.deterministic)
+            x = self.dropout(layer(x), training = not self.deterministic)
         return x
     
     def get_config(self):
-        config = {}
-        config['sizes']     = self.sizes
-        config['use_bias']  = self.use_bias
-        config['activation']    = self.activation
-        config['drop_rate']     = self.drop_rate
-        config['deterministic'] = self.deterministic
-        return config
-
-def Postnet(n_mel_channels  = 80, 
-            n_convolutions  = 5, 
-            filters     = 512,
-            kernel_size = 5,
-            use_bias    = True,
-      
-            bnorm       = 'after',
-            epsilon     = 1e-5,
-            momentum    = 0.1,
-    
-            drop_rate   = 0.5,
-            activation  = 'tanh',
-            final_activation    = None,
-            linear_projection   = False,
-            
-            name    = 'postnet',
-            ** kwargs
-           ):
-    model = tf.keras.Sequential(name = name)
-
-    for i in range(n_convolutions):
-        config = {
-            'filters'        : _get_var(filters, i),
-            'kernel_size'    : _get_var(kernel_size, i),
-            'use_bias'       : _get_var(use_bias, i),
-            'strides'        : 1,
-            'padding'        : 'same',
-            'activation'     : _get_var(activation, i),
-            'bnorm'          : _get_var(bnorm, i),
-            'momentum'       : _get_var(momentum, i),
-            'epsilon'        : _get_var(epsilon, i),
-            'drop_rate'      : _get_var(drop_rate, i),
-            'name'           : '{}_{}'.format(name, i+1)
+        return {
+            'sizes' : self.sizes,
+            'use_bias'  : self.use_bias,
+            'activation'    : self.activation,
+            'drop_rate'     : self.drop_rate,
+            'deterministic' : self.deterministic
         }
-        if i == n_convolutions - 1 and not linear_projection: # last layer
-            config['filters']       = n_mel_channels
-            config['activation']    = final_activation
-            config['drop_rate']     = 0.
+
+def Postnet(n_mel_channels = 80, name = 'postnet', ** kwargs):
+    from custom_architectures import get_architecture
+    return get_architecture(
+        architecture_name   = 'simple_cnn',
+        input_shape     = (None, n_mel_channels),
+        output_shape    = n_mel_channels,
         
-        Conv1DBN(model, ** config)
+        add_mask_layer  = False,
+        conv_type   = 'conv1d',
+        strides     = 1,
+        padding     = 'same',
+        use_mask    = True,
+        add_final_norm = True,
+        
+        flatten = False,
+        dense_as_final  = False,
+        
+        name    = name,
+        ** kwargs
+    )
+
+
+def Tacotron2Encoder(vocab_size,
+                     embedding_dim  = 512,
+                     pad_token  = 0,
+
+                     use_mask   = True,
+                     n_speaker       = 1,
+                     speaker_embedding_dim   = None,
+                     concat_mode         = ConcatMode.CONCAT,
+
+                     linear_projection   = False,
+
+                     name    = "encoder",
+                     ** kwargs
+                    ):
+    if n_speaker > 1 and not speaker_embedding_dim:
+        raise ValueError("If `n_speaker > 1`, you must specify `speaker_embedding_dim`")
+
+    from custom_architectures import get_architecture
+    
+    inp_text = tf.keras.layers.Input(shape = (None,), dtype = tf.int32, name = 'input_text')
+    
+    embeddings = FasterEmbedding(
+        vocab_size, embedding_dim, mask_value = pad_token, name = "{}_embeddings".format(name)
+    )(inp_text)
+    
+    output = get_architecture(
+        architecture_name   = 'simple_cnn',
+        inputs  = embeddings,
+        output_shape    = embedding_dim,
+        
+        use_mask    = True,
+        add_mask_layer  = False,
+        filters     = embedding_dim,
+        conv_type   = 'conv1d',
+        strides     = 1,
+        padding     = 'same',
+
+        flatten = True,
+        flatten_type    = 'bi_lstm',
+        flatten_kwargs  = {'units' : embedding_dim // 2, 'return_sequences' : True},
+        
+        dense_as_final  = False,
+        return_output   = True,
+        
+        ** kwargs
+    )
+    
+    inputs, spk_input, spk_embed = inp_text, None, None
+    if n_speaker > 1:
+        spk_input = tf.keras.layers.Input(shape = (1, ), dtype = tf.int32, name = 'speaker_id')
+        spk_embed = FasterEmbedding(
+            n_speaker, speaker_embedding_dim, name = 'speaker_embedding'
+        )(spk_input)
+    elif speaker_embedding_dim:
+        spk_input = tf.keras.layers.Input(shape = (speaker_embedding_dim, ), name = 'speaker_embedding')
+        spk_embed = spk_input
+    
+    if speaker_embedding_dim:
+        concat_mode = get_enum_item(concat_mode, ConcatMode)
+        if speaker_embedding_dim != embedding_dim and concat_mode != ConcatMode.CONCAT:
+            spk_embed = tf.keras.layers.Dense(
+                embedding_dim, name = 'embedding_resizing'
+            )(spk_embed)
+        
+        inputs = [inp_text, spk_input]
+        output = ConcatEmbedding(concat_mode = concat_mode)([output, spk_embed])
     
     if linear_projection:
-        model.add(Dense(
-            n_mel_channels,
-            activation  = final_activation,
-            name    = '{}_projection'.format(name)
-        ))
-        
-    return model
+        output = tf.keras.layers.Dense(embedding_dim, name = 'projection')(output)
     
-
-class Tacotron2Encoder(tf.keras.Model):
-    def __init__(self,
-                 vocab_size, 
-                 embedding_dims  = 512,
-                    
-                 n_convolutions  = 3,
-                 kernel_size     = 5,
-                 use_bias        = True,
-    
-                 bnorm           = 'after',
-                 epsilon         = 1e-5,
-                 momentum        = 0.1,
-
-                 drop_rate       = 0.5,
-                 activation      = 'relu',
-                    
-                 n_speaker       = 1,
-                 speaker_embedding_dim   = None,
-                 concat_mode         = ConcatMode.CONCAT,
-                 linear_projection   = False,
-                    
-                 name    = "encoder"
-                ):
-        if n_speaker > 1 and not speaker_embedding_dim:
-            raise ValueError("If `n_speaker > 1`, you must specify `speaker_embedding_dim`")
-        
-        super().__init__(name = name)
-        self.vocab_size     = vocab_size
-        self.embedding_dims     = embedding_dims
-                    
-        self.n_convolutions     = n_convolutions
-        self.kernel_size    = kernel_size
-        self.use_bias       = use_bias
-    
-        self.bnorm      = bnorm
-        self.epsilon    = epsilon
-        self.momentum   = momentum
-
-        self.drop_rate  = drop_rate
-        self.activation = activation
-        
-        self.n_speaker  = n_speaker
-        self.speaker_embedding_dim  = speaker_embedding_dim
-        self.concat_mode        = get_enum_item(concat_mode, ConcatMode)
-        self.linear_projection  = linear_projection
-        
-        self.embedding_layer = FasterEmbedding(
-            vocab_size, embedding_dims, name = "{}_embeddings".format(name)
-        )
-        
-        self.convs = tf.keras.Sequential(name = '{}_convs'.format(name))
-        
-        for i in range(n_convolutions):
-            config = {
-                'filters'        : embedding_dims,
-                'kernel_size'    : _get_var(kernel_size, i),
-                'use_bias'       : _get_var(use_bias, i),
-                'strides'        : 1,
-                'padding'        : 'same',
-                'activation'     : _get_var(activation, i),
-                'bnorm'          : _get_var(bnorm, i),
-                'momentum'       : _get_var(momentum, i),
-                'epsilon'        : _get_var(epsilon, i),
-                'drop_rate'      : _get_var(drop_rate, i),
-                'name'           : '{}_{}'.format(name, i+1)
-            }
-            Conv1DBN(self.convs, ** config)
-        
-        self.bi_lstm_layer = Bidirectional(LSTM(
-            embedding_dims // 2, return_sequences = True, implementation = _rnn_impl
-        ), name = "{}_lstm".format(name))
-        
-        if n_speaker > 1:
-            self.speaker_embedding_layer = Embedding(
-                n_speaker, speaker_embedding_dim,
-                name = '{}_speaker_embedding'.format(name)
-            )
-        
-        self.expand_embedding_layer = None
-        if speaker_embedding_dim and speaker_embedding_dim != embedding_dims and self.concat_mode != ConcatMode.CONCAT:
-            self.expand_embedding_layer = Dense(
-                embedding_dims, name = '{}_expand_spk_embedding'.format(name)
-            )
-        
-        self.projection_layer   = None
-        if linear_projection:
-            self.projection_layer = Dense(
-                embedding_dims, use_bias = False, name = '{}_projection'.format(name)
-            )
-    
-    @property
-    def use_speaker_id(self):
-        return self.n_speaker > 1
-    
-    @property
-    def use_speaker_embedding(self):
-        return self.speaker_embedding_dim is not None
-    
-    @property
-    def embedding_dim(self):
-        if self.linear_projection or not self.use_speaker_embedding:
-            return self.embedding_dims
-        return self.embedding_dims + self.speaker_embedding_dim
-    
-    def _concat(self, rnn_out, speaker_embedding):
-        if self.concat_mode == ConcatMode.CONCAT:
-            sequence_length = tf.shape(rnn_out)[1]
-
-            speaker_embedding = tf.expand_dims(speaker_embedding, 1)
-            speaker_embedding = tf.tile(speaker_embedding, [1, sequence_length, 1])
-
-            return tf.concat([rnn_out, speaker_embedding], axis = -1)
-        elif self.concat_mode == ConcatMode.ADD:
-            return rnn_out + speaker_embedding
-        elif self.concat_mode == ConcatMode.SUB:
-            return rnn_out - speaker_embedding
-        elif self.concat_mode == ConcatMode.MUL:
-            return rnn_out * speaker_embedding
-        elif self.concat_mode == ConcatMode.DIV:
-            return rnn_out / speaker_embedding
-    
-    def call(self, inputs, mask = None, training = False):
-        if self.use_speaker_embedding:
-            input_text, input_speaker = inputs
-        else:
-            input_text, input_speaker = inputs, None
-        
-        text_embedding = self.embedding_layer(input_text, training = training)
-        
-        conv_out = self.convs(text_embedding, training = training)
-        
-        rnn_out = self.bi_lstm_layer(conv_out, mask = mask, training = training)
-        
-        output = rnn_out
-        
-        if self.use_speaker_embedding:
-            if self.use_speaker_id:
-                speaker_embedding = self.speaker_embedding_layer(input_speaker)
-            else:
-                speaker_embedding = input_speaker
-            
-            if self.expand_embedding_layer is not None:
-                speaker_embedding = self.expand_embedding_layer(speaker_embedding)
-        
-            output = self._concat(output, speaker_embedding)
-        
-        if self.linear_projection:
-            output = self.projection_layer(output)
-        
-        return output
-        
-    def get_config(self):
-        config['vocab_size']     = self.vocab_size
-        config['embedding_dims']     = self.embedding_dims
-                    
-        config['n_convolutions']     = self.n_convolutions
-        config['kernel_size']    = self.kernel_size
-        config['use_bias']       = self.use_bias
-    
-        config['bnorm']      = self.bnorm
-        config['epsilon']    = self.epsilon
-        config['momentum']   = self.momentum
-
-        config['drop_rate']  = self.drop_rate
-        config['activation'] = self.activation
-                    
-        config['n_speaker']  = self.n_speaker
-        config['speaker_embedding_dim']  = self.speaker_embedding_dim
-        config['concat_mode']        = self.concat_mode
-        config['linear_projection']  = self.linear_projection
-        
-        return config
+    return tf.keras.Model(inputs, output, name = name)
 
 class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
     def __init__(self, name = 'decoder_cell', ** kwargs):
         super().__init__(name = name)
-        self.encoder_embedding_dim  = None
-        self.encoder_seq_length     = None
-        
-        self.hparams = HParamsTacotron2Decoder(** kwargs)
+
+        self.hparams = HParamsTacotron2Decoder.extract(kwargs)
         self.attention_dim = self.hparams.lsa_attention_dim
         
         self.prenet = Prenet(** self.hparams.get_config(prefix = 'prenet'))
         
-        self.attention_rnn = LSTMCell(
+        self.attention_rnn = tf.keras.layers.LSTMCell(
             self.hparams.attention_rnn_dim,
             dropout             = self.hparams.p_attention_dropout,
             recurrent_dropout   = self.hparams.p_attention_dropout,
-            implementation      = _rnn_impl,
             name = '{}_attention_rnn'.format(name)
         )
         
@@ -510,22 +212,21 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
         )
 
         self.decoder_rnn = tf.keras.layers.StackedRNNCells([
-            LSTMCell(
+            tf.keras.layers.LSTMCell(
                 self.hparams.decoder_rnn_dim,
                 dropout             = self.hparams.p_decoder_dropout,
                 recurrent_dropout   = self.hparams.p_decoder_dropout,
-                implementation      = _rnn_impl,
                 name = 'decoder_rnn_cell_{}'.format(i)
             ) for i in range(self.hparams.decoder_n_lstm)],
             name="{}_decoder_rnn".format(name)
         )
         
-        self.linear_projection = Dense(
+        self.linear_projection = tf.keras.layers.Dense(
             units   = self.hparams.n_mel_channels * self.hparams.n_frames_per_step, 
             name    = '{}_linear_projection'.format(name)
         )
         
-        self.gate_layer = Dense(
+        self.gate_layer = tf.keras.layers.Dense(
             units       = self.hparams.n_frames_per_step, 
             activation  = 'sigmoid' if self.hparams.with_logits else None,
             name        = '{}_gate_output'.format(name)
@@ -533,30 +234,28 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
         
     @property
     def output_size(self):
-        """Return output (mel) size."""
-        return self.linear_projection.units
+        return self.hparams.n_mel_channels * self.hparams.n_frames_per_step
 
     @property
-    def state_size(self):
-        """Return hidden state size."""
-        return TacotronDecoderCellState(
-            time    = tf.TensorShape([]),
-            attention_rnn_state = self.attention_lstm.state_size,
-            decoder_rnn_state   = self.decoder_rnn.state_size,
-            attention_context   = self.attention_dim,
-            attention_weights   = self.encoder_seq_length,
-            attention_weights_cum   = self.encoder_seq_length,
-            alignment_history   = ()
+    def state_signature(self):
+        return Tacotron2DecoderCellState(
+            time    = tf.TensorSpec(shape = (), dtype = tf.int32),
+            attention_rnn_state = tf.nest.map_structure(
+                lambda s: tf.TensorSpec(shape = (None, s), dtype = tf.float32), self.attention_rnn.state_size
+            ),
+            decoder_rnn_state   = tf.nest.map_structure(
+                lambda s: tf.TensorSpec(shape = (None, s), dtype = tf.float32), self.decoder_rnn.state_size
+            ),
+            attention_context   = tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+            attention_state     = tuple([
+                tf.TensorSpec(shape = s, dtype = tf.float32) for s in self.attention_layer.state_size
+            ]),
+            alignment_history   = tf.TensorSpec(shape = (), dtype = tf.float32)
         )
-            
-    def set_encoder_embedding_dim(self, encoder_embedding_dim):
-        self.encoder_embedding_dim = encoder_embedding_dim
-        
-    def set_encoder_seq_length(self, encoder_seq_length):
-        self.encoder_seq_length = encoder_seq_length
     
-    def get_initial_state(self, batch_size):
-        """ Get initial states. """
+    def get_initial_state(self, inputs, memory):
+        batch_size = tf.shape(memory)[0]
+        
         self.attention_rnn.reset_dropout_mask()
         self.attention_rnn.reset_recurrent_dropout_mask()
         
@@ -571,54 +270,74 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
             None, batch_size, dtype = tf.float32
         )
         initial_context = self.attention_layer.get_initial_context(
-            batch_size, size = self.encoder_embedding_dim
+            None, memory, batch_size = batch_size, dtype = tf.float32
         )
-        initial_attention_weights = self.attention_layer.get_initial_weights(
-            batch_size, size = self.encoder_seq_length
+        initial_attention_state = self.attention_layer.get_initial_state(
+            None, memory, batch_size = batch_size, dtype = tf.float32
         )
         initial_alignment_history = tf.TensorArray(
-            dtype = tf.float32, size = 0, dynamic_size = True
+            dtype = tf.float32, size = 0, dynamic_size = True, element_shape = (None, None)
         )
-        return TacotronDecoderCellState(
+        return Tacotron2DecoderCellState(
             time        = tf.zeros([], dtype = tf.int32),
             attention_rnn_state = initial_attention_rnn_cell_states,
             decoder_rnn_state   = initial_decoder_rnn_cell_states,
             attention_context   = initial_context,
-            attention_weights   = initial_attention_weights,
-            attention_weights_cum   = initial_attention_weights,
-            alignment_history   = initial_alignment_history,
+            attention_state     = initial_attention_state,
+            alignment_history   = initial_alignment_history
         )
-                
-    def call(self, inputs, states, training = False):
+
+    def process_memory(self, memory, mask = None):
+        return self.attention_layer.process_memory(memory, mask = mask)
+        
+    def call(self,
+             inputs,
+             memory,
+             state,
+             training   = False,
+             memory_mask    = None,
+             processed_memory   = None
+            ):
         """
-            Compute (mel_output, stop_token), next_state for this timestep. 
-            Inputs : 
-                - last_mel_outputs : shape == [batch_size, n_mel_channels]
+            Compute new mel output based on current input (las predicted mel frame) and current state
+            
+            Arguments :
+                - inputs    : the last output with shape [batch_size, n_mel_channels]
+                - memory    : the encoder's output with shape [batch_size, seq_in_len, enc_emb_dim]
+                - state     : a valid Tacotron2DecoderCellState
+                - memory_mask   : padding mask for `memory` with shape [batch_size, seq_in_len]
+                - processed_memory  : processed `memory` via the `self.process_memory(...)`, useful to avoid re-processing memory at each timestep
+            Returns : ((next_output, stop_token), next_state)
+                - next_output   : the new predicted mel frame(s)
+                - stop_token    : the stop-token score
+                - nex_state     : the new Tacotron2DecoderCellState
         """
         # 1. apply prenet for decoder_input.
         prenet_out = self.prenet(inputs, training = training)  # [batch_size, dim]
         
         # 2. concat prenet_out and prev context vector
         # then use it as input of attention lstm layer.
-        attention_rnn_input = tf.concat([prenet_out, states.attention_context], axis=-1)
+        attention_rnn_input = tf.concat([prenet_out, state.attention_context], axis = -1)
         attention_rnn_output, new_attention_rnn_state = self.attention_rnn(
-            attention_rnn_input, states.attention_rnn_state
+            attention_rnn_input, state.attention_rnn_state
         )
 
         # 3. compute context, alignment and cumulative alignment.
-        prev_attn_weights       = states.attention_weights
-        prev_attn_weights_cum   = states.attention_weights_cum
-        prev_alignment_history  = states.alignment_history
         
-        attn_context, attn_weights, attn_weights_cum = self.attention_layer(
-            [attention_rnn_output, prev_attn_weights, prev_attn_weights_cum], 
-            training = training,
+        attn_context, new_attn_state = self.attention_layer(
+            attention_rnn_output,
+            memory,
+            initial_state   = state.attention_state,
+            
+            mask    = memory_mask,
+            training    = training,
+            processed_memory    = processed_memory
         )
         
         # 4. run decoder lstm(s)
         decoder_rnn_input = tf.concat([attention_rnn_output, attn_context], axis = -1)
         decoder_rnn_output, new_decoder_rnn_state = self.decoder_rnn(
-            decoder_rnn_input, states.decoder_rnn_state
+            decoder_rnn_input, state.decoder_rnn_state
         )
 
         decoder_rnn_out_cat = tf.concat([
@@ -636,85 +355,203 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
         stop_tokens = self.gate_layer(stop_token_input)
 
         # 6. save alignment history to visualize.
-        alignment_history = prev_alignment_history.write(states.time, attn_weights)
+        alignment_history = state.alignment_history.write(state.time, new_attn_state[0])
 
         # 7. return new states.
-        new_states = TacotronDecoderCellState(
-            time    = states.time + 1,
+        new_states = Tacotron2DecoderCellState(
+            time    = state.time + 1,
             attention_rnn_state = new_attention_rnn_state,
             decoder_rnn_state   = new_decoder_rnn_state,
             attention_context   = attn_context,
-            attention_weights   = attn_weights,
-            attention_weights_cum   = attn_weights_cum,
-            alignment_history   = alignment_history,
+            attention_state     = new_attn_state,
+            alignment_history   = alignment_history
         )
 
         return (decoder_outputs, stop_tokens), new_states
     
     def get_config(self):
-        return self.hparams.get_config()
-        
-class Tacotron2Decoder(BaseDecoder):
-    def __init__(self,
-                 sampler,
-                 decoder_cell,
-                 output_layer = None,
-                 name = 'decoder'
-                ):
-        """Initial variables."""
+        return (self.hparams + super().get_config()).get_config()
+
+class Tacotron2Decoder(tf.keras.Model):
+    def __init__(self, name = 'decoder', ** kwargs):
         super().__init__(name = name)
-        self.cell       = decoder_cell
-        self.sampler    = sampler
-        self.output_layer   = output_layer
+        self.cell   = Tacotron2DecoderCell(** kwargs)
+        
+        self.n_frames_per_step  = self.cell.hparams.n_frames_per_step
+        self.n_mel_channels = self.cell.hparams.n_mel_channels
+        
+        self.output_size    = self.n_mel_channels * self.n_frames_per_step
+    
+    def call(self,
+             inputs,
+             encoder_output,
+             
+             input_length   = None,
+             initial_state  = None,
+             
+             mask   = None,
+             training   = False,
+             encoder_mask   = None,
+             
+             max_length = None,
+             early_stopping = False
+            ):
+        def cond(t, last_frame, finished, cell_state, outputs, stop_tokens, lengths):
+            return t < max_length and not (early_stopping and tf.reduce_all(finished))
+        
+        def body(t, last_frame, finished, cell_state, outputs, stop_tokens, lengths):
+            input_frame = last_frame if inputs is None else inputs[:, t]
+            
+            (frame, stop_token), new_cell_state = self.cell(
+                input_frame,
+                memory  = memory,
+                state   = cell_state,
+                processed_memory    = processed_memory,
+                
+                training    = training,
+                memory_mask = encoder_mask
+            )
+            
+            finished = tf.logical_or(finished, stop_token[:, -1] > 0.5)
+            lengths  = lengths + tf.cast(tf.logical_not(finished), tf.int32)
+            
+            if mask is not None:
+                frame = tf.where(tf.expand_dims(mask[:, t], axis = -1), frame, 0.)
+            
+            outputs     = outputs.write(t, frame)
+            stop_tokens = stop_tokens.write(t, stop_token)
+            
+            return Tacotron2DecoderState(
+                time    = t + 1,
+                last_frame  = frame,
+                finished    = finished,
+                cell_state  = new_cell_state,
+                outputs     = outputs,
+                stop_tokens = stop_tokens,
+                lengths     = lengths
+            )
 
-    def setup_decoder_init_state(self, decoder_init_state):
-        self.initial_state = decoder_init_state
+        batch_size = tf.shape(encoder_output)[0]
+        
+        if inputs is not None:
+            if isinstance(inputs, (list, tuple)):
+                inputs, input_length = inputs
 
-    def initialize(self, **kwargs):
-        return self.sampler.initialize() + (self.initial_state,)
+            if max_length is None:
+                max_length = tf.shape(inputs)[1]
 
-    @property
-    def output_size(self):
-        return TacotronDecoderOutput(
-            mel_output  = tf.nest.map_structure(
-                lambda shape: tf.TensorShape(shape), self.cell.output_size
+            if mask is None and input_length is not None:
+                mask = tf.sequence_mask(
+                    input_length, tf.shape(inputs)[1], dtype = tf.bool
+                )
+
+        if initial_state is None:
+            initial_state = self.cell.get_initial_state(inputs, encoder_output)
+
+        memory, processed_memory = self.cell.process_memory(encoder_output, mask = encoder_mask)
+
+        dynamic_size    = True if inputs is None else False
+        
+        outputs     = tf.TensorArray(
+            size    = 0 if dynamic_size else max_length,
+            dtype   = tf.float32,
+            dynamic_size    = dynamic_size,
+            element_shape   = (encoder_output.shape[0], self.output_size)
+        )
+        stop_tokens = tf.TensorArray(
+            size    = 0 if dynamic_size else max_length,
+            dtype   = tf.float32,
+            dynamic_size    = dynamic_size,
+            element_shape   = (encoder_output.shape[0], self.n_frames_per_step)
+        )
+
+        last_state = tf.while_loop(
+            cond    = cond,
+            body    = body,
+            loop_vars   = Tacotron2DecoderState(
+                time    = tf.zeros([], dtype = tf.int32),
+                last_frame  = tf.zeros((batch_size, self.n_mel_channels), dtype = tf.float32),
+                finished    = tf.fill((batch_size, ), False),
+                cell_state  = initial_state,
+                outputs     = outputs,
+                stop_tokens = stop_tokens,
+                lengths     = tf.zeros((batch_size, ), dtype = tf.int32)
             ),
-            token_output    = tf.TensorShape(self.sampler.reduction_factor),
-            sample_id       = self.sampler.sample_ids_shape,  # tf.TensorShape([])
-        )
-
-    @property
-    def output_dtype(self):
-        return TacotronDecoderOutput(
-            tf.float32, tf.float32, self.sampler.sample_ids_dtype
-        )
-
-    @property
-    def batch_size(self):
-        return self.sampler._batch_size
-        
-    def step(self, time, inputs, state, training = False):
-        (mel_outputs, stop_tokens), cell_state = self.cell(
-            inputs, state, training = training
+            maximum_iterations  = max_length,
+            parallel_iterations = 32,
+            swap_memory = True
         )
         
-        if self.output_layer is not None:
-            mel_outputs = self.output_layer(mel_outputs)
+        outputs = tf.reshape(tf.transpose(
+            last_state.outputs.stack(), [1, 0, 2]
+        ), [batch_size, -1, self.n_mel_channels])
+        stop_tokens = tf.reshape(tf.transpose(
+            last_state.stop_tokens.stack(), [1, 0, 2]
+        ), [batch_size, -1])
         
-        sample_ids = self.sampler.sample(
-            time = time, outputs = mel_outputs, state = cell_state
-        )
-        (finished, next_inputs, next_state) = self.sampler.next_inputs(
-            time        = time,
-            pred_outputs    = mel_outputs,
-            state       = cell_state,
-            sample_ids  = sample_ids,
-            stop_token_prediction   = stop_tokens,
-            training    = training
-        )
+        if mask is None:
+            mask = tf.sequence_mask(last_state.lengths, tf.shape(outputs)[1])
+        
+        return (outputs, stop_tokens, mask), last_state.cell_state
 
-        outputs = TacotronDecoderOutput(mel_outputs, stop_tokens, sample_ids)
-        return (outputs, next_state, next_inputs, finished)
+    def call_for_loop(self,
+                      inputs,
+                      encoder_output,
+
+                      input_length   = None,
+                      initial_state  = None,
+             
+                      mask   = None,
+                      training   = False,
+                      encoder_mask   = None,
+             
+                      max_length = None
+                     ):
+        if isinstance(inputs, (list, tuple)):
+            inputs, input_length = inputs
+        
+        if max_length is None:
+            max_length = tf.shape(inputs)[1]
+        
+        if mask is None and input_length is not None:
+            mask = tf.sequence_mask(
+                input_length, tf.shape(inputs)[1], dtype = tf.bool
+            )
+
+        if initial_state is None:
+            initial_state = self.cell.get_initial_state(inputs, encoder_output)
+
+        processed_memory = self.cell.process_memory(encoder_output, mask = encoder_mask)
+
+        outputs     = tf.TensorArray(dtype = tf.float32, size = 0, dynamic_size = True)
+        stop_tokens = tf.TensorArray(dtype = tf.float32, size = 0, dynamic_size = True)
+
+        state = initial_state
+        for t in tf.range(max_length):
+            (frame, stop_token), state = self.cell(
+                inputs[:, t],
+                memory  = encoder_output,
+                state   = state,
+                processed_memory    = processed_memory,
+                
+                training    = training,
+                memory_mask = encoder_mask
+            )
+            
+            if mask is not None:
+                frame = tf.where(tf.expand_dims(mask[:, t], axis = -1), frame, 0.)
+            
+            outputs     = outputs.write(t, frame)
+            stop_tokens = stop_tokens.write(t, stop_token)
+
+        outputs = tf.reshape(tf.transpose(
+            outputs.stack(), [1, 0, 2]
+        ), [tf.shape(encoder_output)[0], -1, self.n_mel_channels])
+        stop_tokens = tf.reshape(tf.transpose(
+            stop_tokens.stack(), [1, 0, 2]
+        ), [tf.shape(encoder_output)[0], -1])
+        
+        return (outputs, stop_tokens, mask), state
 
 class Tacotron2(tf.keras.Model):
     def __init__(self, name = 'tacotron2', ** kwargs):
@@ -723,67 +560,45 @@ class Tacotron2(tf.keras.Model):
         
         self.maximum_iterations = self.hparams.max_decoder_steps
         
-        sampler         = Tacotron2Sampler(self.hparams)
-        decoder_cell    = Tacotron2DecoderCell(** self.hparams)
-        
         self.encoder    = Tacotron2Encoder(
             vocab_size  = self.hparams.vocab_size, 
             ** self.hparams.get_config(prefix = 'encoder')
         )
-                
-        self.decoder    = Tacotron2Decoder(
-            sampler     = sampler,
-            decoder_cell    = decoder_cell,
-            output_layer    = None
-        )
-                
+        
+        self.decoder    = Tacotron2Decoder(** self.hparams)
+        
         self.postnet    = Postnet(
             n_mel_channels  = self.hparams.n_mel_channels,
             ** self.hparams.get_config(prefix = 'postnet')
         )
-        
-        decoder_cell.set_encoder_embedding_dim(self.encoder.embedding_dim)
-            
-    @property
-    def encoder_embedding_dim(self):
-        return self.encoder.output_shape[-1]
     
-    @property
-    def sampler(self):
-        return self.decoder.sampler
-    
-    def set_step(self, step):
-        self.sampler.set_step(step)
-    
-    def setup_maximum_iterations(self, maximum_iterations):
-        """ Call only for inference. """
-        self.maximum_iterations = maximum_iterations
-
-    def set_deterministic(self, deterministic, seed = 0):
-        self.decoder.cell.prenet.set_deterministic(deterministic, seed = seed)
-        
     def _build(self):
         input_text = np.array([[1, 2, 3, 4, 5, 6, 7, 8, 9]])
-        input_lengths = np.array([9])
+
         mel_outputs = np.random.normal(
             size = (1, 20, self.hparams.n_mel_channels)
         ).astype(np.float32)
         mel_lengths = np.array([20])
         
-        if self.encoder.use_speaker_embedding:
-            if self.encoder.use_speaker_id:
+        encoder_input = input_text
+        if self.hparams.encoder_speaker_embedding_dim:
+            if self.hparams.encoder_n_speaker > 1:
                 spk_input = np.array([0])
             else:
                 spk_input = np.random.normal(
-                    size = (1, self.encoder.speaker_embedding_dim)
+                    size = (1, self.hparams.encoder_speaker_embedding_dim)
                 ).astype(np.float32)
-            encoder_input = [input_text, input_lengths, spk_input]
-        else:
-            encoder_input = [input_text, input_lengths]
+            encoder_input = [input_text, spk_input]
         
-        inputs = encoder_input + [mel_outputs, mel_lengths]
-        self(inputs, training = False)
+        self([encoder_input, [mel_outputs, mel_lengths]], training = False)
 
+    @property
+    def encoder_embedding_dim(self):
+        return self.encoder.output_shape[-1]
+    
+    def set_deterministic(self, deterministic, seed = 0):
+        self.decoder.cell.prenet.set_deterministic(deterministic, seed = seed)
+    
     def call(self, inputs, initial_state = None, return_state = False, training = False):
         """
             Call logic (predict mel outputs with mel-target as input)
@@ -799,151 +614,81 @@ class Tacotron2(tf.keras.Model):
                         shape == [batch_size]
             Return : [decoder_output, mel_output, stop_tokens, alignment_history]
         """
-        if self.encoder.use_speaker_embedding:
-            input_text, input_lengths, input_speaker, mel_target, mel_lengths = inputs
-            encoder_input = [input_text, input_speaker]
+        if len(inputs) == 2:
+            encoder_input, decoder_input = inputs
         else:
-            input_text, input_lengths, mel_target, mel_lengths = inputs
-            encoder_input = input_text
+            encoder_input, decoder_input = inputs[:-2], inputs[-2:]
 
-        # create input-mask based on input_lengths
-        input_mask = tf.sequence_mask(
-            input_lengths,
-            maxlen  = tf.reduce_max(input_lengths),
-            name    = "input_sequence_masks",
+        # encoder_output shape == [batch_size, seq_in_len, encoder_embedding_dim]
+        encoder_output  = self.encoder(
+            encoder_input, training = training
+        )
+        encoder_mask    = encoder_output._keras_mask
+        
+        # decoder_output shape == [batch_size, seq_out_len, n_mel_channels]
+        # stop_tokens shape == [batch_size, seq_out_len]
+        (decoder_output, stop_tokens, decoder_mask), last_state = self.decoder(
+            decoder_input,
+            encoder_output  = encoder_output,
+            encoder_mask    = encoder_mask,
+            training    = training
         )
 
-        # Encoder Step.
-        encoder_output = self.encoder(
-            encoder_input, mask = input_mask, training = training
-        )
+        postnet_output  = self.postnet(decoder_output, training = training, mask = decoder_mask)
 
-        batch_size = tf.shape(encoder_output)[0]
-        encoder_seq_len = tf.shape(encoder_output)[1]
-
-        # Setup some initial placeholders for decoder step. Include:
-        # 1. mel_gts, mel_lengths for teacher forcing mode.
-        # 2. alignment_size for attention size.
-        # 3. initial state for decoder cell.
-        # 4. memory (encoder hidden state) for attention mechanism.
-        self.sampler.setup_target(mel_target = mel_target, mel_lengths = mel_lengths)
-
-        self.decoder.cell.set_encoder_seq_length(encoder_seq_len)
-        self.decoder.setup_decoder_init_state(
-            self.decoder.cell.get_initial_state(batch_size) if initial_state is None else initial_state
-        )
-        self.decoder.cell.attention_layer.setup_memory(
-            memory = encoder_output,
-            memory_sequence_length = input_lengths,  # use for mask attention.
-        )
-
-        # run decode step.
-        (
-            (frames_prediction, stop_token_prediction, _),
-            final_decoder_state,
-            _,
-        ) = dynamic_decode(
-            self.decoder,
-            maximum_iterations  = None,
-            training    = training,
-            swap_memory = True
-        )
-
-        decoder_outputs = tf.reshape(
-            frames_prediction, [batch_size, -1, self.hparams.n_mel_channels]
-        )
-        stop_token_prediction = tf.reshape(stop_token_prediction, [batch_size, -1])
-
-        postnet_output = self.postnet(decoder_outputs, training = training)
-
-        mel_outputs = decoder_outputs + postnet_output
+        mel_outputs     = decoder_output + postnet_output
 
         alignment_history = tf.transpose(
-            final_decoder_state.alignment_history.stack(), [1, 0, 2]
+            last_state.alignment_history.stack(), [1, 0, 2]
         )
-        if return_state:
-            return (
-                decoder_outputs,
-                mel_outputs,
-                stop_token_prediction,
-                alignment_history
-            ), final_decoder_state
         
-        return decoder_outputs, mel_outputs, stop_token_prediction, alignment_history
+        outputs = (decoder_output, mel_outputs, stop_tokens, alignment_history)
+        return outputs if not return_state else (outputs, last_state)
 
     @tf.function(experimental_relax_shapes = True)
-    def infer(self, inputs, input_lengths, training = False, max_length = -1, ** kwargs):
-        """Call logic."""
+    def infer(self,
+              inputs,
+              training  = False,
+              max_length    = -1,
+              early_stopping    = True,
+              return_state  = False,
+              ** kwargs
+             ):
         if max_length <= 0: max_length = self.maximum_iterations
-        # create input-mask based on input_lengths
-        input_mask = tf.sequence_mask(
-            input_lengths,
-            maxlen  = tf.reduce_max(input_lengths),
-            name    = "input_sequence_masks",
+
+        # encoder_output shape == [batch_size, seq_in_len, encoder_embedding_dim]
+        encoder_output  = self.encoder(inputs, training = training)
+        encoder_mask    = encoder_output._keras_mask
+        
+        # decoder_output shape == [batch_size, seq_out_len, n_mel_channels]
+        # stop_tokens shape == [batch_size, seq_out_len]
+        (decoder_output, stop_tokens, decoder_mask), last_state = self.decoder(
+            None,
+            encoder_output  = encoder_output,
+            encoder_mask    = encoder_mask,
+            training    = training,
+            max_length  = max_length,
+            early_stopping  = early_stopping
         )
 
-        # Encoder Step.
-        encoder_hidden_states = self.encoder(
-            inputs, mask = input_mask, training = False
-        )
+        postnet_output  = self.postnet(decoder_output, training = training, mask = decoder_mask)
 
-        batch_size = tf.shape(encoder_hidden_states)[0]
-        encoder_seq_len = tf.shape(encoder_hidden_states)[1]
-
-        # Setup some initial placeholders for decoder step. Include:
-        # 1. batch_size for inference.
-        # 2. alignment_size for attention size.
-        # 3. initial state for decoder cell.
-        # 4. memory (encoder hidden state) for attention mechanism.
-        # 5. window front/back to solve long sentence synthesize problems. (call after setup memory.)
-        self.decoder.sampler.set_batch_size(batch_size)
-
-        self.decoder.cell.set_encoder_seq_length(encoder_seq_len)
-        self.decoder.setup_decoder_init_state(
-            self.decoder.cell.get_initial_state(batch_size)
-        )
-        self.decoder.cell.attention_layer.setup_memory(
-            memory = encoder_hidden_states,
-            memory_sequence_length = input_lengths,  # use for mask attention.
-        )
-
-        # run decode step.
-        (
-            (frames_prediction, stop_token_prediction, _),
-            final_decoder_state,
-            _,
-        ) = dynamic_decode(
-            self.decoder,
-            maximum_iterations = max_length,
-            training = False
-        )
-
-        decoder_outputs = tf.reshape(
-            frames_prediction, [batch_size, -1, self.hparams.n_mel_channels]
-        )
-        stop_token_prediction = tf.reshape(stop_token_prediction, [batch_size, -1])
-
-        postnet_output = self.postnet(decoder_outputs, training = False)
-
-        mel_outputs = decoder_outputs + postnet_output
+        mel_outputs     = decoder_output + postnet_output
 
         alignment_history = tf.transpose(
-            final_decoder_state.alignment_history.stack(), [1, 0, 2]
+            last_state.alignment_history.stack(), [1, 0, 2]
         )
-
-        return decoder_outputs, mel_outputs, stop_token_prediction, alignment_history
-    
         
+        outputs = (decoder_output, mel_outputs, stop_tokens, alignment_history)
+        return outputs if not return_state else (outputs, last_state)
+    
     def get_config(self):
-        config = self.hparams.get_config()
-        config['init_step'] = int(tf.cast(self.sampler.step, tf.int32))
-        return config
+        return self.hparams.get_config()
     
     @classmethod
     def from_config(cls, config, custom_objects = None):
         return cls(** config)
-              
-        
+
 def pytorch_tacotron(to_gpu = True, eval_mode = True):
     import torch
 
@@ -963,11 +708,10 @@ custom_functions    = {
     'Tacotron2DecoderCell'  : Tacotron2DecoderCell,
     'Tacotron2' : Tacotron2
 }
-        
+
 custom_objects  = {
     'LocationSensitiveAttention' : LocationSensitiveAttention,
     'Prenet'    : Prenet,
-    'Tacotron2Encoder'  : Tacotron2Encoder,
     'Tacotron2Decoder'  : Tacotron2Decoder,
     'Tacotron2DecoderCell'  : Tacotron2DecoderCell,
     'Tacotron2' : Tacotron2

@@ -36,6 +36,11 @@ _keys_to_propagate  = (
     'xtick_labels', 'ytick_labels', 'tick_labels', 'marker', 'marker_kwargs'
 )
 
+_default_audio_plot_config  = {
+    'title' : 'Audio signal',
+    'xlabel'    : 'time (sec)'
+}
+
 _default_spectrogram_plot_config = {
     'title'         : 'Spectrograms',
     'use_subplots'  : True,
@@ -91,6 +96,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
 
          title = None, xlabel = None, ylabel = None, 
          xtick_labels = None, ytick_labels = None, tick_labels = None,
+         xtick_pos = None, ytick_pos = None,
          xtick_rotation = 0, ytick_rotation = 0, tick_rotation = 0,
          titlesize = 15, fontsize = 13, labelsize = 11, fontcolor = 'w',
          
@@ -225,7 +231,9 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         raise ValueError("`plot_type` must be a valid matplotlib.pyplot method (such as plot, scatter, hist, imshow, ...)\n  Got : {}".format(plot_type))
     # Maybe create the figure and get the axis
     if y is None: x, y = None, x
-    if new_fig and ax is None: fig = plt.figure(figsize = figsize)
+    if new_fig and ax is None:
+        fig = plt.figure(figsize = figsize)
+        if facecolor: fig.set_facecolor(facecolor)
     
     if ax is None: ax = plt.gca()
     # Modify the axis' style and set labels
@@ -257,6 +265,8 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         kwargs['linewidth'] = linewidth
         if 'c' not in kwargs: kwargs['color'] = color
 
+    if plot_type == 'bar' and x is None and isinstance(y, dict):
+        xtick_labels, y = list(zip(* y.items()))
     if plot_type == 'imshow' and y.ndim == 3 and y.shape[-1] == 1:
         y = y[:,:,0]
     if plot_type in ('bar', 'scatter') and x is None:
@@ -311,14 +321,16 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     if xtick_labels is None: xtick_labels = tick_labels
     if ytick_labels is None: ytick_labels = tick_labels
 
-    if xtick_labels is not None and len(xtick_labels) < _tick_label_limit:
+    if xtick_labels is not None and len(xtick_labels) > 0 and len(xtick_labels) < _tick_label_limit:
         xtick_labels = [str(l) for l in xtick_labels]
-        if len(xtick_labels) > 0: ax.set_xticks(np.arange(len(xtick_labels) + 1) - 0.5)
-        ax.set_xticklabels(xtick_labels)
+        if xtick_pos is None:
+            xtick_pos = np.linspace(0, int(ax.dataLim.x1), len(xtick_labels))
+        ax.set_xticks(xtick_pos, labels = xtick_labels)
         
-    if ytick_labels is not None and len(ytick_labels) < _tick_label_limit:
-        if len(ytick_labels) > 0: ax.set_yticks(np.arange(len(ytick_labels) + 1) - 0.5)
-        ax.set_yticklabels(ytick_labels)
+    if ytick_labels is not None and len(ytick_labels) > 0 and len(ytick_labels) < _tick_label_limit:
+        if ytick_pos is None:
+            ytick_pos = np.linspace(0, int(ax.dataLim.y1), len(ytick_labels))
+        ax.set_yticks(ytick_pos, labels = ytick_labels)
     
     if xtick_rotation == 0: xtick_rotation = tick_rotation
     if ytick_rotation == 0: ytick_rotation = tick_rotation
@@ -326,7 +338,6 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     if xtick_rotation != 0: ax.tick_params(axis = 'x', labelrotation = xtick_rotation)
     if ytick_rotation != 0: ax.tick_params(axis = 'y', labelrotation = ytick_rotation)
 
-        
     if with_grid: ax.grid(** grid_kwargs)
     
     plt.tight_layout()
@@ -341,7 +352,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     else:
         return ax, im
 
-def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nrows = None,
+def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nrows = None,
                   use_subplots = False, horizontal = False,
                   # for pd.DataFrame grouping
                   by = None, corr = None,
@@ -519,6 +530,7 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
         figsize = (x_size * ncols, y_size * nrows)
     
     fig = plt.figure(figsize = figsize)
+    fig.set_facecolor(kwargs.get('facecolor', 'black'))
     
     if title is not None:
         fig.text(
@@ -559,6 +571,35 @@ def plot_multiple(* args, size = 3, x_size = None, y_size = None, ncols = 2, nro
     if close: plt.close()
     else: return axes
 
+def plot_audio(rate, audio = None, x = None, channels = None, n_labels = 10, ** kwargs):
+    assert audio is not None or x is not None
+    if audio is None: audio = x
+    if hasattr(audio, 'numpy'): audio = audio.numpy()
+    
+    times = np.linspace(0, audio.shape[-1], n_labels)
+    kwargs.setdefault('xtick_pos', times)
+    kwargs.setdefault('xtick_labels', ['{:.2f}'.format(t / rate) for t in times])
+
+    if len(audio.shape) == 2:
+        audio_range = np.max(audio) - np.min(audio)
+        audio = [
+            channel + i * audio_range for i, channel in enumerate(audio)
+        ]
+        if channels is None:
+            channels = [
+                'Ch {}'.format(i) for i in range(len(audio))
+            ]
+        kwargs.setdefault('ytick_labels', channels)
+    
+    for k, v in _default_audio_plot_config.items():
+        kwargs.setdefault(k, v)
+    kwargs['plot_type'] = 'plot'
+
+    if channels and len(channels) > 1:
+        return plot({ch : sign for ch, sign in zip(channels, audio)}, with_legend = False, ** kwargs)
+    else:
+        return plot(audio, ** kwargs)
+    
 def plot_spectrogram(* args, ** kwargs):
     """
         Call plot_multiple() after normalizing spectrograms : making them 2D images and rotate them by 90° to put the time on x-axis (as models usually generate [B, T, F] spectrograms)
@@ -581,7 +622,7 @@ def plot_spectrogram(* args, ** kwargs):
     
     return plot_multiple(* args, ** kwargs)
 
-def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, ** kwargs):
+def plot_confusion_matrix(cm = None, true = None, pred = None, x = None, labels = None, ** kwargs):
     """
         Plot a confusion matrix 
         Arguments : 
@@ -592,9 +633,9 @@ def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, **
         
         This function can be used as subplot in `plot_multiple` with `plot_type = 'cm'`
     """
-    assert cm is not None or (true is not None and pred is not None)
+    assert x is not None or cm is not None or (true is not None and pred is not None)
     
-    if cm is None:      cm = confusion_matrix(true, pred)
+    if cm is None:      cm = confusion_matrix(true, pred) if true is not None else x
     if labels is None:  labels = range(cm.shape[0])
     
     for k, v in _default_cm_plot_config.items():
@@ -604,7 +645,7 @@ def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, **
         cm, y_labels = labels, x_labels = labels, ** kwargs
     )
 
-def plot_matrix(matrix = None, y_labels = None, x_labels = None, norm = False,
+def plot_matrix(matrix = None, x = None, y_labels = None, x_labels = None, norm = False,
                 factor_size = 1., cmap = 'magma', ticksize = 13,
                           
                 filename = None, show = True, close = True, ** kwargs
@@ -623,6 +664,8 @@ def plot_matrix(matrix = None, y_labels = None, x_labels = None, norm = False,
         
         This function can be used as subplot in `plot_multiple` with `plot_type = 'matrix'`
     """
+    assert matrix is not None or x is not None
+    if matrix is None: matrix = x
     if hasattr(matrix, 'numpy'): matrix = matrix.numpy()
     if norm: matrix = matrix.astype('float') / matrix.sum(axis = 1)[:, np.newaxis]
     
@@ -657,7 +700,7 @@ def plot_matrix(matrix = None, y_labels = None, x_labels = None, norm = False,
     if close: plt.close()
     else: return ax, im
 
-def plot_classification(scores, labels = None, k = 5, ** kwargs):
+def plot_classification(scores = None, labels = None, k = 5, x = None, ** kwargs):
     """
         Plot classification's scores in decreasing order
         
@@ -669,6 +712,8 @@ def plot_classification(scores, labels = None, k = 5, ** kwargs):
         
         This function can be used inside `plot` or `plot_multiple` with `plot_type = 'classification'`
     """
+    assert scores is not None or x is not None
+    if scores is None: scores = x
     if hasattr(scores, 'numpy'): scores = scores.numpy()
     if labels is None: labels = np.arange(len(scores))
     
@@ -760,6 +805,7 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
 
 _plot_methods   = {
     'cm'    : plot_confusion_matrix,
+    'audio' : plot_audio,
     'matrix'    : plot_matrix,
     'classification'    : plot_classification,
     'confusion_matrix'  : plot_confusion_matrix,

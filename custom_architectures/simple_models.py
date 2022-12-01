@@ -13,13 +13,14 @@
 import logging
 import tensorflow as tf
 
-from tensorflow.keras.layers import Input, Flatten, Dense
+from tensorflow.keras.layers import Input, Dense
 
 from custom_architectures.current_blocks import *
 from custom_architectures.current_blocks import _get_var, _add_layer, _get_flatten_layer
 
 from hparams import HParams
 from custom_layers import get_activation, SimilarityLayer
+from custom_layers.masked_1d import *
 
 HParamsDenseBN  = HParams(
     units       = [32, 32], 
@@ -39,15 +40,17 @@ HParamsConvBN   = HParams(
     dilation_rate   = 1,
     kernel_initializer  = 'glorot_uniform',
     bias_initializer    = 'zeros',
+    use_manual_padding  = True,
     
     activation      = 'relu',
     drop_rate       = 0.25,
     bnorm           = 'after',
     
-    pooling         = None,
-    pool_size       = 2,
+    use_mask    = None,
+    pooling     = None,
+    pool_size   = 2,
     pool_strides    = 2,
-    residual        = False
+    residual    = False
 )
 
 HParamsPerceptron = HParams(
@@ -67,6 +70,10 @@ HParamsCNN = HParams(
     ** HParamsConvBN,
     ** HParamsConvBN.get_config(add_prefix = 'final_conv'),
     ** HParamsDenseBN.get_config(add_prefix = 'dense'),
+    
+    add_mask_layer  = None,
+    pad_value   = 0.,
+    add_final_norm  = False,
     
     n_conv  = 4,
     conv_name   = 'conv_{}',
@@ -152,11 +159,16 @@ def perceptron(input_shape = None, output_shape = None, inputs = None, return_ou
         return tf.keras.Model(inputs = inputs, outputs = outputs, name = hparams.name)
 
 def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_output = False,
-               ** kwargs):
+               use_sequential = None, ** kwargs):
     assert (input_shape is not None or inputs is not None) and output_shape is not None
     hparams = HParamsCNN(** kwargs)
     
-    use_sequential = not isinstance(output_shape, (list, tuple)) and not hparams.residual and not hparams.final_conv_residual
+    if hparams.add_mask_layer is None:
+        hparams.add_mask_layer = True if inputs is None else False
+    
+    if use_sequential is None:
+        use_sequential = not isinstance(output_shape, (list, tuple)) and not hparams.residual and not hparams.final_conv_residual
+    
     if inputs is None:
         if isinstance(input_shape, int): input_shape = (input_shape,)
         if use_sequential:
@@ -164,13 +176,20 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
         else:
             inputs = Input(shape = input_shape, name = "inputs")
     else:
-        assert isinstance(inputs, tf.Tensor)
+        #assert isinstance(inputs, tf.Tensor)
         use_sequential = False
         input_shape = tuple(inputs.shape)[1:]
 
     conv_type = hparams.conv_type.lower()
-    assert conv_type in _conv_layer_fn, "Unknown conv type : {}".format(conv_type)
+    if hparams.use_mask is None:
+        hparams.use_mask = True if 'masked_{}'.format(conv_type) in _conv_layer_fn else False
+        logger.info('Set `use_mask = {}` by default as the masking operation is{} supported. To remove this message or change the behavior, explicitely pass `use_mask = ...`'.format(
+            hparams.use_mask, '' if hparams.use_mask else ' not'
+        ))
     
+    if hparams.use_mask: conv_type = 'masked_{}'.format(conv_type)
+    assert conv_type in _conv_layer_fn, "Unknown conv type : {}".format(conv_type)
+
     conv_layer_fn = _conv_layer_fn[conv_type]
     
     ########################################
@@ -178,8 +197,11 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
     ########################################
     
     x = inputs
+    if hparams.use_mask and hparams.add_mask_layer:
+        x = _add_layer(x, tf.keras.layers.Masking(mask_value = hparams.pad_value))
+
     for i in range(hparams.n_conv):
-        last_layer = (i == hparams.n_conv -1) and hparams.n_final_conv == 0 and not hparams.dense_as_final
+        last_layer = (i == hparams.n_conv -1) and hparams.n_final_conv == 0 and not hparams.dense_as_final and not hparams.flatten
         
         config  = HParamsConvBN.extract(hparams)
         config  = {k : _get_var(v, i) for k, v in config.items()}
@@ -187,10 +209,11 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
         
         if last_layer:
             config.update({
+                'filters'   : output_shape,
                 'activation'    : hparams.final_activation,
-                'bnorm'     : 'never',
                 'drop_rate' : 0.
             })
+            if not hparams.add_final_norm: config['norm'] = 'never'
         
         x = conv_layer_fn(x, ** config)
     
@@ -210,7 +233,7 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
     ##########
     
     if hparams.flatten:
-        if not hparams.dense_as_final: hparams.flatten_kwargs['units'] = output_shape
+        if not hparams.dense_as_final: hparams.flatten_kwargs.setdefault('units', output_shape)
         dim = '1d' if '1d' in conv_type else '2d'
         x = _add_layer(x, _get_flatten_layer(
             hparams.flatten_type, dim, ** hparams.flatten_kwargs
@@ -358,19 +381,10 @@ def classifier(feature_extractor,
     
     return feature_extractor
 
-_distance_fn = {
-    'dp'        : lambda inputs: tf.matmul(inputs[0], inputs[1]),
-    'l1'        : lambda inputs: tf.abs(inputs[0] - inputs[1]),
-    'l2'        : lambda inputs: tf.square(inputs[0] - inputs[1]),
-    'l1_cat'    : lambda inputs: tf.concat([tf.abs(inputs[0] - inputs[1]), x, y], axis = -1),
-    'l2_cat'    : lambda inputs: tf.concat([tf.square(inputs[0] - inputs[1]), x, y], axis = -1),
-    'manhattan' : lambda inputs: tf.reduce_sum(tf.abs(inputs[0] - inputs[1]), axis = -1, keepdims = True),
-    'euclidian' : lambda inputs: tf.sqrt(tf.reduce_sum(tf.square(inputs[0] - inputs[1]), axis = -1, keepdims = True))
-}
-
 _conv_layer_fn = {
     'conv1d'    : Conv1DBN,
     'conv2d'    : Conv2DBN,
+    'masked_conv1d' : MaskedConv1DBN,
     'separableconv1d'   : SeparableConv1DBN,
     'separableconv2d'   : SeparableConv2DBN,
     'conv1dtranspose'   : Conv1DTransposeBN,
@@ -386,5 +400,9 @@ custom_functions   = {
 }
 
 custom_objects  = {
-    'SimilarityLayer'   : SimilarityLayer
+    'SimilarityLayer'   : SimilarityLayer,
+    'MaskedConv1D'      : MaskedConv1D,
+    'MaskedMaxPooling1D'    : MaskedMaxPooling1D,
+    'MaskedAveragePooling1D'    : MaskedAveragePooling1D,
+    'MaskedZeroPadding1D'   : MaskedZeroPadding1D
 }

@@ -102,7 +102,7 @@ def load_dataset(ds_name,
             for mode, data in dataset.items():
                 datasets.setdefault(mode, []).append(data)
         
-        for mode, datas in datasets.keys():
+        for mode, datas in datasets.items():
             dataset = pd.concat(datas, ignore_index = True, sort = False).dropna(axis = 'columns')
             if shuffle: dataset = sklearn_shuffle(dataset, random_state = random_state)
             datasets[mode] = dataset

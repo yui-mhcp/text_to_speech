@@ -15,14 +15,28 @@ import tensorflow as tf
 class FasterEmbedding(tf.keras.layers.Embedding):
     """Faster version of embedding."""
 
-    def __init__(self, * args, ** kwargs):
+    def __init__(self, * args, mask_value = None, ** kwargs):
         super().__init__(* args, ** kwargs)
+        
+        if self.mask_zero: mask_value = 0
+        self.mask_value         = mask_value
+        self.supports_masking   = mask_value is not None
 
     def change_vocabulary(self, new_vocab, ** kwargs):
         self.input_dim = len(new_vocab)
         self.build((None, None))
 
+    def compute_mask(self, inputs, mask = None):
+        if mask is not None or self.mask_value is None: return mask
+        
+        return tf.math.not_equal(inputs, self.mask_value)
+
     def call(self, inputs):
         inputs  = tf.cast(tf.expand_dims(inputs, -1), tf.int32)
         outputs = tf.gather_nd(self.embeddings, inputs)
         return outputs
+
+    def get_config(self):
+        config = super().get_config()
+        config['mask_value'] = self.mask_value
+        return config

@@ -17,6 +17,9 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from tqdm import tqdm
+from multiprocessing import cpu_count
+
 from utils.file_utils import load_data, dump_data
 from utils.pandas_utils import filter_df, aggregate_df
 from utils.sequence_utils import pad_batch
@@ -76,8 +79,106 @@ def aggregate_embeddings(dataset, column = 'id', aggregation_name = 'speaker_emb
         dataset, column, 'embedding', merge = True, ** kw
     )
 
-def save_embeddings(directory, embeddings, embedding_name = _embedding_filename):
-    """ Save embedding to the given path """
+def embed_dataset(directory,
+                  dataset,
+                  embed_fn,
+                  batch_size    = 1,
+                  
+                  load_fn   = None,
+                  cache_size    = 10000,
+                  max_workers   = cpu_count(),
+                  
+                  save_every    = 10000,
+                  overwrite     = False,
+                  embedding_name    = _embedding_filename,
+                  
+                  tqdm = tqdm,
+                  verbose   = True,
+                  
+                  ** kwargs
+                 ):
+    if load_fn is None: cache_size = batch_size
+    else:
+        from utils.thread_utils import Consumer
+        
+        cache_size      = max(cache_size, batch_size)
+        load_consumer   = Consumer(load_fn, max_workers = max_workers, keep_result = False)
+        load_consumer.start()
+    
+    round_tqdm  = tqdm if load_fn is None else lambda x: x
+    if load_fn is None: tqdm = None
+    
+    embeddings = None
+    if not overwrite:
+        embeddings = load_embedding(
+            directory = directory, embedding_name = embedding_name, aggregate_on = None, ** kwargs
+        )
+    
+    processed, to_process = [], dataset
+    if embeddings is not None:
+        processed   = dataset['filename'].isin(embeddings['filename'])
+        to_process  = dataset[~processed]
+
+    if len(to_process) == 0:
+        logger.info("Dataset already processed !")
+        return embeddings
+    
+    to_process = to_process.to_dict('records')
+
+    logger.info("Processing dataset...\n  {} utterances already processed\n  {} utterances to process".format(len(dataset) - len(to_process), len(to_process)))
+
+    n, n_round = 0 if embeddings is None else len(embeddings), len(to_process) // cache_size + 1
+    for i in round_tqdm(range(n_round)):
+        if load_fn is not None: logger.info("Round {} / {}".format(i + 1, n_round))
+        
+        batch = to_process[i * cache_size : (i + 1) * cache_size]
+        if len(batch) == 0: continue
+        
+        if load_fn is not None:
+            batch = load_consumer.extend_and_wait(batch, tqdm = tqdm, stop = False, ** kwargs)
+
+        embedded = embed_fn(batch, batch_size = batch_size, tqdm = tqdm, ** kwargs)
+        if hasattr(embedded, 'numpy'): embedded = embedded.numpy()
+        
+        embedded = pd.DataFrame([
+            {'filename' : infos['filename'], 'id' : infos['id'], 'embedding' : emb} 
+            for infos, emb in zip(to_process[i * cache_size : (i + 1) * cache_size], embedded)
+        ])
+        embeddings = pd.concat([embeddings, embedded], ignore_index = True) if embeddings is not None else embedded
+        
+        if len(embeddings) - n >= save_every:
+            n = len(embeddings)
+            if load_fn is not None: logger.info("Saving at utterance {}".format(len(embeddings)))
+            save_embeddings(
+                directory, embeddings, embedding_name, remove_file_prefix = True
+            )
+    
+    if n < len(embeddings):
+        save_embeddings(
+            directory, embeddings, embedding_name, remove_file_prefix = True
+        )
+    
+    return embeddings
+
+def save_embeddings(directory,
+                    embeddings,
+                    embedding_name  = _embedding_filename,
+                    remove_file_prefix  = True
+                   ):
+    """
+        Save `embeddings` to the given path
+        
+        Arguments :
+            - directory : the embeddings' filename (if ending with a valid extension) or the directory
+            - embeddings    : the embeddings to save
+            embedding_name  : the filename basename
+                If no extension, set to `_default_embedding_ext`
+                If contains {}, formatted with the embedding dimension (`embeddings.shape[-1]`)
+            - remove_file_prefix    : if a `filename` column is there, remove the `remove_file_prefix` from the start of filenames (only working when embeddings is a `pd.DataFrame`)
+                If `True`, removes the `get_dataset_dir` prefix
+                It is useful when saving datasets as the dataset directory can differ between machines, meaning that filenames also differ.
+                Note that it is removed only at the start of filenames such that if your filename is not in the dataset directory, it will have no effect ;)
+    """
     if os.path.splitext(directory)[1] in _allowed_embeddings_ext:
         embedding_file = directory
     else:
@@ -98,6 +199,19 @@ def save_embeddings(directory, embeddings, embedding_name = _embedding_filename)
         ))
     
     if embedding_file.endswith('npy'): embeddings = embeddings_to_np(embeddings)
+    elif remove_file_prefix is not None and isinstance(embeddings, pd.DataFrame) and 'filename' in embeddings.columns:
+        if remove_file_prefix is True:
+            try:
+                from datasets.custom_datasets import get_dataset_dir
+                remove_file_prefix = get_dataset_dir()
+            except (ImportError, ModuleNotFoundError):
+                pass
+        
+        if isinstance(remove_file_prefix, str):
+            embeddings['filename'] = embeddings['filename'].apply(
+                lambda f: f.lstrip(remove_file_prefix)
+            )
+    
     dump_data(embedding_file, embeddings)
     
     return embedding_file
@@ -107,6 +221,7 @@ def load_embedding(directory,
                    embedding_name   = _embedding_filename,
                    embedding_dim    = None,
                    dataset          = None,
+                   filename_prefix  = True,
                    
                    aggregate_on     = 'id',
                    aggregate_mode   = 0,
@@ -122,7 +237,12 @@ def load_embedding(directory,
             - embedding_name    : the embeddings' filename (can contains '{}' which will be formatted by `embedding_dim`)
             - embedding_dim : dimension of the embedding (will format `filename` if required)
             
+            - filename_prefix   : a path to add at all filenames' start
+                if `True`, it adds the `get_dataset_dir` as prefix
+                Note that if the filename exists as is, it will have no effect
+            
             - dataset       : the dataset on which to merge embeddings
+            
             - aggregate_on  : the column to aggregate on
             - aggregate_mode    : the mode for the aggregation
             - aggregate_name    : the name for the aggregated embeddings' column (default to `speaker_embedding` for retro-compatibility)
@@ -143,13 +263,12 @@ def load_embedding(directory,
                 directory = os.path.join(directory, 'embeddings')
             emb_file = os.path.join(directory, embedding_name)
     
-    if not os.path.exists(emb_file):
+    if not os.path.splitext(emb_file)[1]:
         ext = get_embedding_file_ext(emb_file)
-        
-        if ext is None:
-            raise ValueError("Embedding file {} does not exist !".format(emb_file))
-        
-        emb_file += ext
+        if ext: emb_file += ext
+    
+    if not os.path.exists(emb_file):
+        return None
     
     embeddings  = load_data(emb_file)
     if not isinstance(embeddings, pd.DataFrame): return embeddings
@@ -164,6 +283,19 @@ def load_embedding(directory,
         embeddings = aggregate_embeddings(
             embeddings, aggregate_on, aggregation_name = aggregate_name, mode = aggregate_mode
         )
+    
+    if filename_prefix is not None and 'filename' in embeddings.columns:
+        if filename_prefix is True:
+            try:
+                from datasets.custom_datasets import get_dataset_dir
+                filename_prefix = get_dataset_dir()
+            except (ImportError, ModuleNotFoundError):
+                pass
+        
+        if isinstance(filename_prefix, str):
+            embeddings['filename'] = embeddings['filename'].apply(
+                lambda f: os.path.join(filename_prefix, f)
+            )
     
     if dataset is None: return embeddings
     

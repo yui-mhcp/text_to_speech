@@ -15,6 +15,7 @@ import tensorflow as tf
 
 from tensorflow.keras.layers import *
 from custom_layers import get_activation
+from custom_layers.masked_1d import *
 
 logger  = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampli
 _str_layers     = {
     'dense'     : Dense,
     'conv1d'    : Conv1D,
+    'masked_conv1d' : MaskedConv1D,
     'conv2d'    : Conv2D,
     'lstm'      : LSTM,
     'gru'       : GRU,
@@ -72,7 +74,7 @@ def _get_flatten_layer(flatten_type, dim, ** kwargs):
         
         return layer
 
-def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, ** kwargs):
+def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, use_mask = None, ** kwargs):
     if isinstance(pool_type, (list, tuple)):
         return [
             _get_pooling_layer(pool, dim, * args, global_pooling = global_pooling, ** kwargs)
@@ -87,12 +89,14 @@ def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, ** kwargs
         if global_pooling:
             pool_class = GlobalMaxPooling1D if dim == '1d' else GlobalMaxPooling2D
         else:
-            pool_class = MaxPooling1D if dim == '1d' else MaxPooling2D
+            if dim == '2d': pool_class = MaxPooling2D
+            else: pool_class = MaxPooling1D if use_mask is False else MaskedMaxPooling1D
     elif pool_type in ('avg', 'average'):
         if global_pooling:
             pool_class = GlobalAveragePooling1D if dim == '1d' else GlobalAveragePooling2D
         else:
-            pool_class = AveragePooling1D if dim == '1d' else AveragePooling2D
+            if dim == '2d': pool_class = AveragePooling2D
+            else: pool_class = AveragePooling1D if use_mask is False else MaskedAveragePooling1D
     elif pool_type in ('up', 'upsampling'):
         if global_pooling:
             raise ValueError("Upsampling does not exist in global pooling mode !")
@@ -101,6 +105,21 @@ def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, ** kwargs
         return None
     
     return pool_class(* args, ** kwargs)
+
+def _get_padding_layer(kernel_size, dim, * args, use_mask = None, ** kwargs):
+    if isinstance(kernel_size, (list, tuple)): kernel_size = kernel_size[0]
+    kernel_half = kernel_size // 2
+    if kernel_size <= 1: return None
+    
+    padding = (kernel_half, kernel_half)
+    
+    dim = dim.lower()
+    assert dim in ('1d', '2d')
+    
+    if dim == '2d':
+        raise NotImplementedError()
+    else:
+        return ZeroPadding1D(padding) if not use_mask else MaskedZeroPadding1D(padding)
 
 def _get_layer(layer_name, * args, ** kwargs):
     if isinstance(layer_name, (list, tuple)):
@@ -114,6 +133,7 @@ def _get_layer(layer_name, * args, ** kwargs):
     return _str_layers[layer_name](* args, ** kwargs)
 
 def _layer_bn(model, layer_type, n, * args, 
+              use_manual_padding    = False,
               
               bnorm     = 'after',
               momentum  = 0.99,
@@ -121,8 +141,9 @@ def _layer_bn(model, layer_type, n, * args,
               bn_axis   = -1,
               bn_name   = None,
               
-              pooling       = None,
-              pool_size     = 2,
+              use_mask  = False,
+              pooling   = None,
+              pool_size = 2,
               pool_strides  = 2,
               pool_padding  = 'valid',
               
@@ -150,7 +171,16 @@ def _layer_bn(model, layer_type, n, * args,
         kwargs_i['name'] = '{}_{}'.format(name, i+1) if name and n > 1 else name
         
         if i > 0: kwargs_i.pop('input_shape', None)
-
+        
+        if use_manual_padding and kwargs_i.get('padding', None) == 'same':
+            dim = '1d' if '1D' in layer_type.__name__ else '2d'
+            try:
+                pad_layer = _get_padding_layer(kwargs_i['kernel_size'], dim, use_mask = use_mask)
+                if pad_layer is not None: x = _add_layer(x, pad_layer)
+                kwargs_i['padding'] = 'valid'
+            except NotImplementedError:
+                logger.warning('manual padding is not supported for this dimension ({}) yet'.format(dim))
+        
         x = _add_layer(x, layer_type(* args_i, ** kwargs_i))
         
         if activation and i < n - 1:
@@ -175,7 +205,7 @@ def _layer_bn(model, layer_type, n, * args,
         dim = '1d' if '1D' in layer_type.__name__ else '2d'
         x = _add_layer(x, _get_pooling_layer(
             pooling, dim, pool_size = pool_size,
-            strides = pool_strides, padding = pool_padding
+            strides = pool_strides, padding = pool_padding, use_mask = use_mask
         ))
     
     if drop_rate > 0.: x = _add_layer(x, Dropout(drop_rate))
@@ -201,6 +231,14 @@ def Conv1DBN(x, filters, *args, ** kwargs):
     kwargs['filters'] = filters
     
     x = _layer_bn(x, Conv1D, n, * args, ** kwargs)
+    
+    return x
+
+def MaskedConv1DBN(x, filters, *args, ** kwargs):
+    n = len(filters) if isinstance(filters, (list, tuple)) else 1
+    kwargs['filters'] = filters
+    
+    x = _layer_bn(x, MaskedConv1D, n, * args, ** kwargs)
     
     return x
 

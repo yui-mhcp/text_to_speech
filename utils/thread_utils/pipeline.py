@@ -234,7 +234,7 @@ class Pipeline(Consumer):
         with self.mutex_db:
             if not self.__saved:
                 self.__saved = True
-                data = data if not self.as_list else [
+                data = self.__database if not self.as_list else [
                     {** v, self.id_key : k} for k, v in self.__database.items()
                 ]
                 dump_data(filename = self.filename, data = data)

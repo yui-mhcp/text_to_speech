@@ -1,5 +1,7 @@
 # :yum: Text To Speech (TTS)
 
+**WARNING : models' weights have been modified as the architecture has been cleaned up and optimized. Make sure to re-upload the pretrained weights or contact me if you have trained custom models, I can send you the code to update their checkpoint !** :smile:
+
 ## Project structure
 
 ```bash

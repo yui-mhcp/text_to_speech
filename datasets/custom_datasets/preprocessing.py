@@ -14,6 +14,7 @@ import os
 import json
 import gzip
 import logging
+import pandas as pd
 
 from tqdm import tqdm
 from multiprocessing import cpu_count

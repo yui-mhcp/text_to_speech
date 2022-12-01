@@ -82,6 +82,8 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
 
         mel = tf.py_function(load_mel, [data[stft_fn.dir_name]], Tout = tf.float32)
         mel.set_shape([None, stft_fn.n_mel_channels])
+    elif isinstance(data, (np.ndarray, tf.Tensor)) and len(data.shape) >= 2:
+        mel = data
     else:
         audio   = load_audio(data, stft_fn.rate, ** kwargs)
         mel     = stft_fn(audio)
@@ -305,7 +307,7 @@ def write_audio(audio, filename, rate, normalize = True, factor = 32767, verbose
     logger.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
     normalized = audio
-    if normalize:
+    if normalize and len(audio) > 0:
         normalized = audio_processing.normalize_audio(
             audio, max_val = factor, normalize_by_mean = False
         )

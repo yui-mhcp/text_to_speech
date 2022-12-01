@@ -15,8 +15,9 @@ from hparams.hparams import HParams
 HParamsTacotron2Encoder = HParams(
     _prefix     = 'encoder',
     
-    embedding_dims  = 512,
-    n_convolutions  = 3,
+    pad_token   = 0,
+    embedding_dim   = 512,
+    n_conv  = 3,
     kernel_size     = 5,
     use_bias        = True,
     
@@ -49,7 +50,7 @@ HParamsTacotron2Prenet  = HParams(
 HParamsTacotron2Postnet = HParams(
     _prefix     = 'postnet',
     
-    n_convolutions  = 5,
+    n_conv      = 5,
     filters     = 512,
     kernel_size = 5,
     use_bias    = True,

@@ -16,3 +16,5 @@ from custom_layers.invertible_conv import Invertible1x1Conv
 from custom_layers.location_sensitive_attention import LocationSensitiveAttention
 from custom_layers.multi_head_attention import MultiHeadAttention, HParamsMHA
 from custom_layers.similarity_layer import SimilarityLayer
+from custom_layers.masked_1d import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D, MaskedZeroPadding1D
+from custom_layers.concat_embedding import ConcatEmbedding, ConcatMode

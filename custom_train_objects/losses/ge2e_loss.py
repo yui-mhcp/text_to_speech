@@ -123,13 +123,13 @@ class GE2ELoss(tf.keras.losses.Loss):
         centroids_incl = tf.reshape(centroids_incl, [1, 1, nb_speakers, embedding_dim])
         centroids_incl = tf.tile(centroids_incl, [nb_speakers, nb_utterances, 1, 1])
 
-        # Shape == (nb_speakers, speaker_utterances, embedded_dim) == speaker_embedded.shape
+        # Shape == (nb_speakers, nb_utterances, embedded_dim) == speaker_embedded.shape
         centroids_excl = tf.reduce_sum(speaker_embedded, axis = 1, keepdims = True) - speaker_embedded
         centroids_excl = centroids_excl / tf.cast(nb_utterances - 1, tf.float32)
 
         # Reshape to (nb_speakers, nb_utterances, nb_speakers, embedding_dim) to multiply with mask
-        centroids_excl = tf.expand_dims(tf.transpose(centroids_excl, [1, 0, 2]), axis = 0)
-        centroids_excl = tf.repeat(centroids_excl, nb_speakers, axis = 0)
+        centroids_excl = tf.expand_dims(centroids_excl, axis = 2)
+        centroids_excl = tf.tile(centroids_excl, [1, 1, nb_speakers, 1])
 
         # Compute mask (shape = (nb_speakers, nb_utterances, nb_speakers, 1))
         mask = tf.eye(nb_speakers, dtype = tf.bool)
@@ -149,15 +149,17 @@ class GE2ELoss(tf.keras.losses.Loss):
         )
     
     def softmax_loss(self, idx, similarity_matrix):
+        similarity_matrix = tf.nn.softmax(similarity_matrix, axis = -1)
+
         return tf.keras.losses.sparse_categorical_crossentropy(
-            idx, similarity_matrix, from_logits = True
+            idx, tf.reshape(similarity_matrix, [-1, tf.shape(similarity_matrix)[-1]])
         )
     
     def contrast_loss(self, idx, similarity_matrix):
         target_matrix = tf.one_hot(idx, depth = tf.shape(similarity_matrix)[-1])
-        return tf.keras.losses.binary_crossentropy(
-            tf.reshape(target_matrix, [-1]), tf.sigmoid(tf.reshape(similarity_matrix, [-1]))
-        )
+        return tf.reduce_mean(tf.reshape(tf.keras.losses.binary_crossentropy(
+            tf.reshape(target_matrix, [-1, 1]), tf.sigmoid(tf.reshape(similarity_matrix, [-1, 1]))
+        ), [-1, tf.shape(similarity_matrix)[-1]]), axis = -1)
     
     def call(self, y_true, y_pred):
         """
@@ -173,13 +175,12 @@ class GE2ELoss(tf.keras.losses.Loss):
         """
         uniques, idx    = tf.unique(tf.reshape(y_true, [-1]))
         nb_speakers     = tf.size(uniques)
-        
         # Shape == (nb_speakers, nb_utterances, embedded_dim)
         speaker_embedded = tf.reshape(y_pred, [nb_speakers, -1, tf.shape(y_pred)[-1]])
         
         cos_sim_matrix = self.similarity_matrix(speaker_embedded)
-        cos_sim_matrix = cos_sim_matrix * tf.maximum(self.w, 1e-6) + self.b
-        
+        cos_sim_matrix = cos_sim_matrix * self.w + self.b
+
         return self.loss_fn(idx, cos_sim_matrix)
 
     def get_config(self):

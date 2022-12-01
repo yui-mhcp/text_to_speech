@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import enum
 import logging
 import datetime
 import numpy as np
@@ -21,10 +22,11 @@ from utils import dump_json, load_json, to_json, plot_multiple
 
 logger = logging.getLogger(__name__)
 
-SLEEPING    = -1
-TRAINING    = 0
-VALIDATING  = 1
-TESTING     = 2
+class Phase(enum.IntEnum):
+    SLEEPING    = -1
+    TRAINING    = 0
+    VALIDATING  = 1
+    TESTING     = 2
 
 class History(tf.keras.callbacks.Callback):
     """
@@ -49,7 +51,7 @@ class History(tf.keras.callbacks.Callback):
         self.__history  = {}
         self.__trainings    = []
         
-        self.__phase    = SLEEPING
+        self.__phase    = Phase.SLEEPING
         self.__test_prefix  = None
         self.__current_training_config  = {}
         self.__current_training_infos   = {}
@@ -61,19 +63,19 @@ class History(tf.keras.callbacks.Callback):
     
     @property
     def sleeping(self):
-        return self.__phase == SLEEPING
+        return self.__phase == Phase.SLEEPING
     
     @property
     def training(self):
-        return self.__phase in (TRAINING, VALIDATING)
+        return self.__phase in (Phase.TRAINING, Phase.VALIDATING)
     
     @property
     def validating(self):
-        return self.__phase == VALIDATING
+        return self.__phase == Phase.VALIDATING
     
     @property
     def testing(self):
-        return self.__phase == TESTING
+        return self.__phase == Phase.TESTING
     
     @property
     def current_epoch(self):
@@ -330,7 +332,7 @@ class History(tf.keras.callbacks.Callback):
         plot_multiple(** plot_data, ** kwargs)
     
     def on_train_begin(self, logs = None):
-        self.__phase    = TRAINING
+        self.__phase    = Phase.TRAINING
         self.__current_training_infos   = {
             'start' : datetime.datetime.now(),
             'end'   : -1,
@@ -355,7 +357,7 @@ class History(tf.keras.callbacks.Callback):
             self.on_epoch_end(self.current_epoch)
         
         self.__current_training_config  = {}
-        self.__phase = SLEEPING
+        self.__phase = Phase.SLEEPING
         
     def on_epoch_begin(self, epoch, logs = None):
         if epoch in self.__history:
@@ -365,6 +367,7 @@ class History(tf.keras.callbacks.Callback):
                 
         self.__current_epoch    = epoch
         self.__current_batch    = -1
+        self.__current_epoch_history    = {}
         self.__current_epoch_infos  = {
             'start' : datetime.datetime.now(),
             'end'   : -1,
@@ -386,8 +389,18 @@ class History(tf.keras.callbacks.Callback):
             'time'  : (t_end - self.__current_epoch_infos['start']).total_seconds()
         })
         
+        if not self.__current_epoch_history:
+            self.__current_epoch_infos.update({
+                'train_end'     : t_end,
+                'train_time'    : (t_end - self.__current_epoch_infos['train_start']).total_seconds(),
+                'train_size'    : 1,
+                'train_metrics' : list(logs.keys())
+            })
+            for metric, v in logs.items():
+                self.__current_epoch_history.setdefault(metric, [v] if not isinstance(v, list) else v)
+        
         self.__history[self.current_epoch] = {
-            'metrics'   : self.__current_epoch_history,
+            'metrics'   : self.__current_epoch_history if self.__current_epoch_history else logs,
             'infos'     : self.__current_epoch_infos
         }
         
@@ -404,10 +417,11 @@ class History(tf.keras.callbacks.Callback):
     def on_test_begin(self, logs = None):
         if self.training:
             default_prefix = 'valid'
-            self.__phase    = VALIDATING
+            self.__phase    = Phase.VALIDATING
         else:
             default_prefix = 'test'
-            self.__phase    = TESTING
+            self.__phase    = Phase.TESTING
+            self.__history.setdefault(self.current_epoch, {'metrics' : {}, 'infos' : {}})
             self.__current_epoch_infos      = self.__history[self.current_epoch]['infos']
             self.__current_epoch_history    = self.__history[self.current_epoch]['metrics']
         
@@ -432,6 +446,7 @@ class History(tf.keras.callbacks.Callback):
         })
         
         if self.testing:
+            self.__phase = Phase.SLEEPING
             self.__current_epoch_infos      = {}
             self.__current_epoch_history    = {}
     

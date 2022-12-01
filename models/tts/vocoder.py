@@ -307,8 +307,9 @@ def vocoder_inference(sentences,
         if overwrite:
             return [(sent, {}) for sent in sentences]
         
-        with pipeline.mutex_db:
-            return [(sent, pipe._get_from_database(sent, {})) for sent in sentences]
+        return [(sent, {}) for sent in sentences]
+        #with pipeline.mutex_db:
+        #    return [(sent, pipeline._get_from_database(sent, {})) for sent in sentences]
     
     return [
         (sent, result) for sent, result in zip(

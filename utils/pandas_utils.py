@@ -110,29 +110,51 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_
     """
         Sample dataframe by taking `n_sample` for `n` different values of `on`
         Default values means : 'taking 10 samples for 10 different ids'
+        
+        Arguments :
+            - data  : pd.DataFrame to sample
+            - on    : the `data`'s column to identify groups
+            - n     : the number of groups to sample
+            - n_sample  : the number of samples for each group (if <= 0, max samples per group)
+            - min_sample    : the minimal number of samples for a group to be selected.
+                Note that if less groups than `n` groups have at least `min_sample`, some groups can have less than `min_sample` in the final result.
+            - random_state  : state used in the sampling of group's ids and samples (for reproducibility)
+        Returns :
+            - samples   : a pd.DataFrame with `n` different groups and (hopefully) at least `n_sample` for each group
+        
+        raise ValueError if `n` is larger than the number of groups
     """
+    rnd = np.random.RandomState(random_state)
+
     uniques = data[on].value_counts()
     
     if n is None or n <= 0: n = len(uniques)
+    if n_sample is None or n_sample <= 0: n_sample = len(data)
     if min_sample is None: min_sample = n_sample
     
-    mask    = uniques >= min_sample
-    uniques = uniques.index[:n * 2] if mask.sum() < n else uniques[mask].index
+    if n > len(uniques):
+        raise ValueError('`n = {}` is higher than the number of uniques `{}` : {}'.format(
+            n, on, len(uniques)
+        ))
     
-    uniques = np.random.choice(uniques, min(n, len(uniques)), replace = False)
+    if n == len(uniques):
+        uniques = uniques.index
+    else:
+        mask    = uniques >= min_sample
+        uniques = uniques.index[:n] if mask.sum() < n else uniques[mask].index
+
+        if len(uniques) > n:
+            uniques = rnd.choice(uniques, n, replace = False)
     
-    if n_sample <= 0: n_sample = len(data)
-    
-    samples = []
+    indexes = []
     for u in uniques:
         samples_i = data[data[on] == u]
-        samples_i = samples_i.sample(
-            min(n_sample, len(samples_i)), replace = False, random_state = random_state
-        )
         
-        samples.append(samples_i)
+        indexes.extend(rnd.choice(
+            samples_i.index, size = min(n_sample, len(samples_i)), replace = False
+        ))
     
-    return pd.concat(samples)
+    return data.loc[indexes].reset_index()
 
 def compare_df(df1, df2):
     """

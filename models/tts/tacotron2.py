@@ -77,6 +77,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         super()._build_model(
             tts_model = {
                 'architecture_name' : kwargs.pop('architecture_name', 'tacotron2'),
+                'pad_token'     : self.blank_token_idx,
                 'vocab_size'        : self.vocab_size,
                 'n_mel_channels'    : self.n_mel_channels,
                 'init_step'     : self.steps,
@@ -86,7 +87,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     
     @property
     def input_signature(self):
-        return self.text_signature + (
+        return self.text_signature[:1] + (
             self.audio_signature, tf.TensorSpec(shape = (None,), dtype = tf.int32)
         )
     
@@ -119,29 +120,24 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return pred if len(pred) != 2 else pred[0]
     
     @timer(name = 'inference')
-    def infer(self, text, text_length = None, * args, ** kwargs):
-        if not isinstance(text, list):
+    def infer(self, text, * args, early_stopping = True, max_length = -1, ** kwargs):
+        if max_length <= 0: max_length = self.max_output_length
+        
+        if not isinstance(text, (list, tuple)):
             if isinstance(text, str):
-                text        = tf.expand_dims(self.encode_text(text), axis = 0)
-                text_length = tf.cast([len(text[0])], tf.int32)
+                text    = tf.expand_dims(self.encode_text(text), axis = 0)
             elif len(tf.shape(text)) == 1:
-                text        = tf.expand_dims(text, axis = 0)
+                text    = tf.expand_dims(text, axis = 0)
         
-        if text_length is None and tf.shape(text)[0] == 1:
-            text_length = tf.cast([tf.shape(text)[1]], tf.int32)
-        
-        assert text_length is not None, "You must specify `text_length` or pas a `list`"
-        
-        #pred = self.tts_model.infer(text, text_length, * args, ** kwargs)
-        pred = self.tts_model.infer(text, text_length)
-        return pred if len(pred) != 2 else pred[0]
+        return self.tts_model.infer(
+            text, early_stopping = early_stopping, max_length = max_length, return_state = False
+        )
     
     def compile(self, loss = 'tacotronloss', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
     def get_input(self, data, ** kwargs):
-        tokens = self.tf_encode_text(data)
-        return tokens, len(tokens)
+        return self.tf_encode_text(data)
     
     def get_mel_gate(self, data):
         mel = self.get_audio(data)
@@ -154,17 +150,16 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return mel, gate
     
     def encode_data(self, data):
-        encoded_text, text_length = self.get_input(data)
+        encoded_text = self.get_input(data)
         
         mel, gate = self.get_mel_gate(data)
         
-        return (encoded_text, text_length, mel, len(mel)), (mel, gate)
-        return encoded_text, text_length, mel, len(mel), mel, gate
+        return (encoded_text, mel, len(mel)), (mel, gate)
         
     def filter_data(self, inputs, outputs):
         if self.max_train_frames > 0: return True
         return tf.logical_and(
-            inputs[1] <= self.max_input_length, 
+            tf.shape(inputs[0])[-1] <= self.max_input_length, 
             inputs[-1] <= self.max_output_length
         )
     
@@ -203,7 +198,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             'padded_batch'  : True,
             'pad_kwargs'    : {
                 'padding_values'    : (
-                    (self.blank_token_idx, 0, self.pad_mel_value, 0), (self.pad_mel_value, 1.)
+                    (self.blank_token_idx, self.pad_mel_value, 0), (self.pad_mel_value, 1.)
                 )
             }
         })
@@ -223,21 +218,21 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         inputs          = [inp[:max_pred] for inp in inputs]
         mel_out, gate   = [out[:max_pred] for out in outputs]
         
-        text, text_length       = inputs[:2]
-        mel, mel_length         = inputs[-2:]
-        batch_size              = len(mel)
+        text    = inputs[0]
+        mel, mel_length = inputs[-2:]
+        batch_size  = len(mel)
         
         kwargs.setdefault('x_size', 10)
         kwargs.setdefault('y_size', 4)
         kwargs.setdefault('show', False)
         
-        pred = self.tts_model(inputs, training = False)
+        pred  = self.tts_model(inputs, training = False)
         infer = self.infer(* inputs[:-2])
 
         _, pred_mel, _, pred_attn = [p.numpy() for p in pred]
         _, infer_mel, infer_gate, infer_attn = [i.numpy() for i in infer]
-        text = text.numpy()
         
+        text = text.numpy()
         for i in range(batch_size):
             txt, target, target_gate    = text[i], mel_out[i], gate[i]
             p_mel, p_attn               = pred_mel[i], pred_attn[i]
@@ -261,14 +256,12 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             
             plot_spectrogram(
                 target = target, predicted = p_mel, prediction_attention = p_attn,
-                title = pred_title, 
-                filename = os.path.join(plot_dir, prefix_i + '_pred.png'), 
+                title = pred_title,  filename = os.path.join(plot_dir, prefix_i + '_pred.png'), 
                 ** kwargs
             )
             plot_spectrogram(
                 target = target, inference = i_mel, inference_attention = i_attn,
-                title = inf_title, 
-                filename = os.path.join(plot_dir, prefix_i + '_infer.png'), 
+                title = inf_title,  filename = os.path.join(plot_dir, prefix_i + '_infer.png'), 
                 ** kwargs
             )
             
@@ -386,18 +379,13 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             ]
             
             if any(not skip for skip in should_skip):
-                encoded, lengths = list(zip(* [
+                batch   = tf.cast(pad_batch([
                     self.get_input(s) for s, skip in zip(inputs, should_skip) if not skip
-                ]))
-                
-                batch   = pad_batch(encoded, pad_value = self.blank_token_idx, dtype = np.int32)
+                ], pad_value = self.blank_token_idx, dtype = np.int32), tf.int32)
 
-                batch   = tf.cast(batch, tf.int32)
-                lengths = tf.cast(lengths, tf.int32)
-
-                _, mels, gates, attn_weights = [out.numpy() for out in self.infer(
-                    text = batch, text_length = lengths, ** kwargs
-                )]
+                _, mels, gates, attn_weights = [
+                    out.numpy() for out in self.infer(batch, ** kwargs)
+                ]
             
             result, idx = [], 0
             for i, (txt, skip) in enumerate(zip(inputs, should_skip)):

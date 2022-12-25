@@ -105,7 +105,7 @@ def resample_file(filename, new_rate, filename_out = None):
     """
     if filename_out is None:
         base_name, ext = os.path.splitext(filename)
-        filename_out = '{}_{}.{}'.format(base_name, new_rate, ext)
+        filename_out = '{}_{}{}'.format(base_name, new_rate, ext)
     if os.path.exists(filename_out): return filename_out
     try:
         rate, audio = read_audio(filename, target_rate = new_rate)
@@ -306,7 +306,7 @@ def write_audio(audio, filename, rate, normalize = True, factor = 32767, verbose
         
     logger.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
-    normalized = audio
+    normalized = audio if not hasattr(audio, 'numpy') else audio.numpy()
     if normalize and len(audio) > 0:
         normalized = audio_processing.normalize_audio(
             audio, max_val = factor, normalize_by_mean = False

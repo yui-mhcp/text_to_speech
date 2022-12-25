@@ -26,24 +26,29 @@ logger = logging.getLogger(__name__)
 _limited_memory = False
 
 def _is_filename(data):
+    if not isinstance(data, str): return False
     return (
         len(data) < 512 and len(data) > 1 and any(c.isalnum() for c in data) and os.path.exists(data)
     )
     
-def time_to_string(secondes):
+def time_to_string(seconds):
     """ return a string representation of a time (given in seconds) """
-    h = int(secondes // 3600)
+    if seconds < 1.: return '{} ms'.format(int(seconds * 1000))
+    h = int(seconds // 3600)
     h = "" if h == 0 else "{}h ".format(h)
-    m = int((secondes % 3600) // 60)
+    m = int((seconds % 3600) // 60)
     m = "" if m == 0 else "{}min ".format(m)
-    s = ((secondes % 300) % 60)
+    s = ((seconds % 3600) % 60)
     s = "{:.3f} sec".format(s) if m == "" and h == "" else "{}sec".format(int(s))
     return "{}{}{}".format(h, m, s)        
 
 def convert_to_str(x):
     """ Convert different string formats (bytes, tf.Tensor, ...) to a `str` object """
     if isinstance(x, str): return x
+    elif isinstance(x, tf.Tensor) and x.dtype != tf.string: return x
+    elif isinstance(x, np.ndarray) and x.dtype in (np.int32, np.float32, np.int64, np.float64): return x
     if hasattr(x, 'numpy'): x = x.numpy()
+    
     if isinstance(x, np.ndarray) and x.ndim == 0: x = str(x)
     if isinstance(x, bytes): x = x.decode('utf-8')
     
@@ -66,7 +71,7 @@ def split_gpus(n, memory = 2048):
     except RuntimeError as e:
         print(e)
     
-    print("# physical GPU : {}\n# logical GPU : {}".format(
+    logger.info("# physical GPU : {}\n# logical GPU : {}".format(
         len(tf.config.list_physical_devices('GPU')),
         len(tf.config.list_logical_devices('GPU'))
     ))

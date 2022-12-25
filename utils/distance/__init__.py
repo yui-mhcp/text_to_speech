@@ -11,8 +11,9 @@
 # limitations under the License.
 
 from utils.distance.knn import KNN, knn
-from utils.distance.k_means import KMeans, kmeans
-from utils.distance.clustering import *
-from utils.distance.k_propagation import KPropagation
+from utils.distance.k_means import kmeans
+from utils.distance.label_propagation import label_propagation
+from utils.distance.spectral_clustering import spectral_clustering
+from utils.distance.clustering import find_clusters, evaluate_clustering
 
 from utils.distance.distance_method import *

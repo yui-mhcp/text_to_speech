@@ -322,14 +322,20 @@ def preprocess_identification_annots(directory, by_part = False, ** kwargs):
             os.path.join(directory, sub_dir), by_part = by_part, ** kwargs
         ) for sub_dir in os.listdir(directory)], ignore_index = True)
     
+    from datasets.custom_datasets import get_dataset_dir
+    
     sub_dir_name = 'parts' if by_part else 'alignments'
     
-    directory = os.path.join(directory, sub_dir_name)
-    metadata_filename = os.path.join(directory, 'map.json')
+    directory           = os.path.join(directory, sub_dir_name)
+    metadata_filename   = os.path.join(directory, 'map.json')
 
     data = load_json(metadata_filename)
 
     dataset = pd.DataFrame(data)
+    if not os.path.exists(dataset.loc[0, 'filename']):
+        dataset['filename'] = dataset['filename'].apply(
+            lambda f: f.replace('D:/datasets', get_dataset_dir())
+        )
     if 'indexes' in dataset.columns: dataset.pop('indexes')
     
     return _maybe_load_embedding(directory, dataset, ** kwargs)

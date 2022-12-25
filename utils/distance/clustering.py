@@ -10,138 +10,132 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import numpy as np
 import tensorflow as tf
 
-from utils.plot_utils import plot_embedding
-from utils.distance.knn import KNN
-from utils.distance.distance_method import distance
+from utils.embeddings import compute_centroids
+from utils.distance.distance_method import tf_distance
 
-logger = logging.getLogger(__name__)
+def find_clusters(* args, method = 'kmeans', ** kwargs):
+    if method not in _clustering_methods:
+        raise ValueError('Unknown clustering method !\n  Supported : {}\n  Got : {}'.format(
+            tuple(_clustering_methods.keys()), method
+        ))
+    return _clustering_methods[method](* args, ** kwargs)
 
-class Clustering:
-    def __init__(self,
-                 points,
-                 min_cluster_size   = 5, 
-                 distance_metric    = 'euclidian',
-                 ** kwargs
-                ):
-        self.points     = points
-        self.distance_metric    = distance_metric
-        self.min_cluster_size   = min_cluster_size if isinstance(min_cluster_size, int) else int(min_cluster_size * len(points))
-        
-        self._labels    = self._build_clusters(points, ** kwargs)
-    
-    def _build_clusters(self, points):
-        raise NotImplementedError()
-    
-    @property
-    def ids(self):
-        return np.unique(self.labels)
-    
-    @property
-    def n_cluster(self):
-        return len(self.ids)
-    
-    @property
-    def clusters(self):
-        return {cluster_id : self[cluster_id] for cluster_id in self.ids}
-    
-    @property
-    def cluster_size(self):
-        return {cluster_id : len(self[cluster_id]) for cluster_id in self.ids}
-    
-    @property
-    def labels(self):
-        return self._labels
-    
-    def __len__(self):
-        return self.n_cluster
-    
-    def __str__(self):
-        return "Found {} clusters for {} points".format(self.n_cluster, len(self.points))
-    
-    def __getitem__(self, idx):
-        return self.points[self.labels == self.ids[idx]]
-    
-    def distance(self, a, b, ** kwargs):
-        return distance(a, b, method = self.distance_metric, ** kwargs)
-    
-    def score(self, centroids = None, ids = None):
-        if centroids is None or ids is None:
-            centroids, ids = get_centroids(self.points, self.labels)
-
-        return compute_score(self.points, self.labels, centroids, ids, method = self.distance_metric)
-    
-    def normalize(self, points):
+def clustering_wrapper(clustering_fn):
+    def wrapper(points, k, distance_metric = 'euclidian', ** kwargs):
         points = tf.cast(points, tf.float32)
-        mean, std = tf.reduce_mean(points, axis = 0), tf.math.reduce_std(points, axis = 0)
-        return (points - mean) / std
-        
-    def clean_clusters(self, points, cluster, tqdm = lambda x: x, ** kwargs):
-        knn = KNN(points, cluster, ** kwargs)
-        
-        ids, _ = tf.unique(cluster)
-        for i, cluster_id in enumerate(tqdm(ids)):
-            cluster_indexes = tf.reshape(tf.where(cluster == cluster_id), [-1])
-            if len(cluster_indexes) >= self.min_cluster_size: continue
-            
-            logger.debug("Clean cluster {}".format(cluster_id))
-            other_ids = [id_i for id_i in ids if id_i != cluster_id]
-            for idx in cluster_indexes:
-                new_id = tf.squeeze(knn.predict(points[i], possible_ids = other_ids))
-                if new_id == -2:
-                    new_id = knn.predict(
-                        points[i], possible_ids = other_ids, use_mean = True
-                    )
-                knn[idx] = new_id
-            
-        cluster = tf.cast(knn.ids, tf.int32)
-        
-        return cluster
-        
+        if isinstance(k, (list, tuple, range)):
+            from kneed import KneeLocator
 
-    def evaluate(self, y_true):
-        return evaluate_clustering(y_true, self.labels)
+            scores = {}
+            for ki in k:
+                if ki <= 1: continue
+
+                clusters = clustering_fn(
+                    points, ki, distance_metric = distance_metric, ** kwargs
+                )
+                if isinstance(clusters, tuple):
+                    centroids, assignment = clusters
+                else:
+                    centroids, assignment = compute_centroids(points, clusters)[1], clusters
+                
+                score = compute_score(
+                    points, assignment, centroids, tf.range(tf.shape(centroids)[0], dtype = tf.int32),
+                    distance_metric = distance_metric
+                ).numpy()
+                scores[ki] = {'score' : score, 'centroids' : centroids, 'assignment' : assignment}
+
+            assert len(scores) > 0, 'k must be a range with at least 1 value > 1'
+
+            valids_k    = [ki for ki in k if ki > 1]
+            list_scores = np.array([scores[ki]['score'] for ki in valids_k])
+            convex      = all([list_scores[i] <= list_scores[i-1] for i in range(1, len(list_scores))])
+            if convex:
+                kl = KneeLocator(
+                    valids_k, list_scores, curve = "convex", direction = "decreasing"
+                )
+
+                best_k = kl.elbow if kl.elbow is not None else valids_k[np.argmin(list_scores)]
+            else:
+                best_k = valids_k[np.argmin(list_scores)]
+
+            return scores[best_k]['centroids'], scores[best_k]['assignment']
+        
+        return clustering_fn(points, k, distance_metric = distance_metric, ** kwargs)
     
-    def plot(self, ** kwargs):
-        plot_embedding(self.points, self.labels, ** kwargs)
+    global _clustering_methods
+    
+    fn = wrapper
+    fn.__name__ = clustering_fn.__name__
+    fn.__doc__  = clustering_fn.__doc__
+
+    _clustering_methods[clustering_fn.__name__.lstrip('_')] = fn
+    return fn
 
 def evaluate_clustering(y_true, y_pred):
-    if isinstance(y_pred, tf.Tensor): y_pred = y_pred.numpy()
+    y_true  = tf.cast(y_true, tf.int32)
+    y_pred  = tf.cast(y_pred, tf.int32)
     
-    accs = []
-    for i, cluster_id in enumerate(np.unique(y_true)):
-        pred_ids = y_pred[y_true == cluster_id]
-        ids = np.bincount(pred_ids[pred_ids != -1])
-        if len(ids) == 0:
-            accs.append(0.)
-            continue
-
-        y_pred[y_pred == np.argmax(ids)] = -1
-
-        accs.append(np.max(ids) / len(pred_ids))
-    return np.mean(accs), accs
-
-def get_assignment(points, centroids, method = 'euclidian', ** kwargs):
-    return tf.cast(tf.argmin(distance(
-        points, centroids, method = method, as_matrix = True, ** kwargs
-    ), axis = -1), tf.int32)
+    uniques = tf.unique(y_true)[0]
     
-def get_centroids(points, cluster, k = None):
-    """ Returns centroids, ids """
-    ids = tf.unique(cluster)[0] if k is None else tf.range(k)
-    return tf.concat([
-        tf.reduce_mean(tf.gather(points, tf.where(cluster == cluster_id)), axis = 0)
-        for cluster_id in ids
-    ], axis = 0), ids
+    all_f1 = np.zeros((len(uniques), ))
+    for i, cluster_id in enumerate(uniques):
+        mask    = y_true == cluster_id
+        
+        pred_ids    = tf.boolean_mask(y_pred, mask)
+        pred_ids    = tf.boolean_mask(pred_ids, pred_ids >= 0)
+        
+        if tf.shape(pred_ids)[0] == 0: continue
+        
+        counts  = tf.math.bincount(pred_ids)
+        main_id = tf.argmax(counts, output_type = tf.int32)
+        
+        true_positive   = tf.cast(tf.reduce_max(counts), tf.float32)
+        total_pred      = tf.reduce_sum(tf.cast(y_pred == main_id, tf.float32))
+        total_true      = tf.reduce_sum(tf.cast(mask, tf.float32))
+        
+        precision = true_positive / total_pred
+        recall    = true_positive / total_true
+        f1        = (2 * precision * recall) / (precision + recall)
 
-def compute_score(points, cluster_id, centroids, centroids_id, method = 'euclidian'):
-    return tf.reduce_sum([
-        tf.reduce_sum(distance(
-            centroids[i],
-            tf.gather(points, tf.reshape(tf.where(cluster_id == centroids_id[i]), [-1])),
-            method = method
-        )) for i in range(tf.shape(centroids)[0])
-    ])
+        y_pred    = tf.where(y_pred == main_id, -1, y_pred)
+
+        all_f1[i] = f1
+    
+    return np.mean(all_f1), all_f1
+
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def get_assignment(points : tf.Tensor, centroids : tf.Tensor, distance_metric = 'euclidian'):
+    """ Returns a vector of ids, the nearest centroid's index (according to `distance_metric`) """
+    return tf.argmin(tf_distance(
+        points, centroids, distance_metric, as_matrix = True, force_distance = True
+    ), axis = -1, output_type = tf.int32)
+
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def compute_score(points    : tf.Tensor,
+                  ids       : tf.Tensor,
+                  centroids : tf.Tensor,
+                  centroid_ids  : tf.Tensor,
+                  distance_metric = 'euclidian'
+                 ):
+    """
+        Computes a *clustering score* based on an assignment and a set of centroids
+        
+        Arguments :
+            - points    : 2-D matrix of shape [n_embeddings, embedding_dim]
+            - ids       : the points' assignment (1-D vector of length [n_embeddings])
+            - centroids : 2-D matrix of shape [n_clusters, embedding_dim]
+            - centroid_ids  : 1-D vector, the centroids' ids
+            - distance_metric   : the distance metric to compute the score
+        Returns :
+            - score : the scalar value representing the total distance between all points and their associated centroid
+    """
+    mask    = tf.cast(
+        tf.expand_dims(ids, axis = 1) == centroid_ids, tf.float32
+    )
+    dist = tf_distance(points, centroids, distance_metric, as_matrix = True)
+    return tf.reduce_sum(dist * mask)
+
+_clustering_methods = {}

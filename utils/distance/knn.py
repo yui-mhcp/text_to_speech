@@ -14,22 +14,32 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils.plot_utils import plot_embedding
-from utils.embeddings import load_embedding, compute_mean_embeddings, embeddings_to_np
-from utils.distance.distance_method import distance
+from utils.embeddings import load_embedding, compute_centroids, embeddings_to_np, get_embeddings_with_ids
+from utils.distance.distance_method import tf_distance
 
 class KNN(object):
     """
-        Tensorflow implementation of the `K-Nearest Neighbors` algorithm
+        Tensorflow implementation of the `K-Nearest Neighbors (KNN)` algorithm
         
         It also has some additional features such as : 
             - Plotting embeddings / predictions
             - Use a `use_mean` version where the prediction is the nearest `centroid`*
+            - A `weighted` version
             
         * A `centroid` is the mean point of all points belonging to a given label
     """
-    def __init__(self, embeddings, ids = None, k = 5, use_mean = False, 
-                 method = 'euclidian', weighted = False, ** kwargs):
+    def __init__(self,
+                 embeddings,
+                 ids    = None,
+                 
+                 k  = 5,
+                 use_mean   = False, 
+                 
+                 method     = 'euclidian',
+                 weighted   = False,
+                 
+                 ** kwargs
+                ):
         """
             Constructor for the KNN class
             
@@ -41,15 +51,16 @@ class KNN(object):
                 - ids   : ids of the embeddings (if embeddings is a DataFrame, ids = embeddings['id'].values)
                 - k / use_mean  : default configuration for the `predict` method
                 - method        : distance method to use
+                - weighted      : whether to use a weighted knn or not
         """
         if isinstance(embeddings, str):
             embeddings = load_embedding(embeddings)
         
         if isinstance(embeddings, pd.DataFrame):
-            ids = embeddings['id'].values
-            embeddings = embeddings_to_np(embeddings)
+            ids         = embeddings['id'].values
+            embeddings  = embeddings_to_np(embeddings)
         
-        assert ids is None or len(embeddings) == len(ids)
+        assert len(embeddings) == len(ids), '{} embeddings vs {} ids'.format(len(embeddings), len(ids))
         
         self.ids        = np.array(ids)
         self.embeddings = tf.cast(embeddings, tf.float32)
@@ -59,55 +70,50 @@ class KNN(object):
         self.method     = method
         self.weighted   = weighted
         
-        self.__mean_ids         = None
-        self.__mean_embeddings  = None
+        self.__centroids    = None
     
     @property
-    def mean_ids(self):
-        if self.__mean_ids is None:
-            self.__mean_ids, self.__mean_embeddings = self.get_mean_embeddings()
-        return self.__mean_ids
-    
-    @property
-    def mean_embeddings(self):
-        if self.__mean_embeddings is None:
-            self.__mean_ids, self.__mean_embeddings = self.get_mean_embeddings()
-        return self.__mean_embeddings
+    def centroids(self):
+        if self.__centroids is None: self.__centroids = self.compute_centroids()
+        return self.__centroids
     
     def __setitem__(self, idx, val):
         if val != self.ids[idx]:
-            self.ids[idx] = val
-            self.__mean_ids, self.__mean_embeddings = None, None
+            self.ids[idx]   = val
+            self.__centroids    = None
     
-    def get_mean_embeddings(self):
-        """ Compute the mean embeddings for each id """
-        return compute_mean_embeddings(self.embeddings, self.ids)
+    def compute_centroids(self):
+        """ Compute the mean embeddings for each id (namely the centroids) """
+        return compute_centroids(self.embeddings, self.ids)
     
     def get_embeddings(self, ids = None, use_mean = False):
-        """ Return all embeddings from specified ids """
+        """ Return all (ids, embeddings) for the expected `ids` """
         if ids is not None and not isinstance(ids, (list, tuple, np.ndarray, tf.Tensor)): ids = [ids]
-        if use_mean:
-            embeddings, res_ids = self.mean_embeddings, self.mean_ids
-        else:
-            embeddings, res_ids = self.embeddings, self.ids
+        res_ids, embeddings = self.centroids if use_mean else (self.ids, self.embeddings)
         
         if ids is not None:
-            indexes = tf.reshape(tf.concat([
-                tf.where(res_ids == id_i) for id_i in ids
-            ], axis = 0), [-1])
+            embeddings, res_ids = get_embeddings_with_ids(embeddings, res_ids, ids)
 
-            embeddings  = tf.gather(embeddings, indexes)
-            res_ids     = tf.gather(res_ids, indexes)
-
-        return embeddings, res_ids
+        return res_ids, embeddings
     
     def distance(self, x, ** kwargs):
         """ Compute distance between x and embeddings for given ids """
         embeddings, ids = self.get_embeddings(** kwargs)
-        return distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
+        return tf_distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
     
-    def predict(self, query, possible_ids = None, k = None, use_mean = None, weighted = None,
-                plot = False, tqdm = lambda x: x, plot_kwargs = {}, ** kwargs):
+    def predict(self,
+                query,
+                possible_ids = None,
+                k   = None,
+                use_mean    = None,
+                weighted    = None,
+
+                tqdm    = lambda x: x,
+                
+                plot    = False,
+                plot_kwargs = {},
+                ** kwargs
+               ):
         """
             Predict ids for each `x` vector based on the `k-nn` decision procedure
             
@@ -122,29 +128,29 @@ class KNN(object):
             It allows to achieve really good performances even for prediction on a large dataset
         """
         if use_mean is None: use_mean = self.use_mean
-        if use_mean: k = 1
-        elif k is None: k = self.k
-        else: k = tf.cast(k, tf.int32)
         if weighted is None: weighted = self.weighted
+        if use_mean: k = 1
+        k = tf.cast(k if k is not None else self.k, tf.int32)
         
         if possible_ids is not None and not isinstance(possible_ids, (list, tuple, np.ndarray, tf.Tensor)):
             possible_ids = [possible_ids]
         
         query = tf.cast(query, tf.float32)
 
-        embeddings, ids = self.get_embeddings(possible_ids, use_mean)
+        ids, embeddings = self.get_embeddings(possible_ids, use_mean)
         
         pred = knn(query, embeddings, ids, k, self.method, weighted = weighted)
         
-        if plot:
-            self.plot(query, pred, ** plot_kwargs)
+        if plot: self.plot(query, pred, ** plot_kwargs)
         
         return pred
-        
+    
     def plot(self, x = None, x_ids = None, marker_kwargs = None, ** kwargs):
         """
             Plot the labelled datasets + centroids + possible `x` to predict (with their predicted labels) 
         """
+        from utils.plot_utils import plot_embedding
+
         if marker_kwargs is None: marker_kwargs = {}
 
         # Original points
@@ -189,22 +195,52 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-def knn(query, embeddings, ids, k, distance_metric, return_index = False, weighted = False,
-        ** kwargs):
+def knn(query   = None,
+        embeddings  = None,
+        distance_matrix = None,
+        
+        k   = 5,
+        ids = None,
+        distance_metric = None,
+        
+        return_index    = False,
+        weighted    = False,
+        ** kwargs
+       ):
     """
         Compute the k-nn decision procedure for a given x based on a list of labelled embeddings
         
-        Return the majoritary id in the `k` nearest neigbors or `-2` if there is an equality.
-        If no ids are provided (`ids = None`), return either indexes (`return_index = True`) or nearest embeddings.
+        Arguments :
+            - query : the query point(s), 1-D or 2-D (tf.Tensor or np.ndarray)
+            - embeddings    : the points to use
+            - distance_matrix   : the already computed distance matrix (2-D) between `query` and `embeddings`
+            
+            - ids   : the ids for `embeddings` (**must be numeric values**)
+            - k     : the `k` hyperparameter in the K-NN
+            - distance_metric   : the metric to use to compute distance (irrelevant if passing `distance_matrix`)
+            
+            - return_index  : whether to return the nearest indexes
+            - weighted      : whether to use the weighted KNN algorithm
+            
+            - kwargs    : passed to `distance`
+        Return :
+            If `ids` is not None    : 1-D tf.Tensor with the nearest ids
+            elif `return_index`     : 1-D tf.Tensor, the nearest embeddings' indexes
+            else                    : 2-D tf.Tensor, the k-nearest embeddings
     """
-    distances = distance(query, embeddings, method = distance_metric, as_matrix = True, ** kwargs)
+    assert distance_matrix is not None or (query is not None and embeddings is not None and distance_metric)
+    
+    if distance_matrix is None:
+        distance_matrix = tf_distance(
+            query, embeddings, distance_metric, as_matrix = True, force_distance = True
+        )
 
-    k_nearest_dists, k_nearest_idx = tf.nn.top_k(- distances, tf.minimum(tf.shape(distances)[1], k))
+    k_nearest_dists, k_nearest_idx = tf.nn.top_k(
+        - distance_matrix, tf.minimum(tf.shape(distance_matrix)[1], k)
+    )
     
     if ids is None:
-        if return_index:
-            return k_nearest_idx
-        return tf.gather(embeddings, k_nearest_idx, batch_dims = 1)
+        return k_nearest_idx if return_index else tf.gather(embeddings, k_nearest_idx, batch_dims = 1)
     
     nearest_ids = tf.cast(tf.gather(tf.reshape(ids, [-1]), k_nearest_idx), tf.int32)
 
@@ -225,8 +261,9 @@ def knn(query, embeddings, ids, k, distance_metric, return_index = False, weight
     max_idx = tf.cast(counts == max_counts, tf.int32)
     
     nb_nearest = tf.reduce_sum(max_idx, axis = -1)
-    mask = tf.cast(nb_nearest == 1, tf.int32)
     
-    nearest_ids = tf.cast(tf.argmax(max_idx, axis = -1), tf.int32) * mask - 2 * (1 - mask)
+    nearest_ids = tf.where(
+        nb_nearest == 1, tf.cast(tf.argmax(max_idx, axis = -1), tf.int32), -2
+    )
 
     return nearest_ids

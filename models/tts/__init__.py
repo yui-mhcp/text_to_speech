@@ -140,5 +140,5 @@ _models = {
 
 _pretrained = {
     'en'    : 'pretrained_tacotron2',
-    'fr'    : 'sv2tts_siwis'
+    'fr'    : 'sv2tts_siwis_v2'
 }

@@ -307,9 +307,14 @@ def vocoder_inference(sentences,
         if overwrite:
             return [(sent, {}) for sent in sentences]
         
-        return [(sent, {}) for sent in sentences]
-        #with pipeline.mutex_db:
-        #    return [(sent, pipeline._get_from_database(sent, {})) for sent in sentences]
+        clean_fn = pipeline.get_consumer('pre_processing').consumer
+        tts_pipe = pipeline.get_consumer('text_inference')
+
+        cleaned  = [clean_fn(sent) for sent in sentences]
+        with tts_pipe.mutex_db:
+            result = [tts_pipe._get_from_database(sent) for sent in cleaned]
+        
+        return [(sent, res if res is not None else {}) for sent, res in zip(sentences, result)]
     
     return [
         (sent, result) for sent, result in zip(

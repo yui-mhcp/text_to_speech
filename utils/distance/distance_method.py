@@ -28,6 +28,12 @@ def _maybe_expand_for_matrix(x, y, as_matrix = False):
 
     return x, y
 
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def tf_distance(x : tf.Tensor, y : tf.Tensor, method, force_distance = False, as_matrix = False):
+    return distance(
+        x, y, method, force_distance = force_distance, as_matrix = as_matrix, max_matrix_size = -1
+    )
+
 def distance(x,
              y,
              method,
@@ -78,18 +84,28 @@ def distance(x,
 
     max_x, max_y = -1, -1
     if max_matrix_size > 0:
-        max_x = tf.minimum(max_matrix_size // tf.shape(x)[-1] + 1, tf.shape(x)[0])
-        max_y = tf.minimum(max_matrix_size // (max_x * tf.shape(x)[-1]) + 1, tf.shape(y)[1])
+        if as_matrix:
+            max_x = tf.minimum(max_matrix_size // tf.shape(x)[-1] + 1, tf.shape(x)[0])
+            max_y = tf.minimum(max_matrix_size // (max_x * tf.shape(x)[-1]) + 1, tf.shape(y)[1])
+        else:
+            max_x = tf.minimum(max_matrix_size // tf.square(tf.shape(x)[-1]) + 1, tf.shape(x)[0])
+            max_y = max_x
         
     
     if max_x != -1 and (max_x < tf.shape(x)[0] or max_y < tf.shape(y)[1]):
-        distances = []
-        for i in range(0, tf.shape(x)[0], max_x):
-            distances.append(tf.concat([
-                distance_fn(x[i : i + max_x], y[:, j : j + max_y], as_matrix = as_matrix, ** kwargs)
-                for j in range(0, tf.shape(y)[1], max_y)
-            ], axis = -1))
-        distances = tf.concat(distances, axis = 0)
+        if not as_matrix:
+            distances = tf.concat([
+                distance_fn(x[i : i + max_x], y[i : i + max_y], as_matrix = False, ** kwargs)
+                for i in tf.range(0, tf.shape(x)[0], max_x)
+            ], axis = 0)
+        else:
+            distances = []
+            for i in tf.range(0, tf.shape(x)[0], max_x):
+                distances.append(tf.concat([
+                    distance_fn(x[i : i + max_x], y[j : j + max_y], as_matrix = True, ** kwargs)
+                    for j in tf.range(0, tf.shape(y)[0], max_y)
+                ], axis = -1))
+            distances = tf.concat(distances, axis = 0) if len(distances) > 1 else distances[0]
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
     

@@ -87,6 +87,7 @@ class Pipeline(Consumer):
                  filename   = None,
                  id_key     = 'id',
                  save_every = -1,
+                 save_kwargs    = None,
                  as_list    = False,
                  expected_keys  = None,
                  save_keys      = None,
@@ -158,6 +159,7 @@ class Pipeline(Consumer):
         self.filename   = filename
         self.id_key     = id_key
         self.save_every = save_every
+        self.save_kwargs    = {'indent' : 4} if filename and filename.endswith('json') and save_kwargs is None else (save_kwargs if save_kwargs is not None else {})
         self.as_list    = as_list
         self.expected_keys  = expected_keys if expected_keys is not None else []
         self.save_keys      = save_keys if save_keys is not None else []
@@ -237,7 +239,7 @@ class Pipeline(Consumer):
                 data = self.__database if not self.as_list else [
                     {** v, self.id_key : k} for k, v in self.__database.items()
                 ]
-                dump_data(filename = self.filename, data = data)
+                dump_data(filename = self.filename, data = data, ** self.save_kwargs)
     
     def _get_from_database(self, item, * args):
         if not self.filename:
@@ -268,7 +270,7 @@ class Pipeline(Consumer):
         
         if contains:
             if item.kwargs.get('overwrite', False):
-                item.kwargs['overwritten_data'] = result
+                item.kwargs = {** item.kwargs, 'overwritten_data' : result}
                 return True
                 
             if not self.expected_keys or all(k in result for k in self.expected_keys):
@@ -379,7 +381,12 @@ class Pipeline(Consumer):
                 raise RuntimeError('Original ID {} for part with ID {} is not in pipeline !'.format(
                     original_id, item_id
                 ))
-            self.in_pipeline[original_id]['item'] = None
+            
+            item = self.in_pipeline[original_id]['item']
+            if item is not None:
+                self.in_pipeline[original_id].update({
+                    'item' : None, 'args' : item.args, 'kwargs' : item.kwargs
+                })
             self.in_pipeline[original_id].setdefault('parts', []).append(item_id)
     
     def _get_from_pipeline(self, item, use_group = False):
@@ -398,6 +405,9 @@ class Pipeline(Consumer):
         with self.mutex_pipe:
             if item_id not in self.in_pipeline:
                 raise RuntimeError('Try to move ID {} but it is not in the pipeline !'.format(item_id))
+            if 'kwargs' in self.in_pipeline[item_id]:
+                item.args   = self.in_pipeline[item_id].pop('args')
+                item.kwargs = self.in_pipeline[item_id].pop('kwargs')
             self.in_pipeline[item_id].update({'item' : item, 'cons' : cons})
         
         logger.debug('[PIPELINE MOVE {}] Move ID {} to {}'.format(

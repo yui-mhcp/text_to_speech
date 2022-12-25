@@ -50,14 +50,15 @@ def embeddings_to_np(embeddings, col = 'embedding'):
                     np.fromstring(xi[1 :]) for xi in embeddings[1:-1].split(']')
                 ])
             # if it is a 1D-vector
-            return np.fromstring(embeddings[1:-1], dtype = float, sep = '\t').astype(np.float32)
+            sep = '\t' if ', ' not in embeddings else ', '
+            return np.fromstring(embeddings[1:-1], dtype = float, sep = sep).astype(np.float32)
         elif not os.path.isfile(embeddings):
             raise ValueError("You must provide an existing embedding file (got {})".format(embeddings))
         return embeddings_to_np(load_embeddings(embeddings))
     elif isinstance(embeddings, np.ndarray): return embeddings
     elif isinstance(embeddings, tf.Tensor): return embeddings.numpy()
     elif isinstance(embeddings, pd.DataFrame):
-        embeddings = [e for e in embeddings[col].values]
+        embeddings = [embeddings_to_np(e) for e in embeddings[col].values]
         if len(embeddings[0].shape) == 1: return np.array(embeddings)
         return pad_batch(embeddings)
     else:
@@ -361,9 +362,13 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
             mode, _accepted_modes
         ))
     
-def compute_mean_embeddings(embeddings, ids):
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, ), dtype = tf.int32)
+])
+def compute_centroids(embeddings, ids):
     """
-        Compute the mean embeddings for each id
+        Compute the mean embeddings (namely centroids) for each id
         Arguments :
             - embeddings    : 2D matrix of embeddings
             - ids   : array of ids where embeddings[i] has ids[i]
@@ -372,13 +377,26 @@ def compute_mean_embeddings(embeddings, ids):
                 - unique_ids    : vector of unique ids
                 - centroids     : centroids[i] is the centroid associated to embeddings of ids[i]
     """
-    uniques = tf.unique(ids)[0]
-    return uniques, tf.concat([
-        tf.reduce_mean(
-            tf.gather(embeddings, tf.where(ids == unique_id)), axis = 0
-        )
-        for unique_id in uniques
-    ], axis = 0)
+    uniques, indexes = tf.unique(ids)
+    mask = tf.expand_dims(tf.range(tf.size(uniques)), axis = 1) == tf.expand_dims(indexes, axis = 0)
+    return uniques, tf.math.divide_no_nan(
+        tf.reduce_sum(
+            tf.where(tf.expand_dims(mask, axis = -1), tf.expand_dims(embeddings, 0), 0.), axis = 1
+        ),
+        tf.reduce_sum(tf.cast(mask, tf.float32), axis = -1, keepdims = True)
+    )
+
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
+    tf.TensorSpec(shape = (None, ), dtype = tf.int32)
+])
+def get_embeddings_with_ids(embeddings, assignment, ids):
+    mask    = tf.reduce_any(assignment == tf.expand_dims(ids, axis = 1), axis = 0)
+        
+    assignment  = tf.boolean_mask(assignment, mask)
+    embeddings  = tf.boolean_mask(embeddings, mask)
+    return embeddings, assignment
 
 def visualize_embeddings(embeddings,
                          metadata,

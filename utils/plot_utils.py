@@ -781,8 +781,11 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
         if ids is None: ids = embeddings.get('ids', embeddings.get('label', None))
         embeddings = embeddings['embeddings'] if 'embeddings' in embeddings else embeddings['x']
 
-    reducer = umap.UMAP(random_state = random_state)
-    reduced_embeddings = reducer.fit_transform(embeddings)
+    if embeddings.shape[1] > 2:
+        reducer = umap.UMAP(random_state = random_state)
+        reduced_embeddings = reducer.fit_transform(embeddings)
+    else:
+        reduced_embeddings = embeddings
     
     x, y = reduced_embeddings[:, 0], reduced_embeddings[:, 1]
 
@@ -795,12 +798,22 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
         unique_ids  = np.unique(ids).tolist()
         size = min(math.sqrt(len(unique_ids)) * 2, 10)
         
+        colors  = [unique_ids.index(i) for i in ids]
+        color_mapping   = kwargs.pop('c', None)
+        if isinstance(color_mapping, dict):
+            colors = [color_mapping.get(c, c) for c in colors]
+        elif isinstance(color_mapping, list):
+            if len(color_mapping) == len(colors):
+                colors = color_mapping
+            elif len(color_mapping) >= len(unique_ids):
+                colors = [color_mapping[c] for c in colors]
+        
         kwargs.setdefault('figsize', (size, size))
-        kwargs.update({'label' : ids, 'c' : [unique_ids.index(i) for i in ids]})
+        kwargs.update({'label' : ids, 'c' : colors})
     
     for k, v in _default_embedding_plot_config.items():
         kwargs.setdefault(k, v)
-    
+
     return plot(** kwargs)
 
 _plot_methods   = {

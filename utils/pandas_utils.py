@@ -130,28 +130,24 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_
     
     if n is None or n <= 0: n = len(uniques)
     if n_sample is None or n_sample <= 0: n_sample = len(data)
-    if min_sample is None: min_sample = n_sample
     
-    if n > len(uniques):
-        raise ValueError('`n = {}` is higher than the number of uniques `{}` : {}'.format(
-            n, on, len(uniques)
-        ))
+    if min_sample is not None:
+        uniques = uniques[uniques >= min_sample]
     
-    if n == len(uniques):
-        uniques = uniques.index
-    else:
-        mask    = uniques >= min_sample
-        uniques = uniques.index[:n] if mask.sum() < n else uniques[mask].index
-
-        if len(uniques) > n:
-            uniques = rnd.choice(uniques, n, replace = False)
+    uniques = uniques.index
+    if len(uniques) > n:
+        uniques = rnd.choice(uniques, n, replace = False)
     
     indexes = []
     for u in uniques:
         samples_i = data[data[on] == u]
         
+        n_sample_i = min(
+            len(samples_i), n_sample
+        ) if not isinstance(n_sample, float) else int(n_sample * len(samples_i))
+        
         indexes.extend(rnd.choice(
-            samples_i.index, size = min(n_sample, len(samples_i)), replace = False
+            samples_i.index, size = n_sample_i, replace = False
         ))
     
     return data.loc[indexes].reset_index()

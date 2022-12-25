@@ -20,9 +20,9 @@ from custom_layers.custom_activations import _activations
 from custom_architectures.simple_models import classifier
 
 def __load():
-    for module_name in os.listdir('custom_architectures'):
-        if module_name in ['__init__.py', '__pytache__']: continue
-        module_name = 'custom_architectures.' + module_name.replace('.py', '')
+    for module_name in glob.glob(os.path.join('custom_architectures', '*.py')):
+        if module_name.endswith('__init__.py'): continue
+        module_name = module_name.replace(os.path.sep, '.')[:-3]
 
         module = __import__(
             module_name, fromlist = ['custom_objects', 'custom_functions']

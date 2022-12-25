@@ -75,6 +75,9 @@ My SV2TTS models are fine-tuned from pretrained Tacotron2 models which speeds up
 | tacotron2_siwis   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `Tacotron2`   | `WaveGlow`    | / | [me](https://github.com/yui-mhcp) | [Google Drive](https://drive.google.com/file/d/1r3Dzu5V1A34-StUeKPt0Fl_RoQohu8t_/view?usp=sharing)  |
 | sv2tts_tacotron2_256  | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1at9bYsAoazqMccDBXW089DjivMS1Nb2x/view?usp=sharing)  |
 | sv2tts_siwis  | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1GESyvKozvWEj7nfC7Qin2xuMJrL4pqTS/view?usp=sharing)  |
+| sv2tts_tacotron2_256_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1UK44V7C-hlj_pziAuQnJnHxAwLyoxcjt/view?usp=share_link)  |
+| sv2tts_siwis_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1BaCSuWeydNj5z0b6dgKddPUDM2j4rPvu/view?usp=share_link)  |
+
 
 You can download the `tensorflow` version of `WaveGlow` at [this link](https://drive.google.com/file/d/1Lx-MiiRuxWmBX4_ZORD9YT4LfgHb0Tfk/view?usp=sharing)
 
@@ -116,7 +119,7 @@ You also have to install `ffmpeg` for audio loading / saving.
 - [ ] Add new TTS architectures / models
 - [x] Add `consumer-producer` based support for prediction
 - [x] Add pipeline-based prediction
-- [ ] Train a `SV2TTS` model based on an encoder trained with the `GE2E` loss
+- [x] Train a `SV2TTS` model based on an encoder trained with the `GE2E` loss
 
 ## Pipeline-based prediction
 
@@ -199,6 +202,10 @@ Some ideas that showed some benefits (especially for single-speaker fine-tuning)
 The idea behind these tricks is that the only *speaker-specific* part is the `DecoderCell` so we can make other parts non-trainable to force it to learn this specific part
 
 \* Note that I also implemented it when models do not have the same number of layers
+
+## Known issue
+
+The `get_audio_file()`, returning the audio file associated to the given text, does not process the text while the mapping is saved based on the processed text. It means that if your text is not equal to the processed text, it will return `None`. 
 
 ## Contacts and licence
 

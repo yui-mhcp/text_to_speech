@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import glob
 import logging
 import pandas as pd
 
@@ -25,9 +26,9 @@ _dataset_dir = os.environ.get(
 )
 
 def __load():
-    for module_name in os.listdir('datasets/custom_datasets'):
-        if module_name in ['__init__.py', '__pytache__']: continue
-        module_name = 'datasets.custom_datasets.' + module_name.replace('.py', '')
+    for module_name in glob.glob(os.path.join('datasets', 'custom_datasets', '*.py')):
+        if module_name.endswith('__init__.py'): continue
+        module_name = module_name.replace(os.path.sep, '.')[:-3]
 
         module = __import__(module_name)
 

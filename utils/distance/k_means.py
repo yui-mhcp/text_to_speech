@@ -10,116 +10,119 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import tensorflow as tf
 
-from utils.distance.clustering import Clustering, get_assignment, compute_score
+from utils.embeddings import compute_centroids
+from utils.distance.distance_method import tf_distance
+from utils.distance.clustering import clustering_wrapper, get_assignment, compute_score
 
-class KMeans(Clustering):
-    def _build_clusters(self, points, * args, ** kwargs):
-        centroids, assignment = kmeans(points, * args, ** kwargs)
-        
-        return assignment
-    
-    @property
-    def k(self):
-        return self.n_cluster
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def _kmeans(points  : tf.Tensor,
+            k       : tf.Tensor,
 
-def kmeans(points, k, max_iter = 100, init_method = 'normal', method = 'euclidian',
-           threshold = 1e-6, n_init = 5, seed = None, plot = False):
-    from kneed import KneeLocator
-    
-    if not isinstance(points, tf.Tensor): points = tf.cast(points, tf.float32)
-    if isinstance(k, (list, tuple)):
-        scores = {}
-        for ki in k:
-            centroids, assignment = kmeans(
-                points, ki, max_iter = max_iter, n_init = n_init, init_method = init_method, method = method,
-                threshold = threshold, seed = None if not seed else seed * run
+            n_init       = 5,
+            max_iter    : tf.Tensor = 100,
+            threshold   : tf.Tensor = 1e-6,
+            init_method = 'kmeans_pp',
+            distance_metric = 'euclidian',
+            random_state    = None
+           ):
+    if n_init > 1:
+        best_centroids  = tf.zeros((k, tf.shape(points)[1]), tf.float32)
+        best_assignment = tf.range(tf.shape(points)[0])
+        best_score      = -1.
+        for run in tf.range(n_init):
+            centroids, assignment = _kmeans(
+                points,
+                k,
+                n_init  = 0,
+                init_method = init_method,
+                max_iter    = max_iter,
+                threshold   = threshold,
+                distance_metric = distance_metric
             )
-            score = compute_score(
-                points, assignment, centroids, tf.range(ki, dtype = tf.int32), method = method
-            )
-            scores[ki] = {'score' : score, 'centroids' : centroids, 'assignment' : assignment}
-        
-        list_scores = [scores[ki]['score'] for ki in k]
-        convex = all([list_scores[i] <= list_scores[i-1] for i in range(1, len(list_scores))])
-        if convex:
-            kl = KneeLocator(
-                k, list_scores, curve = "convex", direction = "decreasing"
-            )
+            centroids.set_shape(best_centroids.shape)
+            assignment.set_shape(best_assignment.shape)
             
-            if plot:
-                kl.plot_knee_normalized()
-            
-            best_k = kl.elbow if kl.elbow is not None else k[np.argmin(list_scores)]
-        else:
-            best_k = k[np.argmin(list_scores)]
-
-        return scores[best_k]['centroids'], scores[best_k]['assignment']
-    
-    if n_init > 0:
-        best_score, best_centroids, best_assignment = tf.cast(float('inf'), tf.float32), None, None
-        for run in range(n_init):
-            centroids, assignment = kmeans(
-                points, k, max_iter = max_iter, n_init = -1, init_method = init_method, method = method,
-                threshold = threshold, seed = None if not seed else seed * run
-            )
             score = compute_score(
-                points, assignment, centroids, tf.range(k, dtype = tf.int32), method = method
+                points, assignment, centroids, tf.range(k, dtype = tf.int32), distance_metric = distance_metric
             )
-            if score < best_score:
+
+            if score < best_score or best_score == -1.:
                 best_score, best_centroids, best_assignment = score, centroids, assignment
         
         return best_centroids, best_assignment
     
     if init_method == 'normal':
         centroids = tf.random.normal(
-            (k, tf.shape(points)[1]), seed = seed
+            (k, tf.shape(points)[1]), seed = random_state
+        )
+    elif init_method == 'uniform':
+        centroids = tf.random.uniform(
+            shape   = (k, tf.shape(points)[1]),
+            minval  = tf.reduce_min(points),
+            maxval  = tf.reduce_max(points),
+            seed    = random_state
         )
     elif init_method == 'random':
         indexes = tf.random.shuffle(tf.range(tf.shape(points)[0]))[:k]
         
         centroids = tf.gather(points, indexes)
     elif init_method == 'kmeans_pp':
-        centroids = kmeans_pp_init(points, k, method = method, seed = seed)
+        centroids = kmeans_pp_init(
+            points, k, distance_metric = distance_metric, random_state = random_state
+        )
     else:
-        raise ValueError("Initialization mode unknown : {}".format(self.init_method))
+        raise ValueError("Initialization mode unknown : {}".format(init_method))
     
-    assignment = tf.range(tf.shape(points)[0], dtype = tf.int32)
-    for i in range(max_iter):
-        assignment      = get_assignment(points, centroids, method = method)
+    assignment = get_assignment(points, centroids, distance_metric = distance_metric)
+    for i in tf.range(max_iter):
+        new_centroid_ids, new_centroids = compute_centroids(points, assignment)
         
-        new_centroids = []
-        for i in tf.range(k, dtype = tf.int32):
-            cluster_i   = tf.gather(points, tf.cast(tf.reshape(tf.where(assignment == i), [-1]), tf.int32))
-            centroid_i  = tf.reduce_mean(cluster_i, axis = 0) if len(cluster_i) > 0 else centroids[i]
+        if tf.shape(new_centroids)[0] < k:
+            unused  = tf.range(k)
+            mask    = tf.reduce_all(tf.expand_dims(unused, axis = 1) != new_centroid_ids, axis = 1)
+            unused  = tf.boolean_mask(unused, mask)
             
-            new_centroids.append(centroid_i)
-
-        new_centroids = tf.stack(new_centroids, 0)
+            new_centroids = tf.concat([
+                new_centroids, tf.gather(centroids, unused, batch_dims = 0)
+            ], axis = 0)
+            new_centroid_ids    = tf.concat([new_centroid_ids, unused], axis = 0)
         
-        diff = tf.reduce_sum(tf.abs(new_centroids - centroids))
+        new_centroids = tf.gather(
+            new_centroids, tf.argsort(new_centroid_ids), batch_dims = 0
+        )
+        new_centroids.set_shape(centroids.shape)
+        
         if tf.reduce_sum(tf.abs(new_centroids - centroids)) < threshold:
             break
         
-        centroids = new_centroids
+        centroids   = new_centroids
+        assignment  = get_assignment(points, centroids, distance_metric = distance_metric)
     
     return centroids, assignment
 
-def kmeans_pp_init(points, k, method = 'euclidian', seed = None):
-    n = tf.shape(points)[0]
-    centroids = tf.expand_dims(
-        points[tf.random.uniform((), minval = 0, maxval = n, dtype = tf.int32, seed = seed)], axis = 0
-    )
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def kmeans_pp_init(points   : tf.Tensor,
+                   k        : tf.Tensor,
+                   distance_metric  = 'euclidian',
+                   random_state     = None
+                  ):
+    n   = tf.shape(points)[0]
+    idx = tf.random.uniform((), minval = 0, maxval = n, dtype = tf.int32)
     
-    for i in range(1, k):
-        dist = tf.reduce_min(
-            distance(points, centroids, method = method, as_matrix = True), axis = -1
+    centroids = tf.TensorArray(dtype = tf.float32, size = k, dynamic_size = False)
+    centroids = centroids.write(0, tf.gather(points, idx))
+    
+    for i in tf.range(1, k):
+        dist = tf.reduce_min(tf_distance(
+            points, centroids.stack()[:i], distance_metric, as_matrix = True, force_distance = True
+        ), axis = -1)
+
+        centroids = centroids.write(
+            i, tf.gather(points, tf.argmax(dist, axis = -1))
         )
-        p = dist / tf.reduce_sum(dist)
-        
-        new_centroid = tf.expand_dims(points[np.random.choice(np.arange(0, n), p = p.numpy())], axis = 0)
-        centroids = tf.concat([centroids, new_centroid], axis = 0)
     
-    return centroids
+    return centroids.stack()
+
+kmeans = clustering_wrapper(_kmeans)

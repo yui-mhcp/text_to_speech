@@ -32,7 +32,7 @@ _special_symbols    = {
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
 
-_acronym_re     = re.compile(r'\b[A-Z]+\b')
+_acronym_re     = re.compile(r"\b[A-Z]+(?!')\b")
 _punctuation    = '_!?.,’“”‚‘—–()[]{}:;\'"`+-*/^=\\<>&#$%@¿′″·§~'
 _left_punctuation   = '([{'
 _right_punctuation  = ')]},.'

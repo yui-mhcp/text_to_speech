@@ -24,7 +24,7 @@ from models.siamese.siamese_network import SiameseNetwork
 from models.interfaces.base_audio_model import BaseAudioModel
 from utils import load_json, dump_json, normalize_filename
 from utils.audio import load_audio, write_audio, AudioAnnotation
-from utils.distance import KPropagation
+from utils.distance import find_clusters
 
 logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
@@ -245,8 +245,10 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
     def identify(self,
                  filenames,
                  alignments = None,
-                 batch_size = 64,
-                 step       = 2,
+                 win_len    = 2,
+                 step       = 1,
+                 
+                 batch_size = 128,
                  
                  directory  = None,
                  overwrite  = False,
@@ -263,7 +265,8 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
         if alignments is not None and not isinstance(alignment, (list, tuple)):
             alignments = [alignments]
         if self.use_fixed_length_input: step = self.max_audio_time
-        step = int(step * self.audio_rate)
+        window = int(win_len * self.audio_rate)
+        step   = int(step * self.audio_rate)
         
         ####################
         #  Init directory  #
@@ -279,36 +282,31 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
         
         # Load already predicted data (if any)
         all_outputs = load_json(map_file, default = {})
-        outputs     = []
         
         ########################################
         #  Perform identification on each file #
         ########################################
         
+        outputs = []
         for i, filename in enumerate(filenames):
+            logger.info("Processing file {}...".format(filename if isinstance(filename, str) else 'raw audio'))
             # Normalize filename and save raw audio (if necessary)
-            if isinstance(filename, tf.Tensor) and filename.dtype == tf.float32:
-                filename = filename.numpy()
-            if isinstance(filename, np.ndarray) and filename.dtype == np.float32:
-                audio_num = len(os.listdir(audio_dir))
-                audio_filename = os.path.join(audio_dir, 'audio_{}.wav'.format(audio_num))
+            audio_filename = filename
+            if not isinstance(filename, str):
+                audio_filename = os.path.join(
+                    audio_dir, 'audio_{}.wav'.format(len(os.listdir(audio_dir)))
+                )
 
                 write_audio(audio = filename, filename = audio_filename, rate = self.audio_rate)
-            else:
-                audio_filename = normalize_filename(filename)
-            
-            logger.info("Processing file {}...".format(audio_filename))
-            # Load already predicted result
-            if audio_filename in all_outputs and not overwrite:
-                result = AudioAnnotation.load_from_file(
-                    all_outputs[audio_filename]
-                )
-                outputs.append(result)
+            elif filename in all_outputs and not overwrite:
+                outputs.append(AudioAnnotation.load_from_file(
+                    all_outputs[filename]
+                ))
                 continue
             
             time_logger.start_timer('loading')
             
-            audio = audio_filename if isinstance(audio_filename, np.ndarray) else load_audio(audio_filename, self.audio_rate)
+            audio = filename if not isinstance(filename, str) else load_audio(filename, self.audio_rate)
             
             time_logger.stop_timer('loading')
             
@@ -317,8 +315,8 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
             else:
                 alignment = [{
                     'start' : start / self.audio_rate,
-                    'end'   : min(len(audio), start + step) / self.audio_rate, 
-                    'time'  : min(step, len(audio) - start) / self.audio_rate
+                    'end'   : min(len(audio), start + window) / self.audio_rate, 
+                    'time'  : min(window, len(audio) - start) / self.audio_rate
                 } for start in range(0, len(audio), step)]
             
             # Embed data
@@ -328,24 +326,21 @@ class AudioSiamese(BaseAudioModel, SiameseNetwork):
                 audio[int(align['start'] * self.audio_rate) : int(align['end'] * self.audio_rate)]
                 for align in alignment
             ]
-            embedded_parts = self.embed(
-                parts, 
-                batch_size = batch_size, 
-                tqdm       = tqdm
-            )
+            embedded_parts = self.embed(parts, batch_size = batch_size, tqdm = tqdm)
             
             # Build similarity matrix
-            similarity_matrix = self.pred_similarity_matrix(embedded_parts)
+            #similarity_matrix = self.pred_similarity_matrix(embedded_parts)
 
             # Predict ids based on the `KPropagation` clustering
-            k_prop = KPropagation(
-                embedded_parts, similarity_matrix = similarity_matrix, tqdm = tqdm, 
-                ** kwargs
-            )
-            if show:
-                k_prop.plot()
+            assignment = find_clusters(embedded_parts, k = 3, method = 'kmeans')
+
+            if isinstance(assignment, tuple): assignment = assignment[1]
+            if hasattr(assignment, 'numpy'):  assignment = assignment.numpy()
+
+            if plot: plot_embedding(embedded_parts, assignment)
+
             
-            for i, label in enumerate(k_prop.labels):
+            for i, label in enumerate(embedded_parts):
                 alignment[i]['id'] = label
             
             # Make time alignment with predicted ids

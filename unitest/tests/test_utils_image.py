@@ -11,15 +11,12 @@
 # limitations under the License.
 
 import os
-
-from unitest import Test, assert_function, assert_equal, assert_smaller
-
-import os
 import tensorflow as tf
 
 from utils.image import load_image, augment_image
 from utils.image.mask_utils import create_color_mask
 from utils.image.box_utils import *
+from unitest import Test, assert_function, assert_equal, assert_smaller
 
 _filename = os.path.join('unitest', '__datas', 'lena.jpg')
 
@@ -27,9 +24,7 @@ _image = None
 
 def maybe_load_image():
     global _image
-    if _image is None:
-        _image = load_image(_filename)
-    
+    if _image is None: _image = load_image(_filename)
     return _image
 
 @Test
@@ -43,7 +38,7 @@ def image_io():
     assert_equal(lambda: get_image_size(_filename), lambda: get_image_size(image))
     
 
-@Test(contains_randomness = True)
+@Test(random = True)
 def test_image_augmentation():
     image = maybe_load_image()
     

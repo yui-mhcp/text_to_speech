@@ -195,6 +195,7 @@ def find_layers_mapping(tf_model,
                         pt_model,
                         patterns    = {},
                         transforms  = {},
+                        skip_layers = None,
                         
                         partial     = False,
                         
@@ -219,6 +220,7 @@ def find_layers_mapping(tf_model,
             - transforms : a key-value mapping where keys are regex pattern (or simply substrings) and the 
                            value is a callable returning a new dict of layers' mapping (key is layer's name and values are the new weights)
                            This can be used to apply transformation (such as splitting) some keys in the pretrained model's mapping
+            - skip_layers   : list of layers' name to skip (in the target model)
             - skip_root     : whether to skip root's name in `pt_model` layer's names
             - convert_to    : whether to convert layer's weights to another library format
             - default_replace_cost  : used to compute `edit_distance`'s score
@@ -262,16 +264,17 @@ def find_layers_mapping(tf_model,
         shape = [shape_fn(np.squeeze(vi).shape) for vi in l1_weights if len(vi.shape)]
         
         bests, score = [], float('inf')
-        for l2 in not_mapped:
-            if shape != pt_shapes[l2]: continue
-            
-            s = edit_distance(l1, l2, normalize = False, default_replace_cost = default_replace_cost)
-            if s == score:
-                bests.append(l2)
-                score = s
-            elif s < score:
-                bests = [l2]
-                score = s
+        if not skip_layers or all(re.search(s, l1) is None for s in skip_layers):
+            for l2 in not_mapped:
+                if shape != pt_shapes[l2]: continue
+
+                s = edit_distance(l1, l2, normalize = False, default_replace_cost = default_replace_cost)
+                if s == score:
+                    bests.append(l2)
+                    score = s
+                elif s < score:
+                    bests = [l2]
+                    score = s
         
         mapping[l1] = bests
         if len(bests) == 1:
@@ -387,6 +390,10 @@ def name_based_partial_transfer_learning(target_model,
             - target_model  : tf.keras.Model instance (model where weights will be transfered to)
             - pretrained_model  : pretrained model to transfer weights from
             - partial_transfer  : whether to perform partial transfer for layers with different shapes
+            - partial_initializer   : how to initialize weights when shapes differ
+            - kwargs    : forwarded to `find_layers_mapping`
+        
+        Note : see `help(find_layers_mapping)` for more information about mappings' creation
     """
     from utils.generic_utils import get_enum_item
     

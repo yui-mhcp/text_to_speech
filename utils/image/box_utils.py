@@ -24,7 +24,7 @@ from matplotlib import colors
 from utils.generic_utils import to_json, get_enum_item
 from utils.plot_utils import plot, plot_multiple
 from utils.image.mask_utils import apply_mask
-from utils.image.image_utils import _normalize_color
+from utils.image.image_utils import normalize_color
 from utils.image.image_io import load_image, save_image, get_image_size
 
 logger = logging.getLogger(__name__)
@@ -423,7 +423,7 @@ def draw_boxes(filename,
     image_h, image_w, _ = image.shape
     
     if not isinstance(color, list): color = [color]
-    color = [_normalize_color(c, image = image) for c in color]
+    color = [normalize_color(c, image = image) for c in color]
     label_color = {}
     
     if not _is_box_list(boxes): boxes = [boxes]

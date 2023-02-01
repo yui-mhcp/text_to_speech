@@ -47,7 +47,7 @@ class BaseImageModel(BaseModel):
                 tuple(_image_normalization_styles.keys()), image_normalization
             ))
 
-        if isinstance(input_size, int): input_size = (input_size, input_size, 3)
+        if not isinstance(input_size, (list, tuple)): input_size = (input_size, input_size, 3)
         
         self.input_size = tuple(input_size)
         self.resize_kwargs  = resize_kwargs

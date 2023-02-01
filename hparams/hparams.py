@@ -17,41 +17,56 @@ from utils import load_json, dump_json, parse_args
 logger = logging.getLogger(__name__)
 
 class HParams:
-    def __init__(self, _prefix = None, ** kwargs):
+    """ Base class that you can use like a regular `dict` to define models' hyperparameters """
+    def __init__(self,
+                 *,
+                 _name      = 'HParams',
+                 _prefix    = None,
+                 _propagate = None,
+                 _synchronize   = None,
+                 ** kwargs
+                ):
+        self.__name     = _name
         self.__prefix   = _prefix
+
         self.__config   = {}
         self.update(kwargs)
-
+    
     @property
     def config(self):
         return self.__config
-            
+    
+    @property
+    def prefix(self):
+        return self.__prefix
+    
     def __str__(self):
-        return "HParams :\n- {}".format(
-            "\n- ".join(["{}\t: {}".format(k, v) for k, v in self.__config.items()])
+        return "{} {}:\n- {}".format(
+            self.__name,
+            '' if not self.prefix else '(prefix {})'.format(self.prefix),
+            "\n- ".join(["{}\t: {}".format(k, v) for k, v in self.config.items()])
         )
     
     def __call__(self, ** kwargs):
+        """ Creates a copy of `self` and updates it with `kwargs` """
         new_params = self.copy()
         new_params.update(kwargs)
         return new_params
-        
-    def __contains__(self, v):
-        v = _remove_prefix(self.__prefix, v)
-        return v in self.__config
+    
+    def __contains__(self, k):
+        """ Checks whether the key `k` is in `self.config` """
+        return _remove_prefix(self.prefix, k) in self.config
         
     def __getattr__(self, key):
         if '_HParams__' in key: return object.__getattribute__(self, key)
-        key = _remove_prefix(self.__prefix, key)
-        if key not in self.__config:
+        key = _remove_prefix(self.prefix, key)
+        if key not in self.config:
             raise ValueError("{} not in parameters !".format(key))
-        return self.__config[key]
+        return self.config[key]
     
     def __setattr__(self, key, value):
         if '_HParams__' in key: object.__setattr__(self, key, value)
-        else:
-            key = _remove_prefix(self.__prefix, key)
-            self.__config[key] = value
+        else: self.config[_remove_prefix(self.prefix, key)] = value
         
     def __getitem__(self, key):
         return getattr(self, key)
@@ -60,9 +75,11 @@ class HParams:
         setattr(self, key, value)
     
     def __eq__(self, v):
-        if not isinstance(v, (dict, HParams)): return False
-        v_config = v if isinstance(v, dict) else v.config
-        return self.__prefix == v.__prefix and self.config == v_config
+        if isinstance(v, dict):
+            return self.config == v
+        elif isinstance(v, HParams):
+            return self.prefix == v.prefix and self.config == v.config
+        return False
     
     def __add__(self, v):
         if not isinstance(v, (dict, HParams)):
@@ -71,70 +88,74 @@ class HParams:
         v_config = v if isinstance(v, dict) else v.get_config(with_prefix = True)
         self_config = self.get_config(with_prefix = True)
         for k in v_config.keys():
-            if k in self_config and self[k] != v_config[k]:
-                logger.warning("Value {} is present in both HParams with different values ({} vs {}) !".format(k, self[k], v_config[k]))
+            if k in self_config and self_config[k] != v_config[k]:
+                logger.warning("Value {} is present in both HParams with different values ({} vs {}) !".format(k, self_config[k], v_config[k]))
         
         return HParams(** {** self_config, ** v_config})
     
     def copy(self):
-        return HParams(_prefix = self.__prefix, ** self)
+        """ Creates a copy of `self` """
+        return HParams(_prefix = self.prefix, ** self)
     
     def extract(self, values, pop = False, copy = True):
-        """ Update self.config without adding new keys """
-        keys = list(values.keys())
+        """
+            Updates `self` (or a copy) without adding new keys
+            
+            Arguments :
+                - value : the key-value mapping to get values from
+                - pop   : whether to pop the items from `value`
+                - copy  : whether to return a copy of `self` or not
+            Returns :
+                - `self` if `copy == False` else a new HParams instance
+        """
         new_values = {}
-        for k in keys:
+        for k in list(values.keys()):
             if k not in self: continue
-            v = values.pop(k) if pop else values.get(k)
-            new_values[k] = v
+            new_values[k] = values.pop(k) if pop else values.get(k)
         return self(** new_values) if copy else self.update(new_values)
     
     def update(self, v):
-        """ update self.config and add new keys if any """
+        """ update self.config and add new keys (if any) """
         if not isinstance(v, (dict, HParams)):
-            raise ValueError("V must be dict or HParams instance !")
+            raise ValueError("`v` must be dict or HParams instance !")
         
         v_config = v if isinstance(v, dict) else v.get_config(with_prefix = True)
-        for k, v in v_config.items():
-            setattr(self, k, v)
+        for k, v in v_config.items(): self[k] = v
         return self
 
     def setdefault(self, key, value = None):
         """ Set default value for `key` (id set the value only if not already in) """
         if isinstance(key, (dict, HParams)):
-            for k, v in key.items():
-                self.setdefault(k, v)
+            for k, v in key.items(): self.setdefault(k, v)
             return
-        key = _remove_prefix(self.__prefix, key)
-        self.__config.set_default(key, value)
+        
+        self.config.set_default(_remove_prefix(self.prefix, key), value)
     
-    def get(self, key, default = None):
-        key = _remove_prefix(self.__prefix, key)
-        return self.__config.get(key, default)
+    def get(self, key, * args):
+        return self.config.get(_remove_prefix(self.prefix, key), * args)
     
-    def pop(self, key, default = None):
-        key = _remove_prefix(self.__prefix, key)
-        return self.__config.pop(key, default)
+    def pop(self, key, * args):
+        return self.config.pop(_remove_prefix(self.prefix, key), * args)
     
     def items(self):
-        return self.__config.items()
+        return self.config.items()
     
     def keys(self):
-        return self.__config.keys()
+        return self.config.keys()
     
     def values(self):
-        return self.__config.values()
+        return self.config.values()
     
     def get_config(self, with_prefix = False, prefix = None, add_prefix = None):
-        config = self.__config.copy()
-        if prefix is not None and prefix != self.__prefix:
+        config = self.config.copy()
+        if prefix is not None and prefix != self.prefix:
             config = {
-                _remove_prefix(prefix, k) : v for k, v in config.items() 
+                _remove_prefix(prefix, k) : v for k, v in config.items()
                 if k.startswith(prefix + '_')
             }
         
-        if with_prefix and self.__prefix:
-            config = {'{}_{}'.format(self.__prefix, k) : v for k, v in config.items()}
+        if with_prefix and self.prefix:
+            config = {'{}_{}'.format(self.prefix, k) : v for k, v in config.items()}
         
         if add_prefix is not None:
             config = {'{}_{}'.format(add_prefix, k) : v for k, v in config.items()}
@@ -148,7 +169,7 @@ class HParams:
     
     def save(self, filename):
         config = self.get_config(with_prefix = True)
-        config['_prefix'] = self.__prefix
+        config.update({'_name' : self.__name, '_prefix' : self._prefix})
         dump_json(filename, config, indent = 4)
     
     @classmethod
@@ -158,5 +179,4 @@ class HParams:
 def _remove_prefix(prefix, k):
     if prefix is None: return k
     prefix += '_'
-    if not k.startswith(prefix): return k
-    return k[len(prefix) :]
+    return k if not k.startswith(prefix) else k[len(prefix) :]

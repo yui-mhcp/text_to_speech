@@ -41,7 +41,7 @@ class History(tf.keras.callbacks.Callback):
             }
         }
         __trainings = [
-            config  : {...} # training config given by this.set_params(...)
+            config  : {...} # training config given by self.set_params(...)
             infos   : {...} # timing informations
         ]
     """
@@ -205,11 +205,33 @@ class History(tf.keras.callbacks.Callback):
         self.__history      = {int(k) : v for k, v in history.items()}
         self.__trainings    = trainings
     
+    def set_model(self, model):
+        self.model = model
+        
     def set_params(self, params):
-        self.__current_training_config.update(to_json(params))
         self.__test_prefix = params.get('test_prefix', None)
         if self.__test_prefix is not None and self.__test_prefix.endswith('_'):
             self.__test_prefix = self.__test_prefix[:-1]
+        
+        infos_to_save = {}
+        if self.model is not None:
+            infos_to_save['metrics'] = to_json(
+                self.model.compiled_metrics if hasattr(self.model, 'compiled_metrics') else self.model.metrics
+            )
+            if self.training:
+                infos_to_save.update({
+                    'losses'        : to_json(self.model.losses),
+                    'optimizers'    : to_json(self.model.optimizers),
+                })
+        infos_to_save.update(to_json(params))
+        
+        if self.training:
+            self.__current_training_config.update(infos_to_save)
+        elif len(self.__trainings) > 0:
+            prefix = self.__test_prefix if self.__test_prefix else 'test'
+            self.__trainings[-1].update({
+                '{}_config'.format(prefix)  : infos_to_save
+            })
     
     def get_epoch_config(self, epoch):
         for t in self.__trainings:
@@ -416,7 +438,7 @@ class History(tf.keras.callbacks.Callback):
     
     def on_test_begin(self, logs = None):
         if self.training:
-            default_prefix = 'valid'
+            default_prefix = 'val'
             self.__phase    = Phase.VALIDATING
         else:
             default_prefix = 'test'

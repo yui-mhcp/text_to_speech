@@ -10,4 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unitest.test import *
+import os
+
+from unitest.test import Test, run_tests
+from unitest.test_functions import *
+
+_out_test_dir = os.path.join('unitest', '__outputs')

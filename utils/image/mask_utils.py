@@ -14,9 +14,10 @@ import cv2
 import numpy as np
 import tensorflow as tf
 
-from utils.image.image_utils import _normalize_color
+from utils.image.image_io import get_image_size
+from utils.image.image_utils import tf_normalize_color, normalize_color
 
-def create_color_mask(image, color, threshold = 0.1, mask = None):
+def create_color_mask(image, color, threshold = 0.1, mask = None, per_channel = True):
     """
         Create a mask where `image == color (+/- threshold)`
         
@@ -25,28 +26,48 @@ def create_color_mask(image, color, threshold = 0.1, mask = None):
             - color     : a color (either 3-value tuple / single value), the color to mask
             - threshold : the accepted variation around `color`
             - mask      : a mask to apply on the produced color mask
+            - per_channel   : boolean, whether to apply the `threshold`'s tolerance per channel or not
+                - if `True`, each channel must be in the range [c - threshold, c + threshold]
+                - if `False`, the sum of difference must be in the range
         Return :
+            if `mask` is None:
             - tf.Tensor of boolean with same shape as `image` (with 3rd channel == 1)
-        
-        Note that the threshold is the accepted variation around `color` for the 3 channels (not independentely). 
-        i.e. a variation of 75 allows a mean variation of 25 per channels (and not 75 per channel).
+            else:
+            - `tf.Tensor` of same shape and dtype as `mask`, the mask's values where `color_mask` is True
     """
-    color = _normalize_color(color, image = image)
-    
     if not isinstance(image, tf.Tensor): image = tf.convert_to_tensor(image)
     
-    if threshold < 1. and image.dtype != tf.float32: threshold = threshold * 255
-    if threshold > 1. and image.dtype == tf.float32: threshold = threshold / 255.
+    color = tf_normalize_color(color, image = image)
     
-    color_mask = tf.reduce_all(
-        tf.abs(image - color) <= threshold, axis = -1, keepdims = True
-    )
+    if isinstance(threshold, float) and image.dtype != tf.float32: threshold = threshold * 255
+    elif isinstance(threshold, int) and image.dtype == tf.float32: threshold = threshold / 255.
+    
+    threshold   = tf.cast(threshold, image.dtype)
+    if per_channel:
+        color_mask  = tf.reduce_all(tf.abs(image - color) <= threshold, axis = -1, keepdims = True)
+    else:
+        color_mask  = tf.reduce_sum(tf.abs(image - color), axis = -1, keepdims = True) <= threshold
     
     if mask is not None:
-        if mask.dtype != tf.bool: mask = tf.cast(mask, tf.bool)
-        color_mask = tf.math.logical_and(color_mask, mask)
+        if not isinstance(mask, tf.Tensor): mask = tf.convert_to_tensor(mask)
+        color_mask = tf.where(color_mask, mask, tf.cast(0, mask.dtype))
     
     return color_mask
+
+def create_poly_mask(image, points, color = 1.):
+    """
+        Creates a mask based on a polygon
+        Arguments :
+            - image     : the original image (to get the mask's shape)
+            - points    : a list of np.ndarray
+            - color     : the color for the mask
+    """
+    shape   = get_image_size(image)
+    
+    color   = normalize_color(color, image = image)
+    points  = [np.reshape(np.array(pts), [-1, 2]).astype(np.int32) for pts in points]
+    
+    return cv2.fillPoly(np.zeros(shape, dtype = dtype), pts = points, color = color)
 
 def smooth_mask(mask, smooth_size = 0.5, divide_factor = 2., ** kwargs):
     """ Smooth a mask to not have a 0-1 mask but smooth boundaries """
@@ -110,7 +131,7 @@ def replace_mask(image, mask, background, ** kwargs):
     if not isinstance(background, (np.ndarray, tf.Tensor)) or background.shape != image.shape:
         background_image = np.zeros_like(image)
         
-        color = _normalize_color(background, image = image)
+        color = _ormalize_color(background, image = image)
         
         background_image[...,:] = color
     else:
@@ -118,7 +139,6 @@ def replace_mask(image, mask, background, ** kwargs):
 
     return image * (1. - mask) + mask * background_image
 
-    
 _transformations    = {
     'keep'      : lambda image, mask, ** kwargs: image * mask,
     'remove'    : lambda image, mask, ** kwargs: image * (1. - mask),

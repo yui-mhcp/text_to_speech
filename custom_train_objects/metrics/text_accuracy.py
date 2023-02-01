@@ -75,3 +75,11 @@ class TextAccuracy(tf.keras.metrics.Metric):
         score_symbols = self.true_symbols / tf.cast(self.samples, tf.float32)
         score_phrases = self.true_sentences / tf.cast(self.samples, tf.float32)
         return score_symbols, score_phrases
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'mask_padding'  : self.mask_padding,
+            'pad_value'     : self.pad_value.numpy()
+        })
+        return config

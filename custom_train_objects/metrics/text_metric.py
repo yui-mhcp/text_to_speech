@@ -33,14 +33,14 @@ class TextMetric(tf.keras.metrics.Metric):
                 - y_pred : predicted logits
                     shape : (batch_size, max_length, vocab_size)
         """
-        codes, lengths = y_true
+        if isinstance(y_true, (list, tuple)): y_true = y_true[0]
         
         predicted_codes, _ = tf.nn.ctc_beam_search_decoder(
             tf.transpose(y_pred, [1, 0, 2]),
             tf.zeros((tf.shape(y_pred)[0],), dtype = tf.int32) + tf.shape(y_pred)[1]
         )
         predicted_codes = tf.cast(predicted_codes[0], tf.int32)
-        codes = tf.sparse.from_dense(codes)
+        codes = tf.sparse.from_dense(y_true)
         
         distance = tf.edit_distance(predicted_codes, codes, normalize = False)
         

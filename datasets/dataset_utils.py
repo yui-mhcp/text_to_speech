@@ -67,8 +67,8 @@ def _infer_type_spec(item):
     shape, dtype = (), None
     if isinstance(item, (list, tuple)): shape, dtype = (None, ), _infer_type_spec(item[0]).dtype
     elif isinstance(item, str):                                 dtype = tf.string
-    elif isinstance(item, (int, np.integer, tf.int32)):         dtype = tf.int32
-    elif isinstance(item, (float, np.floating, tf.float32)):    dtype = tf.float32
+    elif isinstance(item, (int, np.integer)):         dtype = tf.int32
+    elif isinstance(item, (float, np.floating)):    dtype = tf.float32
     elif isinstance(item, (np.ndarray, tf.Tensor)):
         if isinstance(item, tf.Tensor): dtype = item.dtype
         elif item.dtype == np.int32:    dtype = tf.int32
@@ -79,10 +79,62 @@ def _infer_type_spec(item):
         raise ValueError("Unknown type spec for item {}".format(item))
         
     return tf.TensorSpec(shape = shape, dtype = dtype)
+
+def _nested_count(col):
+    count = {}
+    for l in col:
+        if not isinstance(l, list):
+            count.setdefault(l, 0)
+            count[l] += 1
+            continue
+
+        for v in l:
+            count.setdefault(v, 0)
+            count[v] += 1
     
+    return {
+        k : v for k, v in sorted(count.items(), key = lambda p: p[1], reverse = True)
+    }
+
+def _get_col_summary(col, limit = 0.1, ** kwargs):
+    val0 = col.iloc[0]
+    if not isinstance(val0, (str, int, float, np.integer, np.floating, list)): return {}
+    
+    infos = {}
+    
+    if isinstance(val0, list):
+        if not isinstance(val0[0], str): return {}
+        
+        count = _nested_count(col.values)
+    else:
+        count   = col.value_counts().to_dict()
+    
+    if len(count) > limit:
+        infos['# uniques']  = len(count)
+    else:
+        infos['uniques']    = count
+
+    if not isinstance(val0, (str, list)):
+        infos.update({
+            k : v for k, v in col.describe().items() if k != 'count'
+        })
+    
+    return infos
+
 def _infer_generator_spec(generator):
     return _infer_type_spec(generator[0])
 
+def summarize_dataset(dataset, cols = None, limit = 0.1, ** kwargs):
+    if not isinstance(dataset, pd.DataFrame): return {}
+    
+    if isinstance(limit, float): limit = int(limit * len(dataset))
+    
+    if cols is None: cols = dataset.columns
+    return {
+        col : _get_col_summary(dataset[col], limit = limit, ** kwargs)
+        for col in cols
+    }
+    
 def filter_dataset(dataset, on_unique = [], ** kwargs):
     return filter_df(dataset, on_unique = on_unique, ** kwargs)
 
@@ -437,11 +489,11 @@ def prepare_dataset(data,
             1) Convert it to a tf.data.Dataset with `build_tf_dataset` function
             2) If provided : map dataset with `encode_fn`
             3) If provided : filter dataset with `filter_fn`
-            4) If batch_before_map  : batch + cache
+            4) If batch_before_map      : cache then batch
             5) If provided : map dataset with `map_fn`
-            6) Cache dataset
+            6) if not batch_before_map  : Cache dataset
             7) If provided : map dataset with `memory_consuming_fn`
-            8) If not already done : batch dataset
+            8) If not batch_before_map  : batch dataset
             9) Prefetch dataset
         
         The cache procedure is : 
@@ -451,15 +503,15 @@ def prepare_dataset(data,
             1) If provided : map dataset with `augment_fn`
             2) batch dataset (with padded batch if required)
         
-        Note that caching is always done before batching because we do not want to cache augmented data
+        Note that caching is always done before batching because we do not want to cache augmented data (and data augmentation is always done right before batching)
     """
     def cache_dataset(dataset):
         if cache:
-            dataset = dataset.cache()
+            dataset = dataset.cache('' if cache is True else cache)
         
         if shuffle_size > 0:
             dataset = dataset.shuffle(shuffle_size)
-            
+        
         return dataset
         
     def batch_dataset(dataset):
@@ -471,7 +523,7 @@ def prepare_dataset(data,
             if not padded_batch:
                 dataset = dataset.batch(batch_size)
             else:
-                dataset = dataset.padded_batch(batch_size, **pad_kwargs)
+                dataset = dataset.padded_batch(batch_size, ** pad_kwargs)
             logger.log(DEV, "- Dataset after batch : {}".format(dataset))
             
         return dataset 
@@ -497,7 +549,8 @@ def prepare_dataset(data,
         dataset = dataset.map(map_fn, num_parallel_calls = num_parallel_calls)
         logger.log(DEV, "- Dataset after mapping : {}".format(dataset))
     
-    dataset = cache_dataset(dataset)
+    if not batch_before_map:
+        dataset = cache_dataset(dataset)
     
     if memory_consuming_fn is not None:
         dataset = dataset.map(

@@ -12,6 +12,7 @@
 
 import os
 import json
+import math
 import librosa
 import numpy as np
 import tensorflow as tf
@@ -111,7 +112,7 @@ class MelSTFT(object):
         
     def get_length(self, audio_length):
         """ Return expected mel_length given the audio_length """
-        return int(max(self.filter_length, audio_length) / self.hop_length) + 1
+        return math.ceil(max(self.filter_length, audio_length) / self.hop_length)
     
     def get_audio_length(self, mel_length):
         return (mel_length - 1) * self.hop_length
@@ -340,7 +341,6 @@ class TacotronSTFT(MelSTFT):
         )
 
         self.mel_basis = tf.expand_dims(self.mel_basis, 0)
-
         
     def spectral_normalize(self, magnitudes):
         return dynamic_range_compression(magnitudes)
@@ -422,6 +422,52 @@ class ConformerSTFT(TacotronSTFT):
         })
         return config
     
+
+class WhisperSTFT(TacotronSTFT):
+    def __init__(self,
+                 filter_length  = 400, 
+                 hop_length     = 160, 
+                 win_length     = 400,
+                 n_mel_channels = 80, 
+                 sampling_rate  = 16000, 
+                 mel_fmin       = 0.0,
+                 mel_fmax       = 8000.0,
+                 ** kwargs
+                ):
+        super().__init__(
+            filter_length  = filter_length, 
+            hop_length     = hop_length, 
+            win_length     = win_length,
+            n_mel_channels = n_mel_channels, 
+            sampling_rate  = sampling_rate, 
+            mel_fmin       = mel_fmin,
+            mel_fmax       = mel_fmax,
+            ** kwargs
+        )
+
+    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
+    def mel_spectrogram(self, y):
+        """Computes mel-spectrograms from a batch of waves
+        PARAMS
+        ------
+        y: tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
+
+        RETURNS
+        -------
+        mel_output: tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
+        """
+        magnitudes, phases = self.stft_fn.transform(y)
+        
+        magnitudes = tf.square(tf.abs(magnitudes[:, :-1]))
+        
+        mel_output = tf.matmul(magnitudes, self.mel_basis)
+        mel_output = tf.experimental.numpy.log10(tf.maximum(mel_output, 1e-10))
+
+        mel_output = tf.maximum(mel_output, tf.reduce_max(mel_output) - 8.0)
+        mel_output = (mel_output + 4.0) / 4.0
+
+        return mel_output
+
 class SpeechNetSTFT(MelSTFT):
     @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
     def mel_spectrogram(self, y):
@@ -519,11 +565,11 @@ class JasperSTFT(MelSTFT):
 class LibrosaSTFT(MelSTFT):
     def make_features(self, audio):
         return librosa.feature.melspectrogram(
-            audio.numpy(),
-            self.sampling_rate,
-            n_fft = self.filter_length,
-            hop_length = self.hop_length,
-            n_mels = self.n_mel_channels
+            y   = audio.numpy(),
+            sr  = self.sampling_rate,
+            n_fft   = self.filter_length,
+            hop_length  = self.hop_length,
+            n_mels  = self.n_mel_channels
         ).astype(np.float32).T
         
     @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
@@ -542,5 +588,6 @@ _mel_classes = {
     'LibrosaSTFT'       : LibrosaSTFT,
     'TacotronSTFT'      : TacotronSTFT,
     'SpeechNetSTFT'     : SpeechNetSTFT,
-    'DeepSpeechSTFT'    : DeepSpeechSTFT
+    'DeepSpeechSTFT'    : DeepSpeechSTFT,
+    'WhisperSTFT'       : WhisperSTFT
 }

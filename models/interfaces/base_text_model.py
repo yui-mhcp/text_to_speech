@@ -105,17 +105,11 @@ class BaseTextModel(BaseModel):
     
     @property
     def text_signature(self):
-        return (
-            tf.TensorSpec(shape = (None, None), dtype = tf.int32),
-            tf.TensorSpec(shape = (None,),      dtype = tf.int32)
-        )
+        return tf.TensorSpec(shape = (None, None), dtype = tf.int32)
 
     @property
     def multi_text_signature(self):
-        return (
-            tf.TensorSpec(shape = (None, None, None),   dtype = tf.int32),  # tokens
-            tf.TensorSpec(shape = (None, None),         dtype = tf.int32)   # length
-        )
+        return tf.TensorSpec(shape = (None, None, None), dtype = tf.int32)
 
     @property
     def training_hparams_text(self):
@@ -133,6 +127,14 @@ class BaseTextModel(BaseModel):
     def vocab_size(self):
         return self.text_encoder.vocab_size
 
+    @property
+    def model_tokens(self):
+        return {
+            'sos_token' : self.sos_token_idx,
+            'eos_token' : self.eos_token_idx,
+            'pad_token' : self.blank_token_idx,
+        }
+    
     @property
     def blank_token_idx(self):
         return self.text_encoder.blank_token_idx
@@ -358,7 +360,7 @@ class BaseTextModel(BaseModel):
         
         return encoded_text
 
-    def tf_format_text(self, text_format, data, keys = ['text'], return_types = True, ** kwargs):
+    def tf_format_text(self, text_format, data, keys = ['text'], return_types = False, ** kwargs):
         """
             Calls `self.format_text` inside a `tf.numpy_function` (to be enable graph computation)
             
@@ -404,7 +406,7 @@ class BaseTextModel(BaseModel):
         if logger.isEnabledFor(logging.DEBUG):
             tf.print('Split + format lengths (total :', tf.reduce_sum(lengths), ') :', lengths)
         
-        return encoded_text, lengths
+        return encoded_text
     
     def tf_multi_encode(self, text, default_key = 'text', ** kwargs):
         """
@@ -468,24 +470,20 @@ class BaseTextModel(BaseModel):
             encoded_texts   = tf.boolean_mask(encoded_texts, valids)
             lengths         = tf.boolean_mask(lengths, valids)
         
-        encoded_texts, lengths = filter_texts(encoded_texts, lengths, ** kwargs)
+        encoded_texts = filter_texts(encoded_texts, lengths, ** kwargs)
         
         if logger.isEnabledFor(logging.DEBUG):
             tf.print('Lengths (total :', tf.reduce_sum(lengths), ') :', lengths)
         
         encoded_texts   = tf.reshape(encoded_texts, [-1, tf.shape(encoded_texts)[-1]])
-        lengths         = tf.reshape(lengths, [-1])
-        
-        not_padding     = lengths > 0
-        encoded_texts   = tf.boolean_mask(encoded_texts, not_padding)
-        lengths         = tf.boolean_mask(lengths, not_padding)
+        encoded_texts   = tf.boolean_mask(encoded_texts, encoded_texts[0] != self.blank_token_idx)
 
         if logger.isEnabledFor(logging.DEBUG):
             tf.print('Multi input shape :', tf.shape(encoded_texts))
 
-        return encoded_texts, lengths
+        return encoded_texts
 
-    def augment_text(self, tokens, length, min_idx = 1, max_idx = -1, nb_mask = None,
+    def augment_text(self, tokens, min_idx = 1, max_idx = -1, nb_mask = None,
                      min_mask_length = None, max_mask_length = None):
         if nb_mask is None: nb_mask = self.nb_mask
         if min_mask_length is None: min_mask_length = self.min_mask_length
@@ -502,7 +500,7 @@ class BaseTextModel(BaseModel):
             ),
             lambda: tokens
         )
-        return tokens, len(tokens)
+        return tokens
 
     def save_text_encoder(self, filename = None, force = False):
         if filename is None: filename = self.text_encoder_file

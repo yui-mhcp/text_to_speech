@@ -28,7 +28,7 @@ from tensorflow.python.keras.callbacks import CallbackList
 
 from loggers import DEV
 from hparams import HParams, HParamsTraining, HParamsTesting
-from datasets import train_test_split, prepare_dataset
+from datasets import train_test_split, prepare_dataset, summarize_dataset
 from utils import time_to_string, load_json, dump_json, get_metric_names, map_output_names
 from custom_architectures import get_architecture, custom_objects
 from custom_train_objects import History, MetricList
@@ -819,6 +819,9 @@ class BaseModel(metaclass = ModelInstances):
                           x     = None,
                           y     = None,
                           
+                          add_dataset_infos = True,
+                          summary_kwargs    = {},
+                          
                           train_size        = None,
                           valid_size        = None,
                           test_size         = 4,
@@ -866,7 +869,7 @@ class BaseModel(metaclass = ModelInstances):
         """
         train_config = self.get_dataset_config(is_validation = False, ** kwargs)
         valid_config = self.get_dataset_config(is_validation = True, ** kwargs)
-        valid_config.setdefault('cache', False)
+        valid_config['cache'] = False
         
         test_kwargs = kwargs.copy()
         if isinstance(test_batch_size, float):
@@ -905,6 +908,11 @@ class BaseModel(metaclass = ModelInstances):
             test_dataset    = prepare_dataset(valid_dataset,  ** test_config)
             test_dataset    = test_dataset.take(test_size)
         
+        ds_infos    = {
+            'train' : summarize_dataset(train_dataset, ** summary_kwargs),
+            'valid' : summarize_dataset(valid_dataset, ** summary_kwargs)
+        } if add_dataset_infos else {}
+        
         train_dataset = prepare_dataset(train_dataset, ** train_config)
         valid_dataset = prepare_dataset(valid_dataset, ** valid_config)
         
@@ -933,7 +941,8 @@ class BaseModel(metaclass = ModelInstances):
             'validation_data'   : valid_dataset,
             'shuffle'           : False,
             'initial_epoch'     : self.epochs,
-            'global_batch_size' : train_config['batch_size']
+            'global_batch_size' : train_config['batch_size'],
+            'dataset_infos'     : ds_infos
         }
         
     def fit(self, * args, name = None, custom_config = True, ** kwargs):
@@ -985,12 +994,15 @@ class BaseModel(metaclass = ModelInstances):
         self.save()
         return self.history
     
-    def train(self, 
-              * args, 
+    def train(self,
+              * args,
+              additional_infos  = None,
+              
               verbose       = 1,
               eval_epoch    = 1,
               verbose_step  = 100,
               tqdm          = tqdm_progress_bar,
+              
               strategy      = None,
               run_eagerly   = False,
               # custom functions for training and evaluation
@@ -1035,6 +1047,10 @@ class BaseModel(metaclass = ModelInstances):
         
         logger.info("Training config :\n{}\n".format(train_hparams))
         
+        ds_infos = config.pop('dataset_infos', {})
+        if ds_infos: train_hparams.update({'dataset_infos' : ds_infos})
+        
+        if additional_infos: train_hparams.update({'additional_infos' : additional_infos})
         ##############################
         #     Dataset variables      #
         ##############################
@@ -1061,19 +1077,13 @@ class BaseModel(metaclass = ModelInstances):
         self.compiled_metrics = self.get_compiled_metrics()
         
         # Prepare callbacks
-        callbacks   = config['callbacks']
-        callbacks.append(self.__history)
-        
-        if tf.__version__ == '2.1.0':
-            if verbose: verbose = 2
-            callbacks   = CallbackList(callbacks)
-        else:
-            if verbose: verbose = 1
-            callbacks   = CallbackList(callbacks, add_progbar = verbose > 0, model = self)
-        
-        callbacks.set_params(train_hparams)
+        if verbose: verbose = 1
+        callbacks   = config['callbacks'] + [self.__history]
+        callbacks   = CallbackList(callbacks, add_progbar = verbose > 0, model = self)
         
         callbacks.on_train_begin()
+        
+        callbacks.set_params(train_hparams)
         
         ####################
         #     Training     #
@@ -1187,6 +1197,10 @@ class BaseModel(metaclass = ModelInstances):
              metrics        = None,
              add_loss       = True,
              
+             add_dataset_infos  = True,
+             summary_kwargs     = {},
+             additional_infos   = None,
+             
              verbose        = 1,
              verbose_step   = 100,
              tqdm           = tqdm_progress_bar,
@@ -1214,7 +1228,11 @@ class BaseModel(metaclass = ModelInstances):
         test_hparams.update(base_hparams)
         
         logger.info("Testing config :\n{}\n".format(test_hparams))
-                
+        
+        if add_dataset_infos:
+            test_hparams.update({'dataset_infos' : summarize_dataset(dataset, ** summary_kwargs)})
+
+        if additional_infos: test_hparams.update({'additional_infos' : additional_infos})
         ##################################
         #     Dataset initialization     #
         ##################################
@@ -1232,14 +1250,8 @@ class BaseModel(metaclass = ModelInstances):
         self.compiled_metrics    = self.get_compiled_metrics(metrics, add_loss = add_loss)
         
         # Prepare callbacks
-        callbacks   = [self.__history]
-        
-        if tf.__version__ == '2.1.0':
-            if verbose: verbose = 2
-            callbacks   = CallbackList(callbacks)
-        else:
-            if verbose: verbose = 1
-            callbacks   = CallbackList(callbacks, add_progbar = verbose > 0, model = self)
+        if verbose: verbose = 1
+        callbacks   = CallbackList([self.__history], add_progbar = verbose > 0, model = self)
         
         test_hparams.update({
             'verbose'   : verbose,

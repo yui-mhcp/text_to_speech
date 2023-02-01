@@ -221,7 +221,7 @@ def read_audio(filename,
             [k for k, v in _supported_audio_formats.items() if 'read' in v], ext
         ))
     
-    rate, audio = _supported_audio_formats[ext]['read'](filename)
+    rate, audio = _supported_audio_formats[ext]['read'](filename, rate = target_rate)
     
     if len(audio) == 0:
         logger.warning("Audio {} is empty !".format(filename))
@@ -237,7 +237,10 @@ def read_audio(filename,
         audio = audio[offset : - offset]
     
     if normalize:
-        audio = audio_processing.normalize_audio(audio, max_val = 1.)
+        if normalize is True:
+            audio = audio_processing.normalize_audio(audio, max_val = 1.)
+        elif normalize > 1. and audio.dtype != np.float32:
+            audio = (audio / normalize).astype(np.float32)
     
     if reduce_noise:
         audio = audio_processing.reduce_noise(audio, rate = rate, ** kwargs)
@@ -255,23 +258,45 @@ def read_audio(filename,
     
     return rate, audio
 
-def read_wav(filename):
+def read_wav(filename, ** kwargs):
     """ Reads .wav audio with the `scipy.io.wavfile.read` method """
     return read(filename)
 
-def read_pydub(filename):
+def read_pydub(filename, ** kwargs):
     """ Reads mp3 audio with the `pydub.AudioSegment.from_mp3()` function """
     audio = AudioSegment.from_file(filename)
     audio_np = np.array(audio.get_array_of_samples())
     if audio.channels > 1: audio_np = audio_np[::audio.channels]
     return audio.frame_rate, audio_np
 
-def read_librosa(filename):
+def read_librosa(filename, ** kwargs):
     """ Reads an audio with the `librosa.load` function """
     audio, rate = librosa.load(filename, sr = None)
     return rate, audio
 
-def read_video_audio(filename):
+def read_ffmpeg(filename, rate = None):
+    try:
+        import ffmpeg
+    except ImportError:
+        logger.error("You must install ffmpeg : `pip install ffmpeg-python`")
+        return None
+    
+    try:
+        kw = {} if not rate else {'ar' : rate}
+        out, _ = (
+            ffmpeg.input(filename, threads = 0)
+            .output("-", format = "s16le", acodec = "pcm_s16le", ac = 1, ** kw)
+            .run(cmd = ["ffmpeg", "-nostdin"], capture_stdout = True, capture_stderr = True)
+        )
+        if not rate:
+            infos   = [a for a in ffmpeg.probe(filename)['streams'] if a['codec_type'] == 'audio'][0]
+            rate    = int(infos['sample_rate'])
+    except ffmpeg.Error as e:
+        raise RuntimeError("Failed to load audio : {}".format(e))
+
+    return rate, np.frombuffer(out, np.int16).flatten()
+
+def read_moviepy(filename, ** kwargs):
     """ Reads the audio of a video with the `moviepy` library """
     try:
         from moviepy.editor import VideoFileClip
@@ -332,7 +357,7 @@ _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
 _pydub_ext  = ('mp3', 'm4a', 'ogg')
 
 _supported_audio_formats = {
-    ** {ext : {'read' : read_video_audio} for ext in _video_ext},
+    ** {ext : {'read' : read_ffmpeg} for ext in _video_ext},
     ** {ext : {'read' : read_pydub, 'write' : write_pydub} for ext in _pydub_ext},
     'wav'   : {'read' : read_wav,   'write' : write_wav},
     'flac'  : {'read' : read_librosa},

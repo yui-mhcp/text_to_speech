@@ -12,19 +12,19 @@
 
 import tensorflow as tf
 
-def build_mask_1d(inputs, mask, kernel_size, strides, padding):
+def build_mask_1d(inputs, mask, kernel_size, strides, padding, dilation = 1):
     if mask is None: return None
 
     #tf.print(tf.reduce_sum(tf.cast(mask, tf.int32), -1), kernel_size, strides, padding)
     if strides == 1:
         if padding == 'same': return mask
-        return mask[:, kernel_size - 1 :]
+        return mask[:, (kernel_size - 1) * dilation :]
     
     seq_len = tf.reduce_sum(tf.cast(mask, tf.int32), axis = -1)
     if padding != 'same': seq_len = seq_len - kernel_size + 1
     new_len = tf.maximum(1, tf.cast(tf.math.ceil(seq_len / strides), tf.int32))
     
-    #tf.print('New seq length : {}'.format(new_len))
+    #tf.print('New seq length : {} - inputs : {}'.format(new_len, tf.shape(inputs)))
     
     return tf.sequence_mask(new_len, tf.shape(inputs)[1], dtype = tf.bool)
 
@@ -69,7 +69,9 @@ class MaskedZeroPadding1D(tf.keras.layers.ZeroPadding1D):
     
 class MaskedConv1D(tf.keras.layers.Conv1D):
     def compute_mask(self, inputs, mask = None):
-        return build_mask_1d(inputs, mask, self.kernel_size[0], self.strides[0], self.padding)
+        return build_mask_1d(
+            inputs, mask, self.kernel_size[0], self.strides[0], self.padding, self.dilation_rate[0]
+        )
     
     def call(self, inputs, mask = None):
         if mask is not None:

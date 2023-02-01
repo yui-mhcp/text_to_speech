@@ -13,7 +13,6 @@
 import os
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 def is_in(target, value, nested_test = False, ** kwargs):
     if nested_test:
@@ -52,10 +51,14 @@ def is_equal(target, value, ** kwargs):
 
 def is_diff(target, value, ** kwargs):
     eq, msg = is_equal(target, value, ** kwargs)
+    if eq: msg = 'Value are equals but should not be'
     return not eq, msg
     
 def compare(target, value, ** kwargs):
     """ Compare 2 items and raises an AssertionError if their value differ """
+    if hasattr(target, 'numpy'): target = target.numpy()
+    if hasattr(value, 'numpy'): value = value.numpy()
+    
     for t, compare_fn in _comparisons.items():
         if isinstance(target, t):
             compare_fn(target, value, ** kwargs)
@@ -166,7 +169,6 @@ def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = Fal
         Compare 2 arrays with some tolerance (`max_err`) on the error's sum / mean / max / min depending `err_mode`
         `squeeze` allows to skip `1`-dimensions
     """
-    if isinstance(target, tf.Tensor): target = target.numpy()
     if not isinstance(value, np.ndarray): value = np.array(value)
     if squeeze: target, value = np.squeeze(target), np.squeeze(value)
     
@@ -199,7 +201,7 @@ def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = Fal
             valid = getattr(err, err_mode) <= max_err
         else:
             raise ValueError('Unknown error mode : {}'.format(err_mode))
-            
+        
         assert valid, "Values differ ({} / {} diff, {:.3f}%) : max {} - mean {} - min {}".format(
             np.sum(err > max_err), np.prod(err.shape), np.mean(err > max_err), np.max(err), np.mean(err), np.min(err)
         )
@@ -211,7 +213,9 @@ def compare_dataframe(target, value, ignore_index = True, ** kwargs):
     
     assert len(missing_v_cols) + len(missing_t_cols) == 0, "Missing keys in value : {}\nAdditionnal keys in value : {}".format(missing_v_cols, missing_t_cols)
     
-    assert len(target) == len(value), "Target length {} != value length {}".format(len(target), len(value))
+    assert len(target) == len(value), "Target length {} != value length {}".format(
+        len(target), len(value)
+    )
     
     if not ignore_index:
         diff = np.where(~np.all((target == value).values, axis = -1))[0]
@@ -231,8 +235,8 @@ def compare_dataframe(target, value, ignore_index = True, ** kwargs):
 
 def compare_file(target, value, ** kwargs):
     """ Compare the content (data) of the files """
-    assert os.path.exists(target), "Target file {} does not exist !".format(target)
-    assert os.path.exists(value), "Value file {} does not exist !".format(value)
+    assert os.path.isfile(target), "Target file {} does not exist !".format(target)
+    assert os.path.isfile(value), "Value file {} does not exist !".format(value)
     
     t_ext = os.path.splitext(target)[1][1:]
     v_ext = os.path.splitext(value)[1][1:]
@@ -267,7 +271,9 @@ def _load_file(filename):
 
     ext = os.path.splitext(filename)[1][1:]
 
-    assert ext in _load_file_fn, "Extension {} unhandled, cannot load data from file {}".format(ext, filename)
+    assert ext in _load_file_fn, "Extension {} unhandled, cannot load data from file {}".format(
+        ext, filename
+    )
     
     return load_data(filename)
 
@@ -275,6 +281,6 @@ _comparisons    = {
     str     : compare_str,
     (list, tuple)   : compare_list,
     (dict, pd.Series)   : compare_dict,
-    (np.ndarray, tf.Tensor) : compare_array,
+    np.ndarray : compare_array,
     pd.DataFrame    : compare_dataframe
 }

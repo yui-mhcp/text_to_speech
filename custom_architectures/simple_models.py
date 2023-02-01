@@ -121,7 +121,7 @@ def perceptron(input_shape = None, output_shape = None, inputs = None, return_ou
     
     for i in range(hparams.n_dense):
         config = HParamsDenseBN.extract(hparams)
-        config = {k : _get_var(v, i) for k, v in config.items()}
+        config = {k : _get_var(v, i, key = k) for k, v in config.items()}
         config['name'] = hparams.dense_name.format(i)
         
         x = DenseBN(x, ** config)
@@ -204,7 +204,7 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
         last_layer = (i == hparams.n_conv -1) and hparams.n_final_conv == 0 and not hparams.dense_as_final and not hparams.flatten
         
         config  = HParamsConvBN.extract(hparams)
-        config  = {k : _get_var(v, i) for k, v in config.items()}
+        config  = {k : _get_var(v, i, key = k) for k, v in config.items()}
         config['name']  = hparams.conv_name.format(i+1)
         
         if last_layer:
@@ -213,8 +213,8 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
                 'activation'    : hparams.final_activation,
                 'drop_rate' : 0.
             })
-            if not hparams.add_final_norm: config['norm'] = 'never'
-        
+            if not hparams.add_final_norm: config['bnorm'] = 'never'
+
         x = conv_layer_fn(x, ** config)
     
     ############################################################
@@ -223,7 +223,7 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
     
     for i in range(hparams.n_final_conv):
         config  = hparams.get_config(prefix = 'final_conv')
-        config  = {k : _get_var(v, i) for k, v in config.items()}
+        config  = {k : _get_var(v, i, key = k) for k, v in config.items()}
         config['name']  = hparams.final_conv_name.format(i+1)
         
         x = conv_layer_fn(x, ** config)
@@ -247,7 +247,7 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
     if hparams.dense_as_final:
         for i in range(hparams.n_dense):
             config = HParamsDenseBN.extract(hparams.get_config(prefix = 'dense'))
-            config = {k : _get_var(v, i) for k, v in config.items()}
+            config = {k : _get_var(v, i, key = k) for k, v in config.items()}
             
             x = DenseBN(x, ** config)
 
@@ -273,7 +273,7 @@ def simple_cnn(input_shape = None, output_shape = None, inputs = None, return_ou
         if hparams.final_activation:
             if isinstance(outputs, (list, tuple)):
                 outputs = [
-                    get_activation(_get_var(hparams.final_activation, i))(xi)
+                    get_activation(_get_var(hparams.final_activation, i) if isinstance(hparams.final_activation, (list, tuple)) else hparams.final_activation)(xi)
                     for i, xi in enumerate(outputs)
                 ]
             else:

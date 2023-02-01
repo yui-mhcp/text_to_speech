@@ -33,8 +33,9 @@ _str_layers     = {
     'bi_gru'    : lambda * args, ** kwargs: Bidirectional(GRU(* args, ** kwargs))
 }
 
-def _get_var(_vars, i):
-    if callable(_vars) and _vars.__class__.__name__ == 'function': return _vars(i)
+def _get_var(_vars, i, key = None):
+    if callable(_vars) and _vars.__class__.__name__ == 'function':
+        return _vars(i) if key is None or 'activation' not in key else _vars
     elif isinstance(_vars, list): return _vars[i]
     else: return _vars
 
@@ -106,18 +107,23 @@ def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, use_mask 
     
     return pool_class(* args, ** kwargs)
 
-def _get_padding_layer(kernel_size, dim, * args, use_mask = None, ** kwargs):
+def _get_padding_layer(kernel_size, dim, * args, dilation_rate = 1, use_mask = None, ** kwargs):
     if isinstance(kernel_size, (list, tuple)): kernel_size = kernel_size[0]
-    kernel_half = kernel_size // 2
-    if kernel_size <= 1: return None
+    if dilation_rate > 1:
+        raise NotImplementedError('not supported when `dilation_rate > 1`')
+    if kernel_size % 2 == 0:
+        raise NotImplementedError('not supported when `kernel_size % 2 == 0`')
     
-    padding = (kernel_half, kernel_half)
+    padding_half =  kernel_size // 2   
+    if padding_half < 1: return None
+    
+    padding = (padding_half, padding_half)
     
     dim = dim.lower()
     assert dim in ('1d', '2d')
     
     if dim == '2d':
-        raise NotImplementedError()
+        raise NotImplementedError('not supported for 2D yet')
     else:
         return ZeroPadding1D(padding) if not use_mask else MaskedZeroPadding1D(padding)
 
@@ -175,11 +181,16 @@ def _layer_bn(model, layer_type, n, * args,
         if use_manual_padding and kwargs_i.get('padding', None) == 'same':
             dim = '1d' if '1D' in layer_type.__name__ else '2d'
             try:
-                pad_layer = _get_padding_layer(kwargs_i['kernel_size'], dim, use_mask = use_mask)
+                pad_layer = _get_padding_layer(
+                    kwargs_i['kernel_size'], dim, use_mask = use_mask,
+                    dilation_rate = kwargs_i.get('dilation_rate', 1)
+                )
                 if pad_layer is not None: x = _add_layer(x, pad_layer)
                 kwargs_i['padding'] = 'valid'
-            except NotImplementedError:
-                logger.warning('manual padding is not supported for this dimension ({}) yet'.format(dim))
+            except NotImplementedError as e:
+                logger.warning('manual padding is not supported for {} (reason : {})'.format(
+                    kwargs_i['name'], e
+                ))
         
         x = _add_layer(x, layer_type(* args_i, ** kwargs_i))
         

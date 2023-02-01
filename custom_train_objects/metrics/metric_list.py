@@ -43,6 +43,13 @@ class MetricList(tf.keras.metrics.Metric):
 
         return flattened
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'metrics' : [m.get_config() for m in self._metrics]
+        })
+        return config
+    
 class LossMetrics(tf.keras.metrics.Metric):
     def __init__(self, losses, ** kwargs):
         super().__init__(** kwargs)

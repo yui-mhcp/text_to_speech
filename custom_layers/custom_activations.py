@@ -42,7 +42,7 @@ def gelu_new(x):
     Returns:
         `x` with the GELU activation applied.
     """
-    pi      = tf.cast(math.pi, tf.float32)
+    pi      = tf.cast(math.pi, x.dtype)
     coeff   = tf.cast(0.044715, x.dtype)
     cdf = 0.5 * (1.0 + tf.tanh(tf.sqrt(2.0 / pi) * (x + coeff * tf.pow(x, 3))))
 

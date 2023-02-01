@@ -23,24 +23,69 @@ def get_pairs(text, n = 2):
     """ Creates a n-gram """
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
-def filter_texts(encoded_texts,
-                 lengths,
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, 2),    dtype = tf.int32),
+    tf.TensorSpec(shape = (),           dtype = tf.float32)
+])
+def remove_tokens(logits, indices, value = tf.float32.min):
+    """ Equivalent to `logits[indices] = value` compatible with `tensorflow graph` """
+    return tf.tensor_scatter_nd_update(
+        logits, indices, tf.fill((tf.shape(indices)[0], ), value)
+    )
 
-                 min_length     = -1,
-                 max_length     = -1,
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, ),     dtype = tf.int32),
+    tf.TensorSpec(shape = (),           dtype = tf.float32)
+])
+def remove_batch_tokens(logits, indices, value = tf.float32.min):
+    """ Equivalent to `logits[:, indices] = value` compatible with `tensorflow graph` """
+    indices = tf.stack([
+        tf.repeat(tf.range(tf.shape(logits)[0]), tf.shape(indices)[0]),
+        tf.tile(indices, [tf.shape(logits)[0]])
+    ], axis = 1)
+    return remove_tokens(logits, indices, value)
 
-                 max_total_length   = -1,
-                 sort_by_length     = False,
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (),           dtype = tf.int32),
+    tf.TensorSpec(shape = (),           dtype = tf.bool),
+    tf.TensorSpec(shape = (),           dtype = tf.float32)
+])
+def remove_slice_tokens(logits, index, remove_after, value = tf.float32.min):
+    """
+        Equivalent to :
+        - `logits[:, :index] = value` (`remove_after = False`)
+        - `logits[:, index:] = value` (`remove_after = True`)
+        compatible in `tensorflow graph`
+    """
+    indices = tf.cond(
+        remove_after,
+        lambda: tf.range(index, tf.shape(logits)[-1]),
+        lambda: tf.range(0, index)
+    )
+    return remove_batch_tokens(logits, indices, value)
 
-                 required_idx   = -1,
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def filter_texts(encoded_texts  : tf.Tensor,
+                 lengths    : tf.Tensor,
 
-                 max_texts      = -1,
+                 min_length : tf.Tensor = -1,
+                 max_length : tf.Tensor = -1,
+
+                 max_total_length   : tf.Tensor = -1,
+                 sort_by_length : tf.Tensor = False,
+
+                 required_idx   : tf.Tensor = -1,
+
+                 max_texts  : tf.Tensor = -1,
                  select_mode    = 'start',
-
+                 
                  ** kwargs
                 ):
     """
-        Filter a batch of texts with length in the range [min_length, max_length]
+        Filter a batch of texts to only keep those with length in the range [min_length, max_length]
         
         Arguments :
             - encoded_texts : 2-D / 3-D `tf.Tensor`, the encoded batch of texts
@@ -80,98 +125,67 @@ def filter_texts(encoded_texts,
     if max_length > -1:
         valid_mask = tf.math.logical_and(valid_mask, text_lengths <= max_length)
     
-    if required_idx != -1:
-        valid_mask = tf.math.logical_or(valid_mask, tf.range(tf.shape(lengths)[0]) == required_idx)
-
-    if not tf.reduce_all(valid_mask):
-        logger.debug('Valid texts for length-based filtering : {}'.format(valid_mask))
-        
-        encoded_texts   = tf.boolean_mask(encoded_texts, valid_mask)
-        text_lengths    = tf.boolean_mask(text_lengths, valid_mask)
-        lengths         = tf.boolean_mask(lengths, valid_mask)
-    
     ##############################
     #   Filter on total length   #
     ##############################
     
-    if max_total_length > 0 and tf.shape(lengths)[0] > 0 and tf.reduce_sum(text_lengths) > max_total_length:
-        indexes = tf.range(tf.shape(lengths)[0]) if not sort_by_length else tf.argsort(text_lengths)
-        
+    if max_total_length > 0 and tf.reduce_any(valid_mask):
         if required_idx != -1:
-            indexes     = tf.concat([
-                [required_idx], tf.boolean_mask(indexes, indexes != required_idx)
-            ], axis = -1)
+            valid_mask = tf.tensor_scatter_nd_update(
+                valid_mask, [[required_idx]], [True]
+            )
         
-        cum_text_lengths = tf.math.cumsum(tf.gather(text_lengths, indexes))
-
-        valid_indexes  = tf.boolean_mask(indexes, cum_text_lengths <= max_total_length)
-        if sort_by_length: valid_indexes = tf.sort(valid_indexes)
+        if sort_by_length:
+            indexes = tf.argsort(text_lengths)
+            indexes = tf.boolean_mask(indexes, tf.gather(valid_mask, indexes))
+        else:
+            indexes = tf.squeeze(tf.where(valid_mask), axis = 1)
         
-        logger.debug('Selected indexes (max_total_length filtering) : {}'.format(valid_indexes))
-        encoded_texts   = tf.gather(encoded_texts, valid_indexes)
-        text_lengths    = tf.gather(text_lengths, valid_indexes)
-        lengths         = tf.gather(lengths, valid_indexes)
+        skip_mask = tf.math.cumsum(tf.gather(text_lengths, indexes)) > max_total_length
+        if tf.reduce_any(skip_mask):
+            bad_indexes = tf.boolean_mask(indexes, skip_mask)
+            valid_mask  = tf.tensor_scatter_nd_update(
+                valid_mask,
+                tf.expand_dims(bad_indexes, axis = 1),
+                tf.zeros((tf.shape(bad_indexes)[0], ), dtype = tf.bool)
+            )
 
     ##############################
     #   Filter on texts' number  #
     ##############################
 
-    if max_texts > 0 and tf.shape(lengths)[0] > 0:
+    if max_texts > 0:
         if required_idx != -1: max_texts -= 1
         
-        if tf.shape(lengths)[0] > max_texts:
-            indexes = tf.range(tf.shape(lengths)[0])
-            if required_idx != -1: indexes = tf.boolean_mask(indexes, indexes != required_idx)
+        if tf.reduce_sum(tf.cast(valid_mask, tf.int32)) > max_texts:
+            indexes = tf.squeeze(tf.where(valid_mask), axis = 1)
             
             if select_mode == 'random':
-                indexes = tf.random.shuffle(indexes)[:max_texts]
-            elif select_mode == 'random_sorted':
-                indexes = tf.sort(tf.random.shuffle(indexes)[:max_texts])
+                skip_indexes = tf.random.shuffle(indexes)[max_texts :]
             elif select_mode == 'start':
-                indexes = indexes[:max_texts]
+                skip_indexes = indexes[max_texts:]
             elif select_mode == 'end':
-                indexes = indexes[-max_texts:]
+                skip_indexes = indexes[:-max_texts]
             
-            if required_idx != -1: indexes = tf.concat([[required_idx], indexes], axis = 0)
-            
-            logger.debug('Selected indexes (max_texts filtering) : {}'.format(indexes))
-            encoded_texts   = tf.gather(encoded_texts, indexes)
-            text_lengths    = tf.gather(text_lengths, indexes)
-            lengths         = tf.gather(lengths, indexes)
+            valid_mask  = tf.tensor_scatter_nd_update(
+                valid_mask,
+                tf.expand_dims(skip_indexes, axis = 1),
+                tf.zeros((max_texts, ), dtype = tf.bool)
+            )
     
-    if len(lengths) > 0:
+    if required_idx != -1:
+        valid_mask = tf.tensor_scatter_nd_update(
+            valid_mask, [[required_idx]], [True]
+        )
+    
+    encoded_texts   = tf.boolean_mask(encoded_texts, valid_mask)
+    lengths         = tf.boolean_mask(lengths,       valid_mask)
+    
+    if tf.reduce_any(valid_mask):
         encoded_texts = encoded_texts[..., : tf.reduce_max(lengths)]
 
-    return encoded_texts, lengths
+    return encoded_texts
 
-def create_padding_mask(seq, seq_len = None, pad_value = 0, maxlen = None, dtype = tf.float32):
-    """
-        Return padding mask matching attention shape [batch_size, 1, 1, seq_len]
-    """
-    if seq_len is None:
-        mask = tf.cast(tf.math.equal(seq, pad_value), dtype = dtype)
-    else:
-        if maxlen is None: maxlen = tf.shape(seq)[1]
-        mask = 1. - tf.sequence_mask(
-            seq_len, maxlen = maxlen, dtype = dtype
-        )
-    return tf.reshape(mask, [tf.shape(seq)[0], 1, 1, -1])
-
-def create_look_ahead_mask(batch_size, size, dtype = tf.float32):
-    """ Creates a `look ahead` mask with shape [batch_size, 1, size, size] """
-    mask = 1 - tf.linalg.band_part(tf.ones((size, size)), -1, 0)
-    mask = tf.tile(tf.reshape(mask, [1, 1, size, size]), [batch_size, 1, 1, 1])
-    
-    return tf.cast(mask, dtype = dtype)
-
-def create_combined_mask(target, seq_len, pad_value = 0):
-    look_ahead_mask = create_look_ahead_mask(tf.shape(target)[0], tf.shape(target)[1])
-    padding_mask    = create_padding_mask(
-        target, seq_len = seq_len, pad_value = pad_value, dtype = look_ahead_mask.dtype
-    )
-    
-    return tf.maximum(look_ahead_mask, padding_mask)
-    
 def extract_sentence(text, pattern):
     pattern = pattern.lower()
     return [sent for sent in split_sentence(text) if pattern in sent.lower()]

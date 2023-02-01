@@ -64,11 +64,8 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
     
     @property
     def input_signature(self):
-        return self.text_signature[:1] + (
-            self.embedding_signature,
-            self.audio_signature,
-            tf.TensorSpec(shape = (None,), dtype = tf.int32),
-        )
+        sign = super().input_signature
+        return sign[:-2] + (self.embedding_signature, ) + sign[-2:]
     
     @property
     def training_hparams(self):

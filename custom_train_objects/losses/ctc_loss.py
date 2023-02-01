@@ -14,7 +14,7 @@ import tensorflow as tf
 
 class CTCLoss(tf.keras.losses.Loss):
     def __init__(self, pad_value = 0, name = 'CTCLoss', **kwargs):
-        super(CTCLoss, self).__init__(name = name, **kwargs)
+        super().__init__(name = name, ** kwargs)
         self.pad_value      = pad_value
     
     def call(self, y_true, y_pred):
@@ -25,16 +25,16 @@ class CTCLoss(tf.keras.losses.Loss):
         else:
             y_true, target_length = y_true
         
-        pred_length = tf.zeros_like(target_length) + tf.shape(y_pred)[1]
+        pred_length = tf.fill(tf.shape(target_length), tf.shape(y_pred)[0])
         
         loss = tf.nn.ctc_loss(
             y_true, y_pred, target_length, pred_length, logits_time_major = False,
             blank_index = self.pad_value
         )
 
-        return loss / (tf.cast(target_length, tf.float32) + 1e-6)
+        return loss / tf.maximum(tf.cast(target_length, tf.float32), 1e-6)
     
     def get_config(self):
-        config = super(CTCLoss, self).get_config()
-        config['pad_value']     = self.pad_value
+        config = super().get_config()
+        config['pad_value'] = self.pad_value
         return config

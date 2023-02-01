@@ -18,16 +18,39 @@ from matplotlib import colors
 
 BASE_COLORS = list(colors.BASE_COLORS.keys())
 
+def _color_to_rgb(color):
+    """
+        Returns a RGB np.ndarray color as uint8 values. `color` can be of different types :
+            - str (or bytes)  : the color's name (as supported by `matplotlib.colors.to_rgb`)
+            - int / float     : the color's value (used as Red, Green and Blue value)
+            - 3-tuple / array : the RGB values (either float or int)
+    """
+    if isinstance(color, bytes): color = color.decode()
+    if colors.is_color_like(color):
+        color = colors.to_rgb(color)
+
+    if not isinstance(color, (list, tuple, np.ndarray)): color = (color, color, color)
+    if isinstance(color[0], (float, np.floating)): color = [c * 255 for c in color]
+    return np.array(color, dtype = np.uint8)
+
 def rgb2gray(rgb):
     return np.dot(rgb[...:3], [0.2989, 0.5870, 0.1140])
 
-def _normalize_color(color, image = None):
-    if colors.is_color_like(color):
-        color = colors.to_rgb(color)
+def normalize_color(color, image = None):
+    color = _color_to_rgb(color)
+    if image is not None and image.dtype in (np.float32, tf.float32):
+        color = color / 255.
+    return tuple(color)
+
+@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
+    """ Converts `color` to a 3-items `tf.Tensor` with the same dtype as `image` (if provided, default to `uint8`) """
+    color = tf.numpy_function(
+        _color_to_rgb, [color], Tout = tf.uint8
+    )
+    color.set_shape([3])
     
-    color = np.array(color)
-    if np.max(color) > 1.: color = color / 255.
-    if image is not None and np.max(image) > 1.: color = (color * 255).astype(image.dtype)
+    if image is not None: color = tf.image.convert_image_dtype(color, image.dtype)
     
     return color
 

@@ -39,7 +39,7 @@ def augment_image(img, transforms, prct = 0.25, ** kwargs):
         fn = transfo if callable(transfo) else _image_augmentations_fn[transfo]
         
         img = tf.cond(
-            tf.random.uniform((), seed = kwargs.get('seed', None)) < prct,
+            tf.random.uniform((), seed = kwargs.get('seed', None)) <= prct,
             lambda: fn(img, ** kwargs),
             lambda: img
         )

@@ -10,10 +10,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 from tqdm import tqdm
 
 from utils.text.cleaners import *
+from utils.text import TextEncoder, default_french_encoder, default_english_encoder, f1_score
 from unitest import Test, set_sequential, assert_equal, assert_function
+
+logger = logging.getLogger(__name__)
 
 _default_sentences  = [
     "Hello World !",
@@ -31,33 +36,30 @@ def _maybe_load_dataset():
             from datasets import get_dataset
             _dataset = get_dataset('snli', modes = 'valid').sample(1000, random_state = 0)
 
-            _sentences = _dataset['text_x'].values.tolist() + _dataset['text_y'].values.tolist()
-            _sentences = [sent.strip() for sent in _sentences]
+            _sentences = [
+                sent.strip() for sent in (
+                    _dataset['text_x'].values.tolist() + _dataset['text_y'].values.tolist()
+                )
+            ]
         except ImportError:
-            print("Module datasets is not available, using default sentences")
+            logger.warning("Module datasets is not available, using default sentences")
             _sentences = _default_sentences
     return _sentences
 
-def test_transformers_encoder(name):
-    try:
-        import torch
-    except OSError as e:
-        print("Error importing torch, cannot make the TextEncoder tests : {}".format(str(e)))
-        return
+def test_transformers_encoder(name, use_sos_and_eos = None):
+    import torch
     
     from transformers import AutoTokenizer
-    from utils.text import TextEncoder
 
     transformers_encoder = AutoTokenizer.from_pretrained(name)
     text_encoder = TextEncoder.from_transformers_pretrained(name)
-    text_encoder.rstrip = False
+    
+    if use_sos_and_eos is not None: text_encoder.use_sos_and_eos = use_sos_and_eos
     
     sentences = _maybe_load_dataset()
     
     set_sequential()
-    for sent in tqdm(sentences):
-        sent = sent.strip()
-        
+    for sent in sentences:
         assert_equal(transformers_encoder.tokenize, text_encoder.tokenize, sent, name = 'tokenize')
         
         assert_equal(
@@ -96,16 +98,12 @@ def test_cleaners():
 
 @Test
 def test_english_text_encoder():
-    from utils.text import default_english_encoder
-    
     test_text_encoder(default_english_encoder())
 
 @Test
 def test_french_encoder():
-    from utils.text import default_french_encoder
-    
     test_text_encoder(default_french_encoder())
-    
+
 @Test
 def test_bert_cased_encoder():
     test_transformers_encoder('bert-base-cased')
@@ -119,9 +117,11 @@ def test_bart_encoder():
     test_transformers_encoder('facebook/bart-large')
 
 @Test
+def test_gpt2_encoder():
+    test_transformers_encoder('gpt2', False)
+
+@Test
 def test_f1():
-    from utils.text import f1_score
-    
     assert_equal([1, 1, 1, 1], f1_score("Hello World !", "Hello ! World"))
     assert_equal([0, 1, 1, 1], f1_score("Hello World !", "Hello ! World", normalize = False))
     assert_equal([0, 2 / 3, 2 / 3, 2 / 3], f1_score("Hello World !", "Hello ! world", normalize = False))

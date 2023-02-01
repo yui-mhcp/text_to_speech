@@ -23,7 +23,7 @@ def decode(encoded, method = 'greedy', ** kwargs):
             tuple(_decoder_method.keys()), method
         ))
     
-    if tf.rank(encoded) == 2: encoded = tf.expand_dims(encoded, axis = 0)
+    if len(tf.shape(encoded)) == 2: encoded = tf.expand_dims(encoded, axis = 0)
     
     return _decoder_method[method](encoded, ** kwargs)
 
@@ -92,6 +92,6 @@ def beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwa
 
 _decoder_method = {
     'greedy'    : greedy_decoder,
-    'beam_search'   : beam_search_decoder,
-    'beam_search_with_lm'   : beam_search_decoder
+    'beam'      : beam_search_decoder,
+    'beam_with_lm'  : beam_search_decoder
 }

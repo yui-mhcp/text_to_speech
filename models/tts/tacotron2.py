@@ -87,8 +87,8 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     
     @property
     def input_signature(self):
-        return self.text_signature[:1] + (
-            self.audio_signature, tf.TensorSpec(shape = (None,), dtype = tf.int32)
+        return (
+            self.text_signature, self.audio_signature, tf.TensorSpec(shape = (None,), dtype = tf.int32)
         )
     
     @property
@@ -154,7 +154,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         mel, gate = self.get_mel_gate(data)
         
-        return (encoded_text, mel, len(mel)), (mel, gate)
+        return (encoded_text, mel[:-1], len(mel) - 1), (mel[1:], gate[1:])
         
     def filter_data(self, inputs, outputs):
         if self.max_train_frames > 0: return True
@@ -179,16 +179,12 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             
             if padding > 0:
                 mel_input   = tf.pad(
-                    mel_input, [(0,0), (0,padding), (0,0)], constant_values = self.pad_mel_value
+                    mel_input, [(0, 0), (0, padding), (0, 0)], constant_values = self.pad_mel_value
                 )
                 mel_output  = tf.pad(
-                    mel_output, [(0,0), (0,padding), (0,0)], constant_values = self.pad_mel_value
+                    mel_output, [(0, 0), (0, padding), (0, 0)], constant_values = self.pad_mel_value
                 )
-                gate        = tf.pad(gate, [(0,0), (0, padding)], constant_values = 1.)
-        
-        mel_input   = mel_input[:, :-1]
-        mel_output  = mel_output[:, 1:]
-        gate        = gate[:, 1:]
+                gate        = tf.pad(gate, [(0, 0), (0, padding)], constant_values = 1.)
         
         return inputs[:-2] + (mel_input, mel_length), (mel_output, gate)
     

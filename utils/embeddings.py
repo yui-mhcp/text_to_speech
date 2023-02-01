@@ -27,7 +27,7 @@ from utils.sequence_utils import pad_batch
 logger = logging.getLogger(__name__)
 
 _allowed_embeddings_ext = ('.csv', '.npy', '.pkl', '.pdpkl')
-_default_embedding_ext  = '.pdpkl'
+_default_embedding_ext  = '.csv'
 _embedding_filename = 'embeddings_{}'
 
 _accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')

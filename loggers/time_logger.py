@@ -14,6 +14,7 @@ import time
 import logging
 import threading
 import collections
+import tensorflow as tf
 
 try:
     from utils.generic_utils import time_to_string
@@ -168,6 +169,8 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
     if name is None: name = fn.__name__
     
     def fn_with_timer(* args, ** kwargs):
+        if not tf.executing_eagerly():
+            return fn(* args, ** kwargs)
         if not logger.isEnabledFor(TIME_LEVEL):
             return fn(* args, ** kwargs)
         
@@ -190,12 +193,16 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
     return wrapper
 
 def start_timer(self, name, * args, ** kwargs):
+    if not tf.executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
+    
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     self.timer.start_timer(name)
     
 def stop_timer(self, name, * args, ** kwargs):
+    if not tf.executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
+    
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     self.timer.stop_timer(name)
 

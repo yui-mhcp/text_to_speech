@@ -74,10 +74,12 @@ def get_encoder(lang, text_encoder = None, ** kwargs):
         encoder = TextEncoder(** text_encoder)
         
     elif isinstance(text_encoder, str):
-        if os.path.exists(text_encoder):
+        if os.path.isfile(text_encoder):
             encoder = TextEncoder.load_from_file(text_encoder)
         elif text_encoder == 'clip':
             encoder = TextEncoder.from_clip_pretrained()
+        elif text_encoder == 'whisper':
+            encoder = TextEncoder.from_whisper_pretrained(** kwargs)
         else:
             encoder = TextEncoder.from_transformers_pretrained(text_encoder)
     elif isinstance(text_encoder, TextEncoder):

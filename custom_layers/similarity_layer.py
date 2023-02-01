@@ -105,7 +105,7 @@ class SimilarityLayer(tf.keras.layers.Layer):
         output = tf.reshape(output, [b, n])
         if pred_probability:
             if probability_fn is None:
-                probability_fn = tf.nn.sotfmax if self._proba_fn is None else self._proba_fn
+                probability_fn = tf.nn.softmax if self._proba_fn is None else self._proba_fn
             output = probability_fn(output, axis = -1)
         
         return output

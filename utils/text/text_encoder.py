@@ -10,6 +10,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import enum
 import json
 import logging
@@ -27,9 +28,112 @@ from utils.distance.distance_method import distance
 logger  = logging.getLogger(__name__)
 
 _clip_bpe_url   = 'https://raw.githubusercontent.com/openai/CLIP/master/clip/bpe_simple_vocab_16e6.txt.gz'
+_whisper_url   = 'https://raw.githubusercontent.com/openai/whisper/master/whisper/assets/{}/{}'
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 _clip_pattern   = r"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
+
+WHISPER_LANGUAGES = {
+    "en": "english",
+    "zh": "chinese",
+    "de": "german",
+    "es": "spanish",
+    "ru": "russian",
+    "ko": "korean",
+    "fr": "french",
+    "ja": "japanese",
+    "pt": "portuguese",
+    "tr": "turkish",
+    "pl": "polish",
+    "ca": "catalan",
+    "nl": "dutch",
+    "ar": "arabic",
+    "sv": "swedish",
+    "it": "italian",
+    "id": "indonesian",
+    "hi": "hindi",
+    "fi": "finnish",
+    "vi": "vietnamese",
+    "he": "hebrew",
+    "uk": "ukrainian",
+    "el": "greek",
+    "ms": "malay",
+    "cs": "czech",
+    "ro": "romanian",
+    "da": "danish",
+    "hu": "hungarian",
+    "ta": "tamil",
+    "no": "norwegian",
+    "th": "thai",
+    "ur": "urdu",
+    "hr": "croatian",
+    "bg": "bulgarian",
+    "lt": "lithuanian",
+    "la": "latin",
+    "mi": "maori",
+    "ml": "malayalam",
+    "cy": "welsh",
+    "sk": "slovak",
+    "te": "telugu",
+    "fa": "persian",
+    "lv": "latvian",
+    "bn": "bengali",
+    "sr": "serbian",
+    "az": "azerbaijani",
+    "sl": "slovenian",
+    "kn": "kannada",
+    "et": "estonian",
+    "mk": "macedonian",
+    "br": "breton",
+    "eu": "basque",
+    "is": "icelandic",
+    "hy": "armenian",
+    "ne": "nepali",
+    "mn": "mongolian",
+    "bs": "bosnian",
+    "kk": "kazakh",
+    "sq": "albanian",
+    "sw": "swahili",
+    "gl": "galician",
+    "mr": "marathi",
+    "pa": "punjabi",
+    "si": "sinhala",
+    "km": "khmer",
+    "sn": "shona",
+    "yo": "yoruba",
+    "so": "somali",
+    "af": "afrikaans",
+    "oc": "occitan",
+    "ka": "georgian",
+    "be": "belarusian",
+    "tg": "tajik",
+    "sd": "sindhi",
+    "gu": "gujarati",
+    "am": "amharic",
+    "yi": "yiddish",
+    "lo": "lao",
+    "uz": "uzbek",
+    "fo": "faroese",
+    "ht": "haitian creole",
+    "ps": "pashto",
+    "tk": "turkmen",
+    "nn": "nynorsk",
+    "mt": "maltese",
+    "sa": "sanskrit",
+    "lb": "luxembourgish",
+    "my": "myanmar",
+    "bo": "tibetan",
+    "tl": "tagalog",
+    "mg": "malagasy",
+    "as": "assamese",
+    "tt": "tatar",
+    "haw": "hawaiian",
+    "ln": "lingala",
+    "ha": "hausa",
+    "ba": "bashkir",
+    "jw": "javanese",
+    "su": "sundanese",
+}
 
 class TextEncoderLevel(enum.IntEnum):
     CHAR    = 0
@@ -219,6 +323,9 @@ class TextEncoder(object):
         if isinstance(idx, (int, np.integer)):
             return self._id_to_symbol[idx]
         else:
+            if idx not in self._symbol_to_id:
+                res = self.encode(idx, add_sos_and_eos = False, cleaned = True, return_type = 'list')
+                return res[0] if len(res) == 1 else res
             return self._symbol_to_id[idx]
     
     def __contains__(self, label):
@@ -254,10 +361,10 @@ class TextEncoder(object):
 
         return text
     
-    def split_text(self, text, tokens = None):
+    def split_text(self, text, tokens = None, strip = True):
         if tokens is None:
             if self.splitter is not None:
-                text = cleaners_module.strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
+                if strip: text = cleaners_module.strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
                 return list(re.findall(self.splitter, text))
             return text.split() if self.word_split else list(text)
         
@@ -270,7 +377,7 @@ class TextEncoder(object):
         
         tokens = []
         for part in parts:
-            tokens.extend(self.split_text(part) if part not in tokens else [part])
+            tokens.extend(self.split_text(part, strip = strip) if part not in tokens else [part])
         return tokens
     
     def _char_tokenize(self, token):
@@ -337,7 +444,7 @@ class TextEncoder(object):
             text = self.clean_text(text, self._cleaned_tokens, ** kwargs)
         logger.debug('Cleaned text : {}'.format(text))
 
-        splitted = self.split_text(text, self._special_tokens)
+        splitted = self.split_text(text, self._special_tokens, strip = not cleaned)
         
         tokens = []
         for part in splitted:
@@ -695,9 +802,15 @@ class TextEncoder(object):
 
     @classmethod
     def from_transformers_pretrained(cls, name, ** kwargs):
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer
+        def get_vocab_from_encoder(tokenizer):
+            specials = [w for w in tokenizer.all_special_tokens if w not in tokenizer.encoder]
+            return list(sorted(tokenizer.encoder, key = tokenizer.encoder.get)) + specials
         
-        pretrained = AutoTokenizer.from_pretrained(name, use_fast = False)
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast
+        
+        pretrained = name
+        if isinstance(name, str):
+            pretrained = AutoTokenizer.from_pretrained(name, use_fast = False)
         
         # /!\ WARNING /!\ The original transformers tokenizers have the `remove_control`
         # cleaner but it reduces performances by 30% for really rare occurences. 
@@ -709,7 +822,7 @@ class TextEncoder(object):
 
         if isinstance(pretrained, BertTokenizer):
             kwargs.update({
-                'vocab' : pretrained.vocab.keys(),
+                'vocab' : list(sorted(pretrained.vocab.keys(), key = pretrained.vocab.get)),
                 'sub_word_prefix'   : '##',
                 'cleaners'          : _default_cleaners + ['remove_accents', 'detach_punctuation', 'collapse_whitespace'],
                 'sos_token'         : pretrained.cls_token,
@@ -718,7 +831,20 @@ class TextEncoder(object):
         elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer)):
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             kwargs.update({
-                'vocab' : pretrained.encoder.keys(),
+                'vocab' : get_vocab_from_encoder(pretrained),
+                'lstrip'    : False,
+                'rstrip'    : True,
+                'split_pattern'     : _gpt_pattern,
+                'cleaners'          : _default_cleaners,
+                'bpe_pairs'         : list(pretrained.bpe_ranks.keys()),
+                'byte_encoder'      : pretrained.byte_encoder,
+                'sos_token'         : pretrained.bos_token,
+                'eos_token'         : pretrained.eos_token
+            })
+        elif isinstance(pretrained, GPT2TokenizerFast):
+            # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
+            kwargs.update({
+                'vocab' : list(sorted(pretrained.encoder.keys(), key = pretrained.encoder.get)),
                 'lstrip'    : False,
                 'rstrip'    : True,
                 'split_pattern'     : _gpt_pattern,
@@ -745,7 +871,7 @@ class TextEncoder(object):
         kwargs.update({
             'level'         : TextEncoderLevel.TOKEN,
             'use_sos_and_eos'   : True,
-            'pad_token'     : pretrained.pad_token,
+            'pad_token'     : pretrained.pad_token if pretrained.pad_token is not None else kwargs['vocab'][0],
             'sep_token'     : pretrained.sep_token,
             'ukn_token'     : pretrained.unk_token,
             'mask_token'    : pretrained.mask_token
@@ -756,7 +882,11 @@ class TextEncoder(object):
     def from_clip_pretrained(cls, ** kwargs):
         import gzip
         
-        filename    = download_file(url = _clip_bpe_url)
+        from models import _pretrained_models_folder
+        
+        filename    = download_file(url = _clip_bpe_url, directory = os.path.join(
+            _pretrained_models_folder, 'pretrained_weights'
+        ))
         
         with gzip.open(filename) as file:
             pairs = file.read().decode('utf-8').split('\n')
@@ -783,6 +913,36 @@ class TextEncoder(object):
             'bpe_end_of_word'   : '</w>'
         })
         return cls(** kwargs)
+
+    @classmethod
+    def from_whisper_pretrained(cls, multilingual = True, ** kwargs):
+        from models import _pretrained_models_folder
+        from transformers import GPT2Tokenizer
+        sub_dir = 'multilingual' if multilingual else 'gpt2'
+        
+        directory   = os.path.join(
+            _pretrained_models_folder, 'pretrained_weights', sub_dir
+        )
+        os.makedirs(directory, exist_ok = True)
+        
+        for f in ('added_tokens.json', 'merges.txt', 'special_tokens_map.json', 'tokenizer_config.json', 'vocab.json'):
+            _ = download_file(url = _whisper_url.format(sub_dir, f), directory = directory)
+        
+        pretrained = GPT2Tokenizer.from_pretrained(directory)
+        specials = [
+            "<|startoftranscript|>",
+            * [f"<|{lang}|>" for lang in WHISPER_LANGUAGES.keys()],
+            "<|translate|>",
+            "<|transcribe|>",
+            "<|startoflm|>",
+            "<|startofprev|>",
+            "<|nospeech|>",
+            "<|notimestamps|>",
+        ]
+
+        pretrained.add_special_tokens(dict(additional_special_tokens = specials))
+
+        return cls.from_transformers_pretrained(pretrained)
 
     @classmethod
     def build_from_corpus(cls, textes, word_level, max_vocab_size = -1, 

@@ -52,7 +52,7 @@ class Vocoder(object):
     
     def set_vocoder(self, model = None, model_class = None):
         if  model is None:
-            self.__vocoder = PTWaveGlow()
+            self.__vocoder = PtWaveGlow()
         elif isinstance(model, str):
             from models import get_pretrained
 

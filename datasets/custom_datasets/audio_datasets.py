@@ -188,7 +188,9 @@ def preprocess_CommonVoice_annots(directory, file = 'validated.tsv',
     if age:     dataset = filter_col(dataset, 'age', age)
     if accent:  dataset = filter_col(dataset, 'accents', accent)
     
-    return dataset.reset_index()
+    dataset.fillna('?', inplace = True)
+    
+    return dataset.reset_index(drop = True)
 
 @audio_dataset_wrapper(
     name    = 'mls', task = ['tts', 'stt'],
@@ -314,6 +316,35 @@ def preprocess_LibriSpeech_annots(directory, subsets = None, ** kwargs):
     
     
     return dataset
+
+@audio_dataset_wrapper(
+    name = 'kaggle_tts', task = ['tts', 'stt'], directory = '{}/kaggle/single_speaker'
+)
+def preprocess_kaggle_single_speaker_annots(directory, book = None, ** kwargs):
+    with open(os.path.join(directory, 'transcript.txt'), 'r', encoding = 'utf-8') as file:
+        lines = file.read().split('\n')
+    
+    resampled_dirs = {
+        'wabs_{}'.format(int(name.split('_')[1])) : os.path.join(directory, name)
+        for name in os.listdir(directory) if '_' in name
+    }
+    
+    metadata = []
+    for line in lines:
+        if '|' not in line: continue
+        audio_file, text, _, time = line.split('|')
+        if book and not audio_file.startswith(book): continue
+        
+        metadata.append({
+            'id'    : 'kaggle single',
+            'book'  : audio_file.split('/')[0],
+            'text'  : text.replace('_', ''),
+            'time'  : time,
+            'filename'  : os.path.join(directory, audio_file),
+            ** {k : os.path.join(v, audio_file.split('/')[1]) for k, v in resampled_dirs.items()}
+        })
+    
+    return pd.DataFrame(metadata)
 
 @audio_dataset_wrapper(name = 'identification', task = ['tts', 'stt'])
 def preprocess_identification_annots(directory, by_part = False, ** kwargs):

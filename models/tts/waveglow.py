@@ -84,12 +84,12 @@ class WaveGlow(BaseModel):
     def call(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect)
     
-    @timer(name = 'WaveGlow inference')
+    @timer(name = 'inference WaveGlow')
     def infer(self, spect, * args, ** kwargs):
         if isinstance(spect, str): spect = np.load(spect)
         if len(spect.shape) == 2: spect = tf.expand_dims(spect, axis = 0)
             
-        return self.vocoder.infer(spect, * args, ** kwargs).numpy()
+        return self.vocoder.infer(spect, * args, ** kwargs)
     
     def compile(self, loss = 'mse', metrics = [], **kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)

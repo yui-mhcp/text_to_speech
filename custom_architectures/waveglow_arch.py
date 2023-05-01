@@ -211,7 +211,7 @@ class WaveGlow(tf.keras.Model):
         return self.infer(inputs)
         #raise NotImplementedError()
     
-    #@tf.function(experimental_relax_shapes = True)
+    #@tf.function(reduce_retracing = True)
     def infer(self, spect, sigma = 1.0):
         spect = self.upsample(spect)
 
@@ -253,9 +253,7 @@ class WaveGlow(tf.keras.Model):
                 ])
                 audio = tf.concat([sigma*z, audio], axis = 2)
         
-        audio = tf.reshape(audio, [tf.shape(audio)[0], -1])
-
-        return audio
+        return tf.reshape(audio, [tf.shape(audio)[0], -1])
     
     def get_config(self):
         config = {

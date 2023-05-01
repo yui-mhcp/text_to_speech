@@ -21,19 +21,21 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from PIL import Image
-
-from utils.image.image_utils import resize_image
 from utils.generic_utils import time_to_string
 from utils.thread_utils import Producer, Consumer
+from utils.image.image_utils import resize_image
 try:
     from loggers import timer
+    logger_available = True
 except ImportError:
     timer = lambda fn: fn
+    logger_available = False
 
-logger = logging.getLogger(__name__)
+logger  = logging.getLogger(__name__)
+time_logger = logging.getLogger('timer')
 
 DELAY_MS = 10
+DELAY_SEC   = DELAY_MS / 1000.
 
 def display_image(image):
     """
@@ -47,7 +49,7 @@ def get_image_size(image):
     """
         Return image size [height, width] (supporting different formats) 
         Arguments :
-            - image : str (filename) or 2, 3 or 4-D np.ndarray / Tensor (image)
+            - image : str (filename) or 2, 3 or 4-D np.ndarray / tf.Tensor (raw image)
         Return :
             - [height, width]   : image's size
     """
@@ -59,36 +61,56 @@ def get_image_size(image):
         else:
             raise ValueError("Unknown image shape : {}\n".format(image.shape, image))
     elif isinstance(image, str):
+        from PIL import Image
+        
         image = Image.open(image)
         return image.size
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
 @timer
-def load_image(filename, target_shape = None, mode = None, channels = 3, bbox = None,
-               dtype = tf.float32, preserve_aspect_ratio = False, resize_kwargs = {}, ** kwargs):
+def load_image(filename,
+               
+               target_shape = None,
+               preserve_aspect_ratio    = False,
+               resize_kwargs    = {},
+
+               channels = 3,
+               mode     = None,
+               dtype    = tf.float32,
+               
+               bbox     = None,
+               
+               ** kwargs
+              ):
     """
-        Load an image to a tf.Tensor by supporting different formats
+        Load an image to a tf.Tensor by supporting different formats / extensions
         
         Arguments :
-            - filename  : either str (filename) or np.ndarray / tf.Tensor (image)
+            - filename  : either str (filename) or np.ndarray / tf.Tensor (raw image)
+            
+            - dtype     : the expected output dtype
             - target_shape  : reshape the image to this shape (if provided)
+            - preserve_aspect_ratio / resize_kwargs : forwarded to `resize_image`
+            
+            - channels  : required kwarg for `tf.image.decode_image`
             - mode      : 'rgb', 'gray' or None, convert the image to the appropriate output type
                 If gray, the last dimension will be 1 and if 'rgb' will be 3. If 'None' the last dimension will be either 1 or 3 depending on the original image format
+            
             - bbox      : [x, y, w, h] position to extract
-            - dezoom_factor : the factor to multiply w and h
-            - dtype     : tensorflow.dtype for the output image (automatically rescaled)
+            - kwargs    : forwarded to `utils.image.box_utils.crop_box` if `bbox` is provided
         Return :
             - image : 3-D tf.Tensor
         
-        Note : if a filename is given, it loads the image with `tf.image.decode_image` which supports multiple types (see documentation for supportedformats)
+        Note : if a filename is given, it loads the image with `tf.image.decode_image` which supports multiple types (see documentation for supported formats)
     """
     assert mode in (None, 'rgb', 'gray')
     # Get filename / image from dict (if dict)
     if isinstance(filename, (dict, pd.Series)):
         filename = filename['image'] if 'image' in filename else filename['filename']
 
-    # Convert filename to a tf.string Tensor (if necessary)
+    # Convert filename to a Tensor (if necessary)
+    # Note : inferring the output type then use `tf.cast` is faster than `tf.convert_to_tensor` and allows some type checking
     if not isinstance(filename, tf.Tensor):
         if isinstance(filename, str): conv_dtype = tf.string
         elif isinstance(filename, np.ndarray):
@@ -119,13 +141,13 @@ def load_image(filename, target_shape = None, mode = None, channels = 3, bbox = 
         image = tf.image.grayscale_to_rgb(image)
     
     if target_shape is not None:
-        resize_kwargs['preserve_aspect_ratio'] = preserve_aspect_ratio
+        resize_kwargs.setdefault('preserve_aspect_ratio', preserve_aspect_ratio)
         image = resize_image(image, target_shape, ** resize_kwargs)
     
     return image
 
 def convert_to_uint8(image, ** kwargs):
-    """ Converts `image` to `np.uint8` format """
+    """ Converts `image` to `np.uint8` format (useful for `cv2` calls) """
     if isinstance(image, np.ndarray) and image.dtype in (np.uint8, np.float32, np.float64):
         if image.dtype != np.uint8: image = (image * 255).astype(np.uint8)
     else:
@@ -136,20 +158,80 @@ def convert_to_uint8(image, ** kwargs):
     
 def save_image(filename, image, ** kwargs):
     """
-        Save given `image` to the given `filename` 
-        The function internally `load_image` with `kwargs` to convert the image to `uint8` (which is required by `cv2.imwrite`)
+        Save given `image` to the given `filename`
+        If `image` is not a np.ndarray, the function internally calls `load_image` with `kwargs`, to convert the image to `np.uint8` (which is required by `cv2.imwrite`)
         It means that you can apply different transformation (such as resizing / convert to grayscale) before saving. 
         Furthermore, this function can also be used to copy image (as the input to `load_image` can be a filename).
         
         Arguments :
             - filename  : filename where to save the image
             - image     : the image to save (any type supported by `load_image`)
-            - kwargs    : kwargs passed to `load_image` when converting to uint8
+            - kwargs    : kwargs passed to `load_image` when converting to uint8 (if not already a np.ndarray)
+        Return :
+            - filename  : the image filename (the argument)
     """
     image = convert_to_uint8(image, ** kwargs)
     
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
+
+@timer
+def frame_generator(cam_id,
+                    fps         = None,
+                    max_time    = 60,
+                    nb_frames   = -1,
+                    add_copy    = False,
+                    return_index    = False,
+                    ** kwargs
+                   ):
+    """
+        Yields `fps` frames per second from the given camera (`cam_id`)
+        
+        Arguments :
+            - cam_id    : the camera id (any value supported by `cv2.VideoCapture`) or the raw object
+            - fps       : the number of frames to generate per second
+            - max_time  : the maximum generation time
+            - nb_frames : the maximum number of frames to generate
+            - kwargs    : forwarded to `cv2.VideoCapture`
+        Return :
+            - n     : the number of generated frames
+    """
+    def should_continue(t0, t, n):
+        run = True
+        if max_time is not None:    run = run and t - t0 < max_time
+        if nb_frames > 0:           run = run and n < nb_frames
+        return run
+    
+    camera  = cam_id
+    if isinstance(cam_id, (int, str)):
+        camera = cv2.VideoCapture(cam_id, ** kwargs)
+    
+    n       = 0
+    wait_time   = 1. / fps - DELAY_SEC
+    start_time  = time.time()
+    start_iter_time = start_time
+    
+    while should_continue(start_time, start_iter_time, n):
+        if logger_available: time_logger.start_timer('frame generation')
+        ret, frame = camera.read()
+        if ret:
+            frame = frame[..., ::-1]
+            if add_copy or return_index:
+                data = {'image' : frame, 'frame_index' : n}
+                if add_copy: data['image_copy'] = frame.copy()
+                yield data
+            else:
+                yield frame
+        
+        n += 1
+        wait = wait_time - (time.time() - start_iter_time)
+        if fps > 0 and wait > 0: time.sleep(wait)
+        start_iter_time = time.time()
+        if logger_available: time_logger.stop_timer('frame generation')
+
+    if isinstance(cam_id, (int, str)): camera.release()
+    
+    return n
 
 @timer
 def stream_camera(cam_id    = 0,
@@ -161,7 +243,8 @@ def stream_camera(cam_id    = 0,
                   
                   max_workers   = 0,
                   
-                  id_format = None,
+                  add_copy  = False,
+                  add_index = False,
                   transform_fn  = None,
                   transformer_prod  = None,
                   
@@ -172,6 +255,7 @@ def stream_camera(cam_id    = 0,
                   show  = True,
                   play_audio    = False,
                   copy_audio    = True,
+                  imshow_flags  = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED,
                   
                   view_graph        = False,
                   output_graph      = False,
@@ -183,7 +267,7 @@ def stream_camera(cam_id    = 0,
         Streams either on a camera either on a video file (depending on `cam_id`) and applies `transformer_fn` on each frame.
         
         Arguments :
-            - cam_id    : camera ID (0 is default camera) or video filename (str)
+            - cam_id    : camera ID (0 is the default camera) or video filename (str)
             - max_time  : the maximum streaming time (press 'q' to quit before if `show = True`)
             - nb_frames : number of frames to stream (quit after)
             
@@ -193,9 +277,9 @@ def stream_camera(cam_id    = 0,
             - max_workers   : number of workers for each `Consumer`
                 - -1 / -2   : each function is executed in the main thread (no separated thread) 
                 - 0     : each function is executed in a separate thread
-                - > 0   : each function is executed in `n` separated threads
             
-            - id_format : the name format for the ith frame. If provided, the generator's output (i.e. the input to `transform_fn`) is a dict {id: , image:} where `id_format` is formatted with the frame index
+            - add_index : if `True`, the input to `transform_fn` is a `dict` `{image: frame_index:}`
+            - add_copy  : if `True`, the input to `transform_fn` contains a `image_copy` key
             - transform_fn  : valid argument to the `add_consumer` method. Its input is either a dict (if `id_format` is provided) either the frame
             - transformer_prod  : a `Consumer` object that outputs the transformed frames to display (default to `prod.add_consumer(transform_fn)`)
             
@@ -205,57 +289,23 @@ def stream_camera(cam_id    = 0,
             
             - show  : whether to display the result or not (with `cv2.imshow`)
             - play_audio    : whether to play the audio (ignored if `cam_id` is not a video file)
-            - copy_audio    : whether to copy the input file's audio to the output's file
+            - copy_audio    : whether to copy the input file's audio to the output file
+            - imshow_flags  : see `help(cv2.namedWindow)` for more information about the flags
             
             - kwargs    : kwargs passed to the `transform_fn` pipeline
-    """
-    def should_continue(t0, t, n):
-        run = True
-        if max_time is not None:    run = run and t - t0 < max_time
-        if nb_frames > 0:           run = run and n < nb_frames
-        return run
-    
-    def frame_producer_new():
-        """ Produces `fps` frames per second from `cap` """
-        time_between_frames = 1. / fps
         
-        n = 0
-        t = time.time()
-        next_time = t
-        while should_continue(start_time, t, n):
-            if t < next_time: time.sleep(next_time - t)
-            next_time += time_between_frames
-            ret, frame = cap.read()
-            if ret: yield frame[..., ::-1]
-            n += 1
-            t = time.time()
-
-    def frame_producer():
-        """ Produces `fps` frames per second """
-        n = 0
-        start_iter_time = time.time()
-        while should_continue(start_time, start_iter_time, n):
-            ret, frame = cap.read()
-            if ret:
-                frame = frame[..., ::-1]
-                yield frame if id_format is None else {
-                    'id' : id_format.format(n), 'image' : frame
-                }
-            
-            n += 1
-            wait_time = wait_time_sec - (time.time() - start_iter_time)
-            if fps > 0 and wait_time > 0: time.sleep(wait_time)
-            start_iter_time = time.time()
-
+        Note : in this function, it is recommanded to set `max_workers = 0` in order to run the I/O functions (`cv2.VideoCapture.read`, `cv2.imshow`, etc.) in separated threads. This allows for much better performances than sequential calls.
+    """
     @timer
-    def write_video(frame):
+    def write_video_frame(frame):
         """ Writes frames to the corresponding output file """
-        frame = convert_to_uint8(frame, ** kwargs)
+        frame = convert_to_uint8(frame)
         video_writer.write(frame[:, :, ::-1])
     
     @timer
     def show_frame(frame, prev_time = -1):
         """ Displays `fps` frames per second with `cv2.imshow` """
+        if isinstance(frame, dict): frame = frame['image']
         cv2.imshow(display_name, frame[..., ::-1])
         
         t = time.time()
@@ -263,54 +313,53 @@ def stream_camera(cam_id    = 0,
         delay_ms = int(delay * 1000)
         if cv2.waitKey(max(show_wait_time_ms - delay_ms, 1)) & 0xFF == ord('q'):
             raise StopIteration()
-        return None, (time.time(), )
+        return None, (t, )
     
-    def _play_first_frame(frame, first = True):
+    def play_audio_on_first_frame(frame, first = True):
         """ Runs the audio once the first frame has been displayed """
         if first:
             from utils.audio import audio_io
             audio_io.play_audio(cam_id, block = False)
         return None, (False, )
+    
     # variable initialization
-    if max_time <= 0:        max_time = None
-    if transform_fn is None:    id_format   = None
+    if max_time <= 0:   max_time = None
     
     display_name = '{} {}'.format('Camera' if isinstance(cam_id, int) else 'File', cam_id)
     cap = cv2.VideoCapture(cam_id)
     
-    if output_fps is None: output_fps = fps
     # if streaming is not on camera but on video file
     if isinstance(cam_id, str):
         video_frames    = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         nb_frames   = video_frames if nb_frames <= 0 else min(nb_frames, video_frames)
         output_fps  = cap.get(cv2.CAP_PROP_FPS)
+        
         logger.info('Start streaming on a video with {:.3f} fps and {} frames'.format(
             output_fps, video_frames
         ))
     
     # set the output fps
+    if not output_fps: output_fps = fps
     if output_file and output_fps == -1:
         logger.warning('When specifying an `output_file`, it is recommanded to specify `output_fps` as the `fps` can differ from the effective camera fps')
         output_fps  = cap.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
+    
     # set the display fps
     if play_audio and isinstance(cam_id, str):
+        fps         = min(fps if fps != -1 else output_fps * 5, output_fps * 5)
         show_fps    = output_fps
     elif show_fps is None:
         show_fps    = fps
     # set the waiting time according to the frame rate
-    wait_time_ms    = int(max(1000 // fps - DELAY_MS + 1, 1))
-    wait_time_sec   = wait_time_ms / 1000.
-    
-    show_wait_time_ms    = int(max(1000 // show_fps - DELAY_MS + 1, 1))
-    show_wait_time_sec   = show_wait_time_ms / 1000.
+    show_wait_time_ms    = int(max(1000 // show_fps - DELAY_MS, 1))
 
     #####################
     # Init the pipeline #
     #####################
     
-    prod = Producer(
-        frame_producer, run_main_thread = max_workers < 0, stop_listeners = cap.release
-    )
+    prod = Producer(frame_generator(
+        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy
+    ), run_main_thread = max_workers < 0, stop_listeners = cap.release)
     
     transformer = prod.add_consumer(
         transform_fn, link_stop = True, max_workers = max_workers, ** kwargs
@@ -330,7 +379,7 @@ def stream_camera(cam_id    = 0,
         )
         # Creates the video-writer consumer
         writer_cons     = transformer_prod.add_consumer(
-            write_video, link_stop = True, start = True, max_workers = min(max_workers, 0),
+            write_video_frame, link_stop = True, start = True, max_workers = min(max_workers, 0),
             stop_listeners = video_writer.release
         )
         # Adds a listener to copy the video file's audio to the output file (if expected)
@@ -343,18 +392,30 @@ def stream_camera(cam_id    = 0,
     # Adds a consumer to display frames (if expected)
     if show:
         cons = transformer_prod.add_consumer(
-            show_frame, start = True, link_stop = True, stateful = True,
+            show_frame,
+            start = True, link_stop = True, stateful = True,
             max_workers     = min(max_workers, 0),
-            start_listeners = lambda: cv2.namedWindow(display_name, cv2.WINDOW_NORMAL),
+            start_listeners = lambda: cv2.namedWindow(display_name, imshow_flags),
             stop_listeners  = cv2.destroyAllWindows
         )
         if play_audio and output_fps != -1 and isinstance(cam_id, str):
-            cons.add_consumer(_play_first_frame, on = 'item', stateful = True, max_workers = -1)
+            cons.add_consumer(
+                play_audio_on_first_frame, on = 'item', stateful = True, max_workers = -1
+            )
+    
+    
+    ####################
+    #  Start pipeline  #
+    ####################
     
     start_time = time.time()
     
     prod.start()
-    graph = prod.plot(filename = graph_filename, view = view_graph)[0] if view_graph or graph_filename or output_graph else None
+    
+    graph   = None
+    if view_graph or graph_filename or output_graph:
+        graph = prod.plot(filename = graph_filename, view = view_graph)[0]
+    
     # waits until all consumers are finished
     prod.join(recursive = True)
     
@@ -364,21 +425,18 @@ def stream_camera(cam_id    = 0,
     ))
     return graph
 
-def build_gif(directory,
-              img_name      = '*.png',
-              filename      = 'result.gif',
-              n_repeat      = 5,
-              keep_frames   = 1
-             ):
+def build_gif(images, filename = 'result.gif', n_repeat = 5, keep_frames = 1):
     """
-        Creates a gif from all images in a given directory with given pattern name
+        Creates a gif from all images in a given set of images
         
         Arguments :
-            - directory : directory where images are stored
-            - img_name  : pattern for images to include in the gif (default *.png == 'all png files')
-            - filename  : output filename
+            - images    : the images, a single image can be of any type supported by `load_image`
+                - iterable      : an iterable of image
+                - directory name    : a directory containing the images
+                - filename with '*' : a filename pattern (as supported by `glob.glob`)
+            - filename  : the sprite filename
             - n_repeat  : number of time to repeat each image (to have a slower animation)
-            - keep_frames   : keep each `n` image (other are skipped)
+            - keep_frames   : keep one image out of `keep_frames` (other are skipped)
         Return :
             - filename  : the .gif output file
     """
@@ -388,32 +446,56 @@ def build_gif(directory,
         logger.error('`imageio` is not installed : run `pip install imageio`')
         return None
     
-    image_names = os.path.join(directory, img_name)
+    if isinstance(images, str):
+        if os.path.isdir(images):
+            images = sorted([os.path.join(images, f) for f in os.listdir(images)])
+        elif '*' in images:
+            images = sorted(glob.glob(images))
+        else:
+            raise ValueError('When `images` is a string, it must be a directory or a filename pattern (i.e. with a "*")')
     
     with imageio.get_writer(filename, mode = 'I') as writer:
-        filenames = sorted(glob.glob(image_names))
-
-        for i, img_filename in enumerate(filenames):
-            if i % keep_frames != 0 and i < len(filenames) - 1: continue
+        for i, image in enumerate(images):
+            if i % keep_frames != 0 and i != len(images) - 1: continue
             
-            image = imageio.imread(img_filename)
+            if isinstance(image, str):
+                image = imageio.imread(image)
             for _ in range(n_repeat):
                 writer.append_data(image)
-                    
+
     return filename
 
-def build_sprite(images, directory = None, filename = 'sprite.jpg', image_size = 128):
+def build_sprite(images, image_size = 128, directory = None, filename = 'sprite.jpg'):
     """
         Writes all `images` (iterable of images) in a 'sprite' 
         A 'sprite' is a big square image showing all images as a table where image[i] is at position `(i // n, i % n)` where `n = ceil(sqrt(len(images)))`
+        
+        Arguments :
+            - images    : the images, a single image can be of any type supported by `load_image`
+                - iterable      : an iterable of image
+                - directory name    : a directory containing the images
+                - filename with '*' : a filename pattern (as supported by `glob.glob`)
+            - image_size    : a single image size in the sprite
+            - directory : where to save the image
+            - filename  : the sprite filename
+        Return :
+            - filename  : the sprite filename
     """
+    if isinstance(images, str):
+        if os.path.isdir(images):
+            images = sorted([os.path.join(images, f) for f in os.listdir(images)])
+        elif '*' in images:
+            images = sorted(glob.glob(images))
+        else:
+            raise ValueError('When `images` is a string, it must be a directory or a filename pattern (i.e. with a "*")')
+    
     if directory is not None: filename = os.path.join(directory, filename)
     n = math.ceil(math.sqrt(len(images)))
     
-    sprite = np.zeros((n * image_size, n * image_size, 3), dtype = np.float32)
+    sprite = np.zeros((n * image_size, n * image_size, 3), dtype = np.uint8)
     
     for i, img in enumerate(images):
-        img = load_image(img, target_shape = (image_size, image_size, 3), dtype = tf.float32).numpy()
+        img = load_image(img, target_shape = (image_size, image_size, 3), dtype = tf.uint8).numpy()
         
         row, col = i // n, i % n
         

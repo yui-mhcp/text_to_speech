@@ -138,6 +138,8 @@ def transpose_weights(weights):
         return np.transpose(weights, [2, 1, 0])
     elif len(weights.shape) == 4:
         return np.transpose(weights, [2, 3, 1, 0])
+    elif len(weights.shape) == 5:
+        return np.transpose(weights, [2, 3, 4, 1, 0])
     else:
         raise ValueError("Unknown weights shape : {}".format(weights.shape))
 
@@ -405,7 +407,8 @@ def name_based_partial_transfer_learning(target_model,
         elif len(target.shape) == 2 and target.shape == pretrained_v.T.shape:
             return pretrained_v.T, {'transform' : 'T'}
         elif not partial_transfer:
-            raise ValueError('Variable shapes missmatch and `partial_transfer` is False !')
+            logger.warning('Variable shapes missmatch ({} vs {}) and `partial_transfer = False`, leaving the variable as is'.format(target.shape, pretrained_v.shape))
+            return target
         
         logger.log(
             logging.INFO if verbose else logging.DEBUG,
@@ -432,24 +435,23 @@ def name_based_partial_transfer_learning(target_model,
                 minval = np.min(pretrained_v), maxval = np.abs(pretrained_v), size = target.shape
             )
         
+        max_idx = [min(v.shape[i],pretrained_v.shape[i]) for i in range(v.ndim)]
         if v.ndim == 1:
-            max_0 = min(v.shape[0], pretrained_v.shape[0])
-            v[:max_0] = pretrained_v[:max_0]
+            v[: max_idx[0]] = pretrained_v[: max_idx[0]]
         elif v.ndim == 2:
-            max_0 = min(v.shape[0], pretrained_v.shape[0])
-            max_1 = min(v.shape[1], pretrained_v.shape[1])
-            v[:max_0, :max_1] = pretrained_v[:max_0, :max_1]
+            v[: max_idx[0], : max_idx[1]] = pretrained_v[: max_idx[0], : max_idx[1]]
         elif v.ndim == 3:
-            max_0 = min(v.shape[0], pretrained_v.shape[0])
-            max_1 = min(v.shape[1], pretrained_v.shape[1])
-            max_2 = min(v.shape[2], pretrained_v.shape[2])
-            v[:max_0, :max_1, :max_2] = pretrained_v[:max_0, :max_1, :max_2]
+            v[: max_idx[0], : max_idx[1], : max_idx[2]] = pretrained_v[
+                : max_idx[0], : max_idx[1], : max_idx[2]
+            ]
         elif v.ndim == 4:
-            max_0 = min(v.shape[0], pretrained_v.shape[0])
-            max_1 = min(v.shape[1], pretrained_v.shape[1])
-            max_2 = min(v.shape[2], pretrained_v.shape[2])
-            max_3 = min(v.shape[3], pretrained_v.shape[3])
-            v[:max_0, :max_1, :max_2, :max_3] = pretrained_v[:max_0, :max_1, :max_2, :max_3]
+            v[: max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3]] = pretrained_v[
+                : max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3]
+            ]
+        elif v.ndim == 5:
+            v[: max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3], : max_idx[4]] = pretrained_v[
+                : max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3], : max_idx[4]
+            ]
         else:
             raise ValueError("Unhandled variable dimension : {}".format(target.shape))
         
@@ -459,7 +461,7 @@ def name_based_partial_transfer_learning(target_model,
     partial_initializer = get_enum_item(partial_initializer, PartialInitializer)
     
     mapping, pretrained_layers = find_layers_mapping(
-        target_model, pretrained_model, partial = partial_transfer, tqdm = tqdm, ** kwargs
+        target_model, pretrained_model, partial = True, tqdm = tqdm, ** kwargs
     )
     layer_var_idx = {k : 0 for k in pretrained_layers.keys()}
     
@@ -541,6 +543,7 @@ def partial_transfer_learning(target_model,
             - partial_transfer : whether to do partial transfer for layers with different shapes (only relevant if 2 models have same number of layers)
     """
     assert partial_initializer in (None, 'zeros', 'ones', 'normal', 'normal_conditionned')
+    
     def partial_weight_transfer(target, pretrained_v):
         v = target
         if partial_initializer == 'zeros':

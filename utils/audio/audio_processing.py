@@ -192,7 +192,7 @@ def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, use_v1 =
     
     if noise is None: noise = audio[: noise_length]
     if use_v1:
-        import noisereduce.noisereducev1 as nr
+        import utils.audio.noisereducev1 as nr
         return nr.reduce_noise(audio, noise)
     else:
         import noisereduce as nr

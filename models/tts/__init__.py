@@ -12,10 +12,11 @@
 
 import os
 import shutil
+import logging
 import numpy as np
 
 from utils import load_json
-from utils.text import parse_document
+from utils.text import parse_document, get_encoder
 from utils.audio import read_audio, write_audio
 from models.model_utils import get_model_dir, get_model_config, is_model_name
 
@@ -24,55 +25,94 @@ from models.tts.tacotron2 import Tacotron2
 from models.tts.sv2tts_tacotron2 import SV2TTSTacotron2
 from models.tts.vocoder import Vocoder
 
-_vocoder = None
+logger  = logging.getLogger(__name__)
+
+_vocoder        = None
+_text_encoders  = {}
 
 _default_vocoder = 'WaveGlow' if is_model_name('WaveGlow') else None
 
-def get_model_lang(model):
-    return get_model_config(model).get('lang', None)
+def clean_text(text, model = None, lang = None):
+    """ Cleans the `text` given a model or language """
+    if model is None: model = get_model_name(lang)
     
+    if hasattr(model, 'clean_text'): return model.clean_text(text)
+    
+    global _text_encoders
+    if model not in _text_encoders:
+        logger.debug('Loading text encoder for model {}'.format(model))
+        _text_encoders[model] = get_encoder(text_encoder = model)
+    
+    return _text_encoders[model].clean_text(text)
+
+def load_tts_models(model = None, tf_compile = False):
+    """ Loads all default models (in `_pretrained`) """
+    from models import get_pretrained
+    
+    global _pretrained, _default_vocoder
+    
+    if model is None:                   model = list(_pretrained.values())
+    elif not isinstance(model, list):   model = [model]
+    
+    vocoder = get_pretrained(_default_vocoder) if isinstance(_default_vocoder, str) else None
+    
+    for name in model:
+        synthesizer = get_pretrained(name)
+        if tf_compile:
+            for txt in ('A', 'AB'):
+                mel = synthesizer.infer(txt, max_length = 10)[1]
+                if vocoder is not None: vocoder.infer(mel)
+
+def get_model_lang(model):
+    """ Returns the language of a model """
+    return get_model_config(model).get('lang', None)
+
 def get_model_name(lang):
+    """ Returns the model's name associated to a given language (in `_pretrained`) """
+    global _pretrained
     if lang not in _pretrained:
-        raise ValueError('Unknown language for pretrained TTS model\n  Accepted : {}\n  Got : {}'.format(tuple(_pretrained.keys()), lang))
+        raise ValueError('Unknown language for pretrained TTS model\n  Accepted : {}\n  Got : {}'.format(
+            tuple(_pretrained.keys()), lang
+        ))
     return _pretrained[lang]
 
-def get_tts_model(lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
-    global _vocoder
-    
-    # Get pretrained information from '_pretrained'
-    if model is None:
-        assert lang is not None, "You must specify either the model or the language !"
-        model = get_model_name(lang = lang)
-    # Create Vocoder class (if necessary)
-    if _vocoder is None:
-        _vocoder = Vocoder()
-    
-    # Set new synthesizer / vocoder
-    _vocoder.set_vocoder(model = vocoder)
-    _vocoder.set_synthesizer(model = model)
-    
-    return _vocoder
-
-def get_audio_dir(lang = None, model = None, directory = None, add_model_name = True):
+def get_audio_dir(model = None, lang = None, directory = None, add_model_name = True):
+    """ Returns the directory used to save audios for a given model """
     if directory is None:
         if model is None: model = get_model_name(lang)
         directory = get_model_dir(model, 'output')
     elif add_model_name and (lang is not None or model is not None):
         if model is None: model = get_model_name(lang)
+        elif not isinstance(model, str): model = model.nom
         directory = os.path.join(directory, model)
     
     return directory
+
+def get_audio_file(text, model = None, lang = None, should_clean = True, ** kwargs):
+    directory = get_audio_dir(model = model, lang = lang, ** kwargs)
     
-def get_audio_file(text, * args, ** kwargs):
-    directory = get_audio_dir(* args, ** kwargs)
+    if (model or lang) and should_clean: text = clean_text(text, model = model, lang = lang)
     
     return load_json(os.path.join(directory, 'map.json')).get(text, {}).get('audio', None)
 
-def tts_stream(lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
-    model = get_tts_model(
-        lang = lang, model = model, vocoder = vocoder
-    )
-    model.stream(** kwargs)
+def get_tts_model(model = None, lang = None, vocoder = None, ** kwargs):
+    global _vocoder, _default_vocoder
+    
+    if vocoder is None: vocoder = _default_vocoder
+
+    # Get pretrained information from '_pretrained'
+    if model is None:
+        assert lang is not None, "You must specify either the model, either the language !"
+        model = get_model_name(lang = lang)
+    
+    # Create Vocoder class (if necessary)
+    if _vocoder is None:
+        _vocoder = Vocoder()
+    # Set new synthesizer / vocoder
+    _vocoder.set_vocoder(vocoder)
+    _vocoder.set_synthesizer(model)
+    
+    return _vocoder
 
 def tts_document(filename,
                  output_dir = None,
@@ -97,7 +137,8 @@ def tts_document(filename,
     
     for page_nb, paragraphs in parsed.items():
         for para in paragraphs:
-            if 'text' not in para or not para['text'].strip() or para['text'] not in text_to_audio: continue
+            if 'text' not in para or not para['text'].strip() or para['text'] not in text_to_audio:
+                continue
             
             para.update(text_to_audio[para['text']])
         
@@ -111,25 +152,35 @@ def tts_document(filename,
             filename    = os.path.join(output_dir, page_audio_format.format(page_nb))
             write_audio(audio = audio, filename = filename, rate = rate)
     
-    base_name = os.path.basename(os.path.splitext(filename)[0])
-    shutil.copy(result[-1][1]['audio'], os.path.join(output_dir, base_name + '.mp3'))
-    
     return parsed
     
-def tts(sentences, lang = None, model = None, vocoder = _default_vocoder, ** kwargs):
+def tts(text, model = None, lang = None, vocoder = _default_vocoder, ** kwargs):
     """
-        Perform TTS and return result of Waveglow.predict(...)
+        Perform TTS and return result of Tacotron2.predict(...)
         Return : list of tuple (sentence, infos) whe infos is a dict
             `infos` contains :
             - splitted  : the splitted original phrase
-            - mels  : mel spectrogram files for each splitted part
-            - audio : raw audio (if directory is None) or filename of the full audio
+            - mels      : mel spectrogram files for each splitted part
+            - audios    : audio files for each part
+            - audio     : raw audio (if directory is None) or filename of the full audio
     """
     model = get_tts_model(
         lang = lang, model = model, vocoder = vocoder
     )
-    return model.predict(sentences, ** kwargs)
+    return model.predict(text, ** kwargs)
 
+def fast_tts(text, model = None, lang = None, vocoder = _default_vocoder, ** kwargs):
+    """ Perform TTS and return result of `Vocoder.fast_predict(...)`, i.e. the raw audio """
+    model = get_tts_model(
+        lang = lang, model = model, vocoder = vocoder
+    )
+    return model.fast_predict(text, ** kwargs)
+
+def tts_stream(stream = None, model = None, lang = None, vocoder = None, ** kwargs):
+    model = get_tts_model(
+        lang = lang, model = model, vocoder = vocoder
+    )
+    return model.stream(stream, ** kwargs)
 
 _models = {
     'SV2TTSTacotron2'   : SV2TTSTacotron2,

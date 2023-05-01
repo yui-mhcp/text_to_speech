@@ -60,6 +60,8 @@ class MelSTFT(object):
                 fmax    = self.mel_fmax
             )
             self.mel_basis = tf.cast(tf.transpose(mel_basis), tf.float32)
+        
+        self.min_length = tf.constant(self.filter_length, dtype = tf.int32)
     
     @property
     def rate(self):
@@ -95,11 +97,11 @@ class MelSTFT(object):
             Return :
                 - mel   : the mel spectrogram (shape = [1, mel_length, n_mel_channels])
         """
-        if len(audio.shape) == 1: audio = tf.expand_dims(audio, axis = 0)
-        if tf.shape(audio)[1] < self.filter_length:
-            audio = tf.pad(audio, [[0,0], [0, self.filter_length - tf.shape(audio)[1]]])
-        
         audio = tf.cast(audio, tf.float32)
+        
+        if len(tf.shape(audio)) == 1: audio = tf.expand_dims(audio, axis = 0)
+        if tf.shape(audio)[1] < self.min_length:
+            audio = tf.pad(audio, [[0,0], [0, self.min_length - tf.shape(audio)[1]]])
         
         if self.pre_emph > 0.:
             audio = tf.concat([
@@ -107,12 +109,13 @@ class MelSTFT(object):
                 audio[:, 1:] - self.pre_emph * audio[:, :-1]
             ], axis = 1)
         
-        mel = self.mel_spectrogram(audio)
-        return mel
+        return self.mel_spectrogram(audio)
         
     def get_length(self, audio_length):
         """ Return expected mel_length given the audio_length """
-        return math.ceil(max(self.filter_length, audio_length) / self.hop_length)
+        return tf.cast(tf.math.ceil(
+            tf.maximum(self.filter_length, audio_length) / self.hop_length
+        ), tf.int32)
     
     def get_audio_length(self, mel_length):
         return (mel_length - 1) * self.hop_length
@@ -141,17 +144,18 @@ class MelSTFT(object):
         return (mel - mean) / (std + 1e-5)
     
     def get_config(self):
-        config = {}
-        config['class_name']    = self.__class__.__name__
-        config['filter_length']  = self.filter_length
-        config['hop_length']     = self.hop_length
-        config['win_length']     = self.win_length
-        config['n_mel_channels'] = self.n_mel_channels
-        config['sampling_rate']  = self.sampling_rate
-        config['mel_fmin']       = self.mel_fmin
-        config['mel_fmax']       = self.mel_fmax
-        config['normalize_mode'] = self.normalize_mode
-        config['pre_emph']       = self.pre_emph
+        config = {
+            'class_name'    : self.__class__.__name__,
+            'filter_length' : self.filter_length,
+            'hop_length'    : self.hop_length,
+            'win_length'    : self.win_length,
+            'n_mel_channels'    : self.n_mel_channels,
+            'sampling_rate' : self.sampling_rate,
+            'mel_fmin'      : self.mel_fmin,
+            'mel_fmax'      : self.mel_fmax,
+            'normalize_mode'    : self.normalize_mode,
+            'pre_emph'      : self.pre_emph
+        }
         
         return config
     

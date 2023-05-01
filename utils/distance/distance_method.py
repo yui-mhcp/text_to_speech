@@ -29,9 +29,15 @@ def _maybe_expand_for_matrix(x, y, as_matrix = False):
     return x, y
 
 @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def tf_distance(x : tf.Tensor, y : tf.Tensor, method, force_distance = False, as_matrix = False):
+def tf_distance(x : tf.Tensor,
+                y : tf.Tensor,
+                method,
+                as_matrix   = True,
+                force_distance  = False,
+                max_matrix_size = -1
+               ):
     return distance(
-        x, y, method, force_distance = force_distance, as_matrix = as_matrix, max_matrix_size = -1
+        x, y, method, force_distance = force_distance, as_matrix = as_matrix, max_matrix_size = max_matrix_size
     )
 
 def distance(x,
@@ -75,9 +81,10 @@ def distance(x,
     if method in _str_distance_method:
         return _str_distance_method[method](x, y, ** kwargs)
 
-    logger.debug('Calling {} on matrices with shapes {} and {}'.format(
-        method, tuple(x.shape), tuple(y.shape)
-    ))
+    if tf.executing_eagerly():
+        logger.debug('Calling {} on matrices with shapes {} and {}'.format(
+            method, tuple(x.shape), tuple(y.shape)
+        ))
     
     if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
     if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
@@ -85,7 +92,7 @@ def distance(x,
     max_x, max_y = -1, -1
     if max_matrix_size > 0:
         if as_matrix:
-            max_x = tf.minimum(max_matrix_size // tf.shape(x)[-1] + 1, tf.shape(x)[0])
+            max_x = tf.minimum(max_matrix_size // (tf.shape(x)[-1] * tf.shape(y)[0]) + 1, tf.shape(x)[0])
             max_y = tf.minimum(max_matrix_size // (max_x * tf.shape(x)[-1]) + 1, tf.shape(y)[1])
         else:
             max_x = tf.minimum(max_matrix_size // tf.square(tf.shape(x)[-1]) + 1, tf.shape(x)[0])
@@ -94,22 +101,41 @@ def distance(x,
     
     if max_x != -1 and (max_x < tf.shape(x)[0] or max_y < tf.shape(y)[1]):
         if not as_matrix:
-            distances = tf.concat([
-                distance_fn(x[i : i + max_x], y[i : i + max_y], as_matrix = False, ** kwargs)
-                for i in tf.range(0, tf.shape(x)[0], max_x)
-            ], axis = 0)
-        else:
-            distances = []
+            distances = tf.TensorArray(
+                dtype   = tf.float32,
+                size    = tf.cast(tf.math.ceil(x.shape[0] / max_x), tf.int32),
+                element_shape = (None, )
+            )
             for i in tf.range(0, tf.shape(x)[0], max_x):
-                distances.append(tf.concat([
-                    distance_fn(x[i : i + max_x], y[j : j + max_y], as_matrix = True, ** kwargs)
-                    for j in tf.range(0, tf.shape(y)[0], max_y)
-                ], axis = -1))
-            distances = tf.concat(distances, axis = 0) if len(distances) > 1 else distances[0]
+                distances = distances.write(
+                    i, tf.reshape(distance_fn(
+                        x[i : i + max_x], y[i : i + max_x], as_matrix = True, ** kwargs
+                    ), [-1])
+                )
+            distances = distances.concat()
+        else:
+            distances = tf.TensorArray(
+                dtype   = tf.float32,
+                size    = tf.cast(tf.math.ceil(x.shape[0] / max_x), tf.int32),
+                element_shape = (None, y.shape[0])
+            )
+            for i in tf.range(0, tf.shape(x)[0], max_x):
+                distances = distances.write(
+                    i, distance_fn(x[i : i + max_x], y, as_matrix = True, ** kwargs)
+                )
+            distances = distances.concat()
+            #distances = []
+            #for i in tf.range(0, tf.shape(x)[0], max_x):
+            #    distances.append(tf.concat([
+            #        distance_fn(x[i : i + max_x], y[j : j + max_y], as_matrix = True, ** kwargs)
+            #        for j in tf.range(0, tf.shape(y)[0], max_y)
+            #    ], axis = -1))
+            #distances = tf.concat(distances, axis = 0) if len(distances) > 1 else distances[0]
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
     
-    logger.debug('Result shape : {}'.format(tuple(distances.shape)))
+    if tf.executing_eagerly():
+        logger.debug('Result shape : {}'.format(tuple(distances.shape)))
     
     return distances if not force_distance or method not in _similarity_methods else -distances
 

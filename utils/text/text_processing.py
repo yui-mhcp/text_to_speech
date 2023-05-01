@@ -225,20 +225,16 @@ def simple_text_split(text, max_length = _max_length):
     """
         Split a text (word based) such that each part have at most 'max_length' caracters
     """
-    mots = text.split(" ")
+    words = text.split()
 
-    text_parts = []
-    length, parts = 0, []
-    for mot in mots:
-        parts.append(mot)
-        length += len(mot)
-
-        if length >= max_length:
-            text_parts.append(" ".join(parts))
-            length, parts = 0, []
-    if length > 0: text_parts.append(" ".join(parts))
+    parts = []
+    for word in words:
+        if len(parts) == 0 or len(parts[-1]) + len(word) > max_length:
+            parts.append(word)
+        else:
+            parts[-1] += ' ' + word
     
-    return text_parts
+    return parts
 
 def split_text(text, max_length = _max_length):
     """
@@ -269,7 +265,7 @@ def split_text(text, max_length = _max_length):
                 parts.append(part + end_char)
             else:
                 parts[-1] += ' ' + part + end_char
-                
+        
         elif ', ' in part:
             # If part is longer but contains comma, split it based on commas
             splitted_part = part.split(", ")

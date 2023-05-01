@@ -225,7 +225,7 @@ class Pipeline(Consumer):
     def load_database(self):
         db = load_data(self.filename, default = {})
         
-        if isinstance(db, pd.DataFrame): db = db.to_dict('record')
+        if isinstance(db, pd.DataFrame): db = db.to_dict('records')
         if isinstance(db, list):
             self.as_list = True
             db = {row[self.id_key] : row for row in db}

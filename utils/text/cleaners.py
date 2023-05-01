@@ -16,6 +16,7 @@ import re
 import unicodedata
 
 from unidecode import unidecode
+
 from utils.text.numbers import normalize_numbers
 
 _special_symbols    = {

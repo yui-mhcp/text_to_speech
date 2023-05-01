@@ -19,7 +19,7 @@ class EER(tf.keras.metrics.AUC):
     @property
     def metric_names(self):
         return ['EER', 'AUC']
-                    
+
     def result(self):
         auc = super().result()
         

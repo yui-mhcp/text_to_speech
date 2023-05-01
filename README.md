@@ -63,7 +63,7 @@ Available architectures :
 - `Vocoder` :
     - [Waveglow](https://arxiv.org/abs/1811.00002)
 
-\* The speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture.
+\* Some speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture. More recent models use the `GE2E`-loss based encoders (like in the original paper), with a CNN architecture (instead of the 3-layers LSTM), as it is faster to train. 
 
 My SV2TTS models are fine-tuned from pretrained Tacotron2 models which speeds up a lot the training.
 
@@ -85,7 +85,7 @@ Models must be unzipped in the `pretrained_models/` directory !
 
 **Important Note** : the `NVIDIA` models available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :smile:
 
-The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability and produce a voice with more intonation. 
+The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability, and to produce a voice with more intonation, compared to simply training the single-speaker model. 
 
 ## Usage and demonstration
 
@@ -156,37 +156,37 @@ The idea is that the `Decoder` will learn to use the `speaker embedding` to copy
 
 #### Problems and solutions
 
-However there are some problems with this approach : 
-- A perfect generalization to new speakers is really hard because it requires datasets with many speakers (more than 1k) which is really rare in `Text-To-Speech` datasets
-- The audio should be good quality to avoid creating noise in the output voices
+There are some issues with the above approach : 
+- A perfect generalization to new speakers is really hard as it requires datasets with many speakers (more than 1k), which is really rare in `Text-To-Speech` datasets
+- The audio should be good quality, to avoid creating noise in the output voices
 - The `Speaker Encoder` must be good enough to well separate speakers
-- The `Speaker Encoder` must be able to embed speakers in a relevant way so that the `Tacotron` model can extract useful information on the speaker's prosody
+- The `Speaker Encoder` must be able to embed speakers in a relevant way, such that the `Tacotron` model can extract useful information on the speaker's prosody
 
-For the 1st problem, there is no real solution except combining different datasets as I did with the `CommonVoice`, `VoxForge` and `SIWIS` datasets
+For the 1st issue, there is no real solution, except combining different datasets, as done in the example notebooks, with the `CommonVoice`, `VoxForge` and `SIWIS` datasets
 
-Another solution is to train a good quality model and fine-tune it with a small amount of data on a particular speaker. The big advantage of this approach is that you can train a new model really fast with less than 20min of audio from the speaker (which is impossible with a classical single-speaker model training).
+Another solution is to train a low quality model (i.e. trained with many noisy data), and fine-tune it with a small amount of good quality data on a particular speaker. The big advantage of this approach is that you can train a new model really fast with less than 20min of annotated audio from the speaker (which is impossible with a classical single-speaker model training).
 
-For the second point, pay attention to have good quality audio : my experiments have shown that with the original datasets (which are quite poor quality), the model *never* learned anything
+For the second point, pay attention to have good quality audio : my experiments have shown that with the original datasets (which contains quite poor quality data), the model *never* converges
 
-However there exists a solution : preprocessing ! My `utils/audio` folder has many powerful preprocessing functions for `noise reduction` (using the [noisereduce](https://pypi.org/project/noisereduce/) library) and `audio silence trimming` (which is really important for the model)
+However there exists a solution : preprocessing ! The `utils/audio` module contains many powerful preprocessing functions for `noise reduction` (using the [noisereduce](https://pypi.org/project/noisereduce/) library) and `audio silence trimming` (which is really important for the model)
 
 For the 2 last points, read the next section on `speaker encoder`
 
 #### The Speaker Encoder (SE)
 
-The SE part must be able to differentiate speakers and embed them in a meaningful way. 
+The SE part should be able to differentiate speakers, and embed (encode in a 1-D vector) them in a *meaningful* way (i.e. to be able to differenciate them). 
 
 The model used in the paper is a 3-layer `LSTM` model with a normalization layer and trained with the [GE2E](https://ieeexplore.ieee.org/abstract/document/8462665) loss. The problem is that training this model is **really slow** and took 2 weeks on 4 GPU's in the CorentinJ master thesis (cf his [github](https://github.com/CorentinJ/Real-Time-Voice-Cloning))
 
-This idea was not possible for me (because I do not have 4 GPU's :smile: ) so I tried something else : use my [AudioSiamese](https://github.com/yui-mhcp/siamese_networks) model ! Indeed, the objective of this model is to create speakers' embeddings and try to minimize distance between embeddings from a same speaker so, why not !
+This idea was not possible for me (because I do not have 4 GPU's :smile: ), so I have tested something else : use the [AudioSiamese](https://github.com/yui-mhcp/siamese_networks) model ! The objective of this model is to create speakers' embeddings, and try to minimize distance between embeddings from a same speaker, which is equivalent to the `GE2E` training objective !
 
-My experiments have shown 2 interesting results : 
+Experiments have shown 2 interesting results : 
 1. An `AudioSiamese` trained on raw audio is quite good for `speaker verification` but embeds in a non-meaningful way for `Tacotron` so the result were quite poor
 2. An `AudioSiamese` trained on mel-spectrogram (same parameters as the `Tacotron mel function`) is as good for `speaker verification` but seems to extract more meaningful information !
 
 The big advantage is that in less than 1 training night you can have your `Speaker Encoder` and use it which is crazy : 1 night on single GPU instead of 2 weeks on 4 GPU's !
 
-Furthermore in a visual comparison of embeddings made by the `3-layer LSTM` encoder and my `Siamese Network` encoder, they seem really similar
+Furthermore in a visual comparison of embeddings made by the `3-layer LSTM` encoder and my `Siamese Network` encoder, they seem quite similar
 
 
 ## The *partial* Transfer Learning procedure
@@ -202,10 +202,6 @@ Some ideas that showed some benefits (especially for single-speaker fine-tuning)
 The idea behind these tricks is that the only *speaker-specific* part is the `DecoderCell` so we can make other parts non-trainable to force it to learn this specific part
 
 \* Note that I also implemented it when models do not have the same number of layers
-
-## Known issue
-
-The `get_audio_file()`, returning the audio file associated to the given text, does not process the text while the mapping is saved based on the processed text. It means that if your text is not equal to the processed text, it will return `None`. 
 
 ## Contacts and licence
 

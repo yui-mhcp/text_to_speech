@@ -785,7 +785,7 @@ class AudioAnnotation(object):
         dump_json(os.path.join(directory, map_file), new_infos, indent = 4)
         
         return new_infos
-            
+    
     def save_as_dataset(self, path, overwrite = False, ** kwargs):
         """
             Save all datas (alignment and / or sub-parts) to a dataset format

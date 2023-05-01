@@ -106,7 +106,7 @@ def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** k
     
     return result
 
-def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_state = None):
+def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_state = None, drop = True):
     """
         Sample dataframe by taking `n_sample` for `n` different values of `on`
         Default values means : 'taking 10 samples for 10 different ids'
@@ -119,6 +119,7 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_
             - min_sample    : the minimal number of samples for a group to be selected.
                 Note that if less groups than `n` groups have at least `min_sample`, some groups can have less than `min_sample` in the final result.
             - random_state  : state used in the sampling of group's ids and samples (for reproducibility)
+            - drop          : cf `drop` argument in `reset_index`, if `False`, tries to ad an `index` column
         Returns :
             - samples   : a pd.DataFrame with `n` different groups and (hopefully) at least `n_sample` for each group
         
@@ -150,7 +151,7 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_
             samples_i.index, size = n_sample_i, replace = False
         ))
     
-    return data.loc[indexes].reset_index()
+    return data.loc[indexes].reset_index(drop = drop)
 
 def compare_df(df1, df2):
     """

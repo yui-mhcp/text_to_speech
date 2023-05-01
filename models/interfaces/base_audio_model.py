@@ -54,8 +54,8 @@ class BaseAudioModel(BaseModel):
                     audio_format   = 'mel',
                     
                     mel_fn      = 'TacotronSTFT',
-                    mel_fn_config      = DEFAULT_MEL_FN_CONFIG,
-                    pad_mel_value      = 0.,
+                    mel_fn_config   = DEFAULT_MEL_FN_CONFIG,
+                    pad_mel_value   = 0.,
                     
                     mel_fn_type     = None,
                     mel_as_image    = None, # for retro-compatibility
@@ -63,17 +63,19 @@ class BaseAudioModel(BaseModel):
                     ** kwargs
                    ):
         """
-            Constructor for the audio-related variables
+            Initializes the audio-related variables
             
             Arguments :
                 - audio_rate    : the audio sampling rate
                 - audio_format  : the audio format handled by the model (audio / mel / mel_image)
+                
                 - mel_fn    : either the mel's filename or a mel's type
                 - mel_config    : the mel spectrogram's config
                 - pad_mel_value : value used to pad mel-spectrogram (in batch)
+                
                 - mel_fn_type / mel_as_image : for retro-compatibility
         """
-        assert audio_format in _supported_audio_format
+        assert audio_format in _supported_audio_format, '{} is not a valid audio format : {}'.format(audio_format, _supported_audio_format)
         
         if mel_as_image is not None:
             logger.warning('`mel_as_image` is deprecated, please use `audio_format` to specify the type of input or call `save_config()` to update the config file')
@@ -114,7 +116,7 @@ class BaseAudioModel(BaseModel):
         
         if not self.use_mel_fn: self.trim_mel = False
         if hasattr(self, 'trim_mel') and not self.trim_mel: self.trim_mel_method = None
-            
+
     def _update_trim_config(self, key, val):
         self.trim_kwargs[key] = val
 
@@ -171,7 +173,16 @@ class BaseAudioModel(BaseModel):
         return des
     
     def get_audio_input(self, data, ** kwargs):
-        """ Load audio and returns a 2-D `tf.Tensor` with shape `(1, audio_len)` """
+        """
+            Loads the audio with the `utils.audio.load_audio` method
+            
+            Arguments :
+                - data  : any value supported by `load_audio`
+                - kwargs    : additional kwargs forwarded to `load_audio`
+            Return :
+                - audio : 2-D `tf.Tensor` with shape `(audio_len, 1)`
+        """
+        """ Load audio and returns a 2-D `tf.Tensor` with shape `(audio_len, 1)` """
         kwargs  = {** self.trim_kwargs, ** kwargs}
         audio   = load_audio(data, self.audio_rate, ** kwargs)
         
@@ -179,9 +190,16 @@ class BaseAudioModel(BaseModel):
     
     def get_mel_input(self, data, ** kwargs):
         """
-            Load the mel-spectrogram and returns :
-                if `self.mel_as_image` : a 3-D `tf.Tensor` with shape `(n_frames, n_channels, 1)`
-                else: a 2-D `tf.Tensor` with shape `(n_frames, n_channels)`
+            Loads the mel-spectrogram by calling `utils.audio.load_mel`
+            
+            Arguments :
+                - data  : any value supported by `load_mel`
+                - kwargs    : additional kwargs forwarded to `load_mel`
+            Return :
+                if `self.mel_as_image`:
+                    - mel   : `tf.Tensor` with shape `(n_frames, self.n_mel_channels, 1)`
+                else:
+                    - mel   : `tf.Tensor` with shape `(n_frames, self.n_mel_channels)`
         """
         kwargs = {** self.trim_kwargs, ** kwargs}
         mel = load_mel(
@@ -192,12 +210,25 @@ class BaseAudioModel(BaseModel):
         )
         
         if len(tf.shape(mel)) == 3: mel = tf.squeeze(mel, 0)
-        if self.mel_as_image:
-            mel = tf.expand_dims(mel, axis = -1)
+        if self.mel_as_image:       mel = tf.expand_dims(mel, axis = -1)
         
         return mel
     
     def get_audio(self, data, ** kwargs):
+        """
+            Either calls `self.get_audio_input` or `self.get_mel_input`
+            
+            Arguments :
+                - data  : any value supported by `utils.audio.{load_audio / load_mel}`
+                - kwargs    : additional kwargs forwarded to the right function
+            Return :
+                If `not self.use_mel_fn`:
+                    - audio : 2-D `tf.Tensor` with shape `(audio_len, 1)`
+                elif `not self.mel_as_image`:
+                    - mel   : 2-D `tf.Tensor` with shape `(n_frames, self.n_mel_channels)`
+                else:
+                    - mel   : 3-D `tf.Tensor` with shape `(n_frames, self.n_mel_channels, 1)`
+        """
         """ Either calls `get_mel_input` or `get_audio_input` depending on `audio_format` """
         if isinstance(data, list):
             return [self.get_audio(data_i, ** kwargs) for data_i in data]

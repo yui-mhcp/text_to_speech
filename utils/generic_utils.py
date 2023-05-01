@@ -13,10 +13,12 @@
 import os
 import enum
 import json
+import queue
 import pickle
 import logging
 import datetime
 import argparse
+import multiprocessing
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -59,6 +61,27 @@ def convert_to_str(x):
     
     return x
 
+def create_iterator(generator, ** kwargs):
+    if isinstance(generator, pd.DataFrame):
+        def _df_iterator():
+            for idx, row in generator.iterrows():
+                yield row
+        return _df_iterator()
+    elif isinstance(generator, (queue.Queue, multiprocessing.queues.Queue)):
+        def _queue_iterator():
+            try:
+                while True:
+                    item = generator.get(** kwargs)
+                    if item is not None:
+                        yield item
+            except queue.Empty:
+                pass
+        
+        return _queue_iterator()
+    elif callable(generator):
+        return generator(** kwargs)
+    return generator
+
 def split_gpus(n, memory = 2048):
     gpus = tf.config.list_physical_devices('GPU')
     try:
@@ -92,6 +115,11 @@ def limit_gpu_memory(limit = 2048):
     except:
         logger.error("Error while limiting tensorflow GPU memory")
 
+def show_memory(gpu = 'GPU:0', message = ''):
+    print('{}{}'.format(message if not message else message + '\t: ', {
+        k : '{:.3f} Gb'.format(v / 1024 ** 3) for k, v in tf.config.experimental.get_memory_info('GPU:0').items()
+    }))
+    
 def get_enum_item(value, enum, upper_names = True):
     if isinstance(value, enum): return value
     if isinstance(value, str):
@@ -156,10 +184,10 @@ def to_lower_keys(dico):
 def to_json(data):
     """ Convert a given data to json-serializable (if possible) """
     if isinstance(data, enum.Enum): data = data.value
-    if isinstance(data, tf.Tensor): data = data.numpy()
+    if hasattr(data, 'numpy'):  data = data.numpy()
     if isinstance(data, bytes): data = data.decode('utf-8')
     if isinstance(data, bool): return data
-    elif isinstance(data, datetime.datetime): return data.strftime("%Y-%m-%m %H:%M:%S")
+    elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%m %H:%M:%S")
     elif isinstance(data, (float, np.floating)): return float(data)
     elif isinstance(data, (int, np.integer)): return int(data)
     elif isinstance(data, (tuple, list, np.ndarray)):
@@ -173,7 +201,9 @@ def to_json(data):
     elif data is None or isinstance(data, str):
         return data
     else:
-        logger.warning("Unknown json data (type : {}) : {}".format(type(data), data))
+        logger.warning("Unknown json data (type : {}) : {}".format(
+            type(data), data
+        ))
         return str(data)
 
 def var_from_str(v):

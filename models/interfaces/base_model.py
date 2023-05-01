@@ -11,7 +11,6 @@
 # limitations under the License.
 
 import os
-import copy
 import time
 import shutil
 import logging
@@ -29,7 +28,7 @@ from tensorflow.python.keras.callbacks import CallbackList
 from loggers import DEV
 from hparams import HParams, HParamsTraining, HParamsTesting
 from datasets import train_test_split, prepare_dataset, summarize_dataset
-from utils import time_to_string, load_json, dump_json, get_metric_names, map_output_names
+from utils import time_to_string, load_json, dump_json, create_iterator, get_metric_names, map_output_names
 from custom_architectures import get_architecture, custom_objects
 from custom_train_objects import History, MetricList
 from custom_train_objects import get_optimizer, get_loss, get_metrics, get_callbacks
@@ -48,20 +47,26 @@ _trackable_objects = (
 class ModelInstances(type):
     _instances = {}
     _is_restoring   = False
+    
     def __call__(cls, * args, ** kwargs):
         nom = kwargs.get('nom', None)
         if nom is None: nom = cls.__name__
         if nom in cls._instances:
             pass
-        elif not cls._is_restoring and kwargs.get('restore', True) and os.path.exists(os.path.join(_pretrained_models_folder, nom, 'config.json')):
+        elif not cls._is_restoring and kwargs.get('restore', True) and is_model_name(nom):
             cls._is_restoring = True
+            
             kwargs['nom'] = nom
-            cls.restore(** kwargs)
-            cls._is_restoring = False
-        else:
-            #cls._is_restoring = False
-            instance = super(ModelInstances, cls).__call__(* args, ** kwargs)
-            cls._instances[nom] = instance
+            try:
+                cls.restore(** kwargs)
+            except Exception as e:
+                logger.critical('An error occured while restoring : {}'.format(e))
+                raise e
+            finally:
+                cls._is_restoring = False
+        else: # cls._is_restoring = False
+            cls._instances[nom] = super(ModelInstances, cls).__call__(* args, ** kwargs)
+        
         return cls._instances[nom]
 
 class BaseModel(metaclass = ModelInstances):
@@ -79,9 +84,7 @@ class BaseModel(metaclass = ModelInstances):
                  
                  ** kwargs
                 ):
-        """
-        Constructor that initialize the model's configuration, architecture, folders, ... 
-        """
+        """ Constructor that initialize the model's configuration, architecture, folders, ... """
         # Allows to pass all kwargs to super-classes 
         kwargs  = {k : v for k, v in kwargs.items() if not hasattr(self, k)}
         
@@ -97,9 +100,7 @@ class BaseModel(metaclass = ModelInstances):
         
         self.__ckpt     = tf.train.Checkpoint()
         self.__ckpt_manager = tf.train.CheckpointManager(
-            self.__ckpt, 
-            directory   = self.save_dir,
-            max_to_keep = max_to_keep
+            self.__ckpt, directory = self.save_dir, max_to_keep = max_to_keep
         )
         
         self.backend_kwargs = kwargs        
@@ -109,12 +110,13 @@ class BaseModel(metaclass = ModelInstances):
             
             if 'directory' in restore_kwargs:
                 if is_model_name(restore_kwargs['directory']):
-                    restore_kwargs['directory'] = os.path.join(
-                        _pretrained_models_folder, restore_kwargs['directory'], 'saving'
+                    restore_kwargs['directory'] = get_model_dir(
+                        restore_kwargs['directory'], 'saving'
                     )
                 self.__history  = History.load(
                     os.path.join(restore_kwargs['directory'], 'historique.json')
                 )
+            
             self.restore_models(** restore_kwargs)
             if restore not in (True, False) and os.path.exists(self.folder):
                 self.save()
@@ -132,6 +134,7 @@ class BaseModel(metaclass = ModelInstances):
         logger.info("Model {} initialized successfully !".format(self.nom))
     
     def __build_call_fn(self):
+        """ Set up `self.call_fn` as a tf-compiled version of `self.call()` """
         if not hasattr(self, 'call_fn'):
             if hasattr(self, 'call'): call_fn = self.call
             else:
@@ -1359,7 +1362,23 @@ class BaseModel(metaclass = ModelInstances):
     def predict(self, inputs, name = None, **kwargs):
         model = self.get_model(name)
         return model.predict(inputs, **kwargs)
+    
+    def stream(self, stream, callback = None, timeout = None, return_results = False, ** kwargs):
+        if callback is not None and not callable(callback):
+            if hasattr(callback, 'put'): callback = callback.put
+            else: raise ValueError('Callback {} must be callable or have a `put` method'.format(callback))
         
+        logger.debug('[STREAM] Start...')
+        
+        results = [] if return_results else None
+        for data in create_iterator(stream, timeout = timeout):
+            res = self.predict(data, ** kwargs)
+            if return_results: results.append(res)
+            if callback is not None: callback(res)
+        
+        logger.debug('[STREAM] End')
+        return results
+
     def evaluate(self, datas, name = None, **kwargs):
         model = self.get_model(name)
         dataset_config = self.get_dataset_config(** kwargs)
@@ -1394,7 +1413,10 @@ class BaseModel(metaclass = ModelInstances):
                     ** variables_to_restore['losses'].pop(infos['loss_name']),
                     'metrics' : [variables_to_restore['metrics'].pop(met_name) for met_name in infos['metrics_name']]
                 }
-            self.load_model(model_name, infos['save_path'], compile_infos)
+            if not self.load_model(model_name, infos['save_path'], compile_infos):
+                self._build_model(** self.backend_kwargs)
+                self.compile(model_name = model_name, ** compile_infos, verbose = False)
+                break
         
         if compile:
             for opt_name, infos in variables_to_restore['optimizers'].items():
@@ -1539,7 +1561,13 @@ class BaseModel(metaclass = ModelInstances):
         if '.json' in filename:
             with open(filename, 'r', encoding = 'utf-8') as fichier_config:
                 config = fichier_config.read()
-            restored_model = model_from_json(config, custom_objects = self.custom_objects)
+            try:
+                restored_model = model_from_json(config, custom_objects = self.custom_objects)
+            except Exception as e:
+                logger.critical(
+                    'Model {} has not been restored due to an exception : {}'.format(name, e)
+                )
+                return False
         else:
             restored_model = load_model(
                 filename, custom_objects = self.custom_objects, compile = False
@@ -1550,20 +1578,30 @@ class BaseModel(metaclass = ModelInstances):
             self.compile(model_name = name, ** compile_infos, verbose = False)
 
         logger.info("Successfully restored {} from {} !".format(name, filename))
+        return True
     
     def destroy(self, ask = True):
         """ Destroy the model and all its folders """
+        if BaseModel.destroy(self.nom, ask):
+            del self
+    
+    @staticmethod
+    def destroy(nom, ask = True):
+        """ Destroys a model by removing its folder """
         y = True
         if ask:
-            y = input("Are you sure you want to destroy agent {} ? (y to validate)".format(self.nom))
-            y = y == 'y'
+            inp = input("Are you sure you want to destroy model {} ? (y to validate)".format(nom))
+            y = inp == 'y'
         
-        if y:
-            shutil.rmtree(self.folder)
-            del self
+        if y: shutil.rmtree(self.folder)
+        return y
     
     @classmethod
     def clone(cls, pretrained, nom = None, compile = False):
+        """
+            Creates a perfect clone of `pretrained` by copying everything
+            The difference with `cls.from_pretrained` is that the latter allows to modify the model configuration, and may therefore performs a *partial transfer* between the 2 architectures, which is not the case here
+        """
         pretrained_dir = get_model_dir(pretrained)
         if not os.path.exists(pretrained_dir):
             raise ValueError("Pretrained model {} does not exist !".format(pretrained))
@@ -1592,6 +1630,13 @@ class BaseModel(metaclass = ModelInstances):
     
     @classmethod
     def from_pretrained(cls, nom, pretrained_name, ** kwargs):
+        """
+            Creates a copy of `pretrained_name` by copying its configuration + transfering model weights
+            
+            Note : the transfer is *partial*, meaning that the new model architecture can be modified (by passing specific new `kwargs`)
+            
+            **Important note** : the pretrained model is loaded on CPU, so it is higly recommanded to restart the kernel before using the new instance
+        """
         from models import get_pretrained
         
         with tf.device('cpu') as d:
@@ -1610,10 +1655,11 @@ class BaseModel(metaclass = ModelInstances):
 
     @classmethod
     def restore(cls, nom, ** kwargs):
+        """ Returns the model saved in folder `{_pretrained_models_folder}/{nom}` """
         folder = get_model_dir(nom)
         if not os.path.exists(folder): return None
         
-        config = load_json(os.path.join(os.path.join(folder, 'config.json')))
+        config = load_json(os.path.join(folder, 'config.json'))
         
         if config['class_name'] != cls.__name__:
             raise ValueError("Model {} already exists but is not the expected class !\n  Expected : {}\n  Got : {}".format(nom, config['class_name'], cls.__name__))
@@ -1622,6 +1668,13 @@ class BaseModel(metaclass = ModelInstances):
     
     @staticmethod
     def rename(nom, new_name):
+        """
+            Renames a model by renaming its main folder + adapting all its configuration files
+            
+            Arguments :
+                - nom   : the model to rename
+                - new_name  : the new name for the model
+        """
         def _rename_in_file(filename):
             if os.path.isdir(filename):
                 for f in os.listdir(filename): _rename_in_file(os.path.join(filename, f))
@@ -1642,18 +1695,17 @@ class BaseModel(metaclass = ModelInstances):
         os.rename(folder, os.path.join(get_model_dir(new_name)))
         
 def _can_restore(restore, config_file):
-    if restore is True: return os.path.exists(config_file)
-    elif isinstance(restore, str):
+    if restore is True:           return os.path.exists(config_file)
+    if isinstance(restore, dict): restore = restore.get('directory', None)
+    if isinstance(restore, str):
         return is_model_name(restore) or os.path.exists(os.path.join(restore, 'config.json'))
-    elif isinstance(restore, dict):
-        return is_model_name(restore['directory']) or os.path.exists(os.path.join(restore['directory'], 'config.json'))
-    
+    return False
+
 def _compile_fn(fn, run_eagerly = False, signature = None, 
                 include_signature = True, ** kwargs):
     if not run_eagerly:
         config = {
-            'experimental_relax_shapes' : True,
-            ** kwargs
+            'reduce_retracing' : True, ** kwargs
         }
         if include_signature and signature is not None:
             config['input_signature'] = [signature]

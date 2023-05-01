@@ -58,11 +58,12 @@ accent_replacement_matrix = {
     'i' : {'î' : 0}, 'î' : {'i' : 0}
 }
 
-def get_encoder(lang, text_encoder = None, ** kwargs):
+def get_encoder(lang = None, text_encoder = None, ** kwargs):
     if text_encoder is None: text_encoder = kwargs.copy()
     
     if isinstance(text_encoder, dict):
         if 'vocab' not in text_encoder:
+            assert lang, 'You should provide either `vocab` either `lang` !'
             text_encoder['vocab'] = get_symbols(lang, arpabet = False)
             text_encoder['level'] = 'char'
         else:
@@ -74,8 +75,18 @@ def get_encoder(lang, text_encoder = None, ** kwargs):
         encoder = TextEncoder(** text_encoder)
         
     elif isinstance(text_encoder, str):
+        try:
+            from models import _pretrained_models_folder
+            model_encoder_file = os.path.join(
+                _pretrained_models_folder, text_encoder, 'saving', 'text_encoder.json'
+            )
+        except:
+            model_encoder_file = None
+        
         if os.path.isfile(text_encoder):
             encoder = TextEncoder.load_from_file(text_encoder)
+        elif model_encoder_file and os.path.isfile(model_encoder_file):
+            encoder = TextEncoder.load_from_file(model_encoder_file)
         elif text_encoder == 'clip':
             encoder = TextEncoder.from_clip_pretrained()
         elif text_encoder == 'whisper':

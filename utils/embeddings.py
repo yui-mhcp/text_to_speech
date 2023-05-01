@@ -274,6 +274,11 @@ def load_embedding(directory,
     embeddings  = load_data(emb_file)
     if not isinstance(embeddings, pd.DataFrame): return embeddings
 
+    if any('Unnamed:' in col for col in embeddings.columns):
+        embeddings = embeddings.drop(
+            columns = [col for col in embeddings.columns if 'Unnamed:' in col]
+        )
+    
     for embedding_col_name in [col for col in embeddings.columns if col.endswith('embedding')]:
         if isinstance(embeddings.loc[0, embedding_col_name], np.ndarray): continue
         embeddings[embedding_col_name] = embeddings[embedding_col_name].apply(
@@ -305,6 +310,9 @@ def load_embedding(directory,
     for col in intersect:
         if embeddings[col].dtype != dataset[col].dtype:
             embeddings[col] = embeddings[col].apply(lambda i: str(i))
+        if 'filename' in col:
+            embeddings[col] = embeddings[col].apply(lambda f: f.replace(os.path.sep, '/'))
+            dataset[col]    = dataset[col].apply(lambda f: f.replace(os.path.sep, '/'))
     
     logger.debug('Merging embeddings with dataset on columns {}'.format(intersect))
     dataset = pd.merge(dataset, embeddings, on = intersect)
@@ -348,6 +356,7 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
         np_embeddings = embeddings_to_np(filtered_embeddings)
     else:
         np_embeddings = embeddings
+        if len(np_embeddings.shape) == 1: np_embeddings = np.expand_dims(np_embeddings, axis = 0)
     
     if isinstance(mode, int):
         return np_embeddings[mode]
@@ -364,7 +373,7 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
     
 @tf.function(input_signature = [
     tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.int32)
+    tf.TensorSpec(shape = (None, ),     dtype = tf.int32)
 ])
 def compute_centroids(embeddings, ids):
     """

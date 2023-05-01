@@ -142,12 +142,20 @@ class BaseEmbeddingModel(BaseModel):
     def embed(self, data, ** kwargs):
         return self.encoder.embed(data, ** kwargs)
     
+    def embed_dataset(self, * args, ** kwargs):
+        return self.encoder.embed_dataset(* args, ** kwargs)
+
     def get_embedding(self, data, label_embedding_key = 'label_embedding', key = 'embedding',
                       embed_if_not_exist = True, ** kwargs):
         """ This function is used in `encode_data` and must return a single embedding """
         def load_np(filename):
             filename = convert_to_str(filename)
             return np.load(filename)
+        
+        if isinstance(data, list):
+            return tf.stack([self.get_embedding(d) for d in data], axis = 0)
+        elif isinstance(data, pd.DataFrame):
+            return tf.stack([self.get_embedding(row) for _, row in data.iterrows()], axis = 0)
         
         embedding = data
         if isinstance(data, (dict, pd.Series)):

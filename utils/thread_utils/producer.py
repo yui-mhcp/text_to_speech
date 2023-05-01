@@ -310,6 +310,7 @@ class Producer(Thread):
     def start(self):
         if self.run_main_thread: self.run()
         else: super().start()
+        return self
     
     def stop(self):
         with self.mutex_infos:

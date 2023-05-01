@@ -16,12 +16,12 @@ import tensorflow as tf
 from utils import plot
 
 class CustomScheduler(tf.keras.optimizers.schedules.LearningRateSchedule):
-    def __init__(self, **kwargs):
-        super(CustomScheduler, self).__init__(**kwargs)
-        
+    def __init__(self, * args, ** kwargs):
+        pass
+    
     def get_config(self):
         return {}
-        
+    
     def plot(self, n_step = 10000, **kwargs):
         x = tf.range(1, 1 + n_step)
         y = np.array(self(x))

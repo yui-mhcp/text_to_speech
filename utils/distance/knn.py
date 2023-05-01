@@ -35,7 +35,7 @@ class KNN(object):
                  k  = 5,
                  use_mean   = False, 
                  
-                 method     = 'euclidian',
+                 distance_metric    = 'euclidian',
                  weighted   = False,
                  
                  ** kwargs
@@ -57,8 +57,13 @@ class KNN(object):
             embeddings = load_embedding(embeddings)
         
         if isinstance(embeddings, pd.DataFrame):
-            ids         = embeddings['id'].values
+            if ids is None:
+                ids     = embeddings['id'].values
+            elif isinstance(ids, str):
+                ids     = embeddings[ids].values
             embeddings  = embeddings_to_np(embeddings)
+        elif isinstance(embeddings, dict):
+            ids, embeddings = list(embeddings.keys()), list(embeddings.values())
         
         assert len(embeddings) == len(ids), '{} embeddings vs {} ids'.format(len(embeddings), len(ids))
         
@@ -67,15 +72,22 @@ class KNN(object):
         
         self.k          = tf.cast(k, dtype = tf.int32)
         self.use_mean   = use_mean
-        self.method     = method
+        self.distance_metric    = distance_metric
         self.weighted   = weighted
         
+        self._mapping   = None
         self.__centroids    = None
     
     @property
     def centroids(self):
         if self.__centroids is None: self.__centroids = self.compute_centroids()
         return self.__centroids
+    
+    @property
+    def int_ids(self):
+        if self.ids.dtype in (np.int32, tf.int32): return self.ids
+        self._mapping, ids = tf.unique(self.ids)
+        return ids
     
     def __setitem__(self, idx, val):
         if val != self.ids[idx]:
@@ -84,7 +96,9 @@ class KNN(object):
     
     def compute_centroids(self):
         """ Compute the mean embeddings for each id (namely the centroids) """
-        return compute_centroids(self.embeddings, self.ids)
+        ids, centroids = compute_centroids(self.embeddings, self.int_ids)
+        if self._mapping is not None: ids = tf.gather(self._mapping, ids)
+        return ids, centroids
     
     def get_embeddings(self, ids = None, use_mean = False):
         """ Return all (ids, embeddings) for the expected `ids` """
@@ -99,7 +113,7 @@ class KNN(object):
     def distance(self, x, ** kwargs):
         """ Compute distance between x and embeddings for given ids """
         embeddings, ids = self.get_embeddings(** kwargs)
-        return tf_distance(tf.cast(x, tf.float32), embeddings, method = self.method), ids
+        return tf_distance(tf.cast(x, tf.float32), embeddings, method = self.distance_metric), ids
     
     def predict(self,
                 query,
@@ -107,11 +121,11 @@ class KNN(object):
                 k   = None,
                 use_mean    = None,
                 weighted    = None,
-
-                tqdm    = lambda x: x,
+                max_matrix_size = -1,
                 
                 plot    = False,
                 plot_kwargs = {},
+                
                 ** kwargs
                ):
         """
@@ -139,7 +153,15 @@ class KNN(object):
 
         ids, embeddings = self.get_embeddings(possible_ids, use_mean)
         
-        pred = knn(query, embeddings, ids, k, self.method, weighted = weighted)
+        pred = knn(
+            query,
+            embeddings,
+            ids = ids,
+            k   = k,
+            max_matrix_size = max_matrix_size,
+            distance_metric = self.distance_metric,
+            weighted = weighted
+        )
         
         if plot: self.plot(query, pred, ** plot_kwargs)
         
@@ -158,10 +180,11 @@ class KNN(object):
         marker = ['o'] * len(embeddings)
         
         # Means as big points
-        embeddings = np.concatenate([embeddings, self.mean_embeddings], axis = 0)
-        ids = np.concatenate([ids, self.mean_ids], axis = 0)
+        centroid_ids, centroids = self.centroids
+        embeddings = np.concatenate([embeddings, centroids], axis = 0)
+        ids = np.concatenate([ids, centroid_ids], axis = 0)
         
-        marker += ['O'] * len(self.mean_ids)
+        marker += ['O'] * len(centroid_ids)
         marker_kwargs.setdefault('O', {
             'marker'    : 'o',
             'linewidth' : kwargs.get('linewidth', 2.5) * 3
@@ -195,13 +218,14 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-def knn(query   = None,
-        embeddings  = None,
-        distance_matrix = None,
+def knn(query   : tf.Tensor = None,
+        embeddings  : tf.Tensor = None,
+        distance_matrix : tf.Tensor = None,
         
-        k   = 5,
-        ids = None,
+        k   : tf.Tensor = 5,
+        ids : tf.Tensor = None,
         distance_metric = None,
+        max_matrix_size = -1,
         
         return_index    = False,
         weighted    = False,
@@ -232,7 +256,8 @@ def knn(query   = None,
     
     if distance_matrix is None:
         distance_matrix = tf_distance(
-            query, embeddings, distance_metric, as_matrix = True, force_distance = True
+            query, embeddings, distance_metric, as_matrix = True, force_distance = True,
+            max_matrix_size = max_matrix_size
         )
 
     k_nearest_dists, k_nearest_idx = tf.nn.top_k(
@@ -242,7 +267,9 @@ def knn(query   = None,
     if ids is None:
         return k_nearest_idx if return_index else tf.gather(embeddings, k_nearest_idx, batch_dims = 1)
     
-    nearest_ids = tf.cast(tf.gather(tf.reshape(ids, [-1]), k_nearest_idx), tf.int32)
+    unique_ids, pos_ids = tf.unique(tf.reshape(ids, [-1]))
+    
+    nearest_ids = tf.gather(pos_ids, k_nearest_idx)
 
     if not weighted:
         counts = tf.cast(tf.math.bincount(nearest_ids, axis = -1), tf.float32)
@@ -260,10 +287,12 @@ def knn(query   = None,
     
     max_idx = tf.cast(counts == max_counts, tf.int32)
     
-    nb_nearest = tf.reduce_sum(max_idx, axis = -1)
+    #nb_nearest = tf.reduce_sum(max_idx, axis = -1)
     
-    nearest_ids = tf.where(
-        nb_nearest == 1, tf.cast(tf.argmax(max_idx, axis = -1), tf.int32), -2
-    )
+    #nearest_ids = tf.where(
+    #    nb_nearest == 1,
+    #    tf.gather(unique_ids, tf.argmax(max_idx, axis = -1)),
+    #    -2
+    #)
 
-    return nearest_ids
+    return tf.gather(unique_ids, tf.argmax(max_idx, axis = -1))

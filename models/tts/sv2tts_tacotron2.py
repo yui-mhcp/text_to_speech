@@ -10,6 +10,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
+import pandas as pd
 import tensorflow as tf
 
 from utils import select_embedding
@@ -81,18 +83,39 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         super().compile(loss_config = loss_config, ** kwargs)
     
-    def infer(self, text, spk_embedding, * args, ** kwargs):
-        if isinstance(text, str):
-            text    = tf.expand_dims(self.encode_text(text), axis = 0)
-        elif len(tf.shape(text)) == 1:
-            text    = tf.expand_dims(text, axis = 0)
+    def infer(self, text, spk_embedding = None, ** kwargs):
+        if spk_embedding is None or isinstance(spk_embedding, (int, str, dict)):
+            spk_embedding = self.select_embedding(spk_embedding)
+        
+        if not isinstance(text, (list, tuple)):
+            if isinstance(text, str):
+                text    = tf.expand_dims(self.encode_text(text), axis = 0)
+            elif len(tf.shape(text)) == 1:
+                text    = tf.expand_dims(text, axis = 0)
         
         if len(tf.shape(spk_embedding)) == 1:
             spk_embedding = tf.expand_dims(spk_embedding, axis = 0)
         if tf.shape(spk_embedding)[0] < tf.shape(text)[0]:
             spk_embedding = tf.tile(spk_embedding, [tf.shape(text)[0], 1])
         
-        return super().infer([text, spk_embedding], * args, ** kwargs)
+        return super().infer([text, spk_embedding], ** kwargs)
+    
+    def select_embedding(self, embeddings = None, mode = None):
+        # load embeddings if needed
+        if isinstance(embeddings, (np.ndarray, pd.DataFrame, tf.Tensor)):
+            self.set_embeddings(embeddings)
+        elif self.embeddings is None:
+            if embeddings is not None: embeddings, mode = None, embeddings
+            self.load_embeddings()
+        
+        if mode is None:                mode = 'mean' if self.use_label_embedding else 'random'
+        if not isinstance(mode, dict):  mode = {'mode' : mode}
+        
+        selected_embedding = select_embedding(self.embeddings, ** mode)
+        selected_embedding = tf.expand_dims(
+            tf.cast(selected_embedding, tf.float32), axis = 0
+        )
+        return selected_embedding
     
     def get_speaker_embedding(self, data):
         """ This function is used in `encode_data` and returns a single embedding """
@@ -127,35 +150,10 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         return self.predict(sentences, embeddings = embeddings, ** kwargs)
     
-    def get_pipeline(self, * args, embeddings = None, embedding_mode = {}, overwrite = True,
-                     ** kwargs):
-        """
-            See `Tacotron2.get_pipeline` for all the information
-            
-            Arguments :
-                - args / kwargs : args passed to super().get_pipeline()
-                - embeddings    : the embeddings to use as input (only 1 is selected from this set and effectively used)
-                - embedding_mode    : kwargs passed to `select_embedding()`
-            Return : result of super().predict()
-            
-            Note : currently we just save the resulting audio for a given sentence but not the speaker / embedding used to generate it. 
-            So it can be more interesting to put `overwrite = True` for this model as it is basically used to generate audio with multiple voices (it is the reason why this argument is overriden to `True` in this function)
-        """
-        # load embeddings if needed
-        if embeddings is not None:
-            self.set_embeddings(embeddings)
-        elif self.embeddings is None:
-            self.load_embeddings()
+    def predict(self, * args, embeddings = None, mode = None, overwrite = True, ** kwargs):
+        selected_embedding = self.select_embedding(embeddings, mode)
         
-        if self.use_label_embedding:
-            embedding_mode.setdefault('mode', 'mean')
-        
-        selected_embedding = select_embedding(self.embeddings, ** embedding_mode)
-        selected_embedding = tf.expand_dims(
-            tf.cast(selected_embedding, tf.float32), axis = 0
-        )
-        
-        return super().get_pipeline(
+        return super().predict(
             * args, spk_embedding = selected_embedding, overwrite = overwrite, ** kwargs
         )
     

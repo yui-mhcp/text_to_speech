@@ -104,6 +104,10 @@ class BaseTextModel(BaseModel):
         )
     
     @property
+    def text_encoder_file(self):
+        return os.path.join(self.save_dir, 'text_encoder.json')
+
+    @property
     def text_signature(self):
         return tf.TensorSpec(shape = (None, None), dtype = tf.int32)
 
@@ -114,10 +118,6 @@ class BaseTextModel(BaseModel):
     @property
     def training_hparams_text(self):
         return TextTrainingHParams()
-    
-    @property
-    def text_encoder_file(self):
-        return os.path.join(self.save_dir, 'text_encoder.json')
     
     @property
     def vocab(self):
@@ -212,9 +212,7 @@ class BaseTextModel(BaseModel):
             self.get_model().change_vocabulary(
                 self.vocab,
                 old_vocab = old_vocab,
-                sos_token = self.sos_token_idx,
-                eos_token = self.eos_token_idx,
-                pad_token = self.blank_token_idx,
+                ** self.model_tokens,
                 ** kwargs
             )
             
@@ -236,8 +234,7 @@ class BaseTextModel(BaseModel):
             _keys and _values can be list of names / values to be used as kwargs. Useful for `tf.numpy_function` call which requires positional arguments instead of kwargs.
             If they are provided : `kwargs = {k : v for k, v in zip(_keys, _values)}`
         """
-        if not kwargs:
-            kwargs = convert_to_str({k : v for k, v in zip(_keys, _values)})
+        if not kwargs: kwargs = convert_to_str({k : v for k, v in zip(_keys, _values)})
         return self.text_encoder.format(text_format, ** kwargs)
     
     def split_and_format_text(self, text_format, split_key, _keys = None, _values = None,

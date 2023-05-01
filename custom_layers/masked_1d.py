@@ -56,12 +56,14 @@ class MaskedZeroPadding1D(tf.keras.layers.ZeroPadding1D):
     def compute_mask(self, inputs, mask = None):
         if mask is None: return None
         
+        if len(mask.shape) == 1: mask = tf.expand_dims(mask, axis = 0)
         return tf.pad(mask, [(0, 0), (sum(self.padding), 0)], constant_values = True)
     
     def call(self, inputs, mask = None):
         out = super().call(inputs)
         
         if mask is not None:
+            if len(mask.shape) == 1: mask = tf.expand_dims(mask, axis = 0)
             out_mask = tf.pad(mask, [(0, 0), self.padding], constant_values = True)
             out      = tf.where(tf.expand_dims(out_mask, axis = -1), out, 0.)
         

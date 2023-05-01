@@ -54,7 +54,7 @@ def create_color_mask(image, color, threshold = 0.1, mask = None, per_channel = 
     
     return color_mask
 
-def create_poly_mask(image, points, color = 1.):
+def create_poly_mask(image, points, color = 1., dtype = np.float32):
     """
         Creates a mask based on a polygon
         Arguments :
@@ -67,7 +67,9 @@ def create_poly_mask(image, points, color = 1.):
     color   = normalize_color(color, image = image)
     points  = [np.reshape(np.array(pts), [-1, 2]).astype(np.int32) for pts in points]
     
-    return cv2.fillPoly(np.zeros(shape, dtype = dtype), pts = points, color = color)
+    mask    = np.zeros(shape, dtype = dtype)
+    for pt in points: mask = cv2.fillPoly(mask, pts = [pt], color = color)
+    return mask
 
 def smooth_mask(mask, smooth_size = 0.5, divide_factor = 2., ** kwargs):
     """ Smooth a mask to not have a 0-1 mask but smooth boundaries """

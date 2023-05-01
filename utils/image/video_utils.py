@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VideoInfos:
-    fps : int
+    fps : float
     nb_frames   : int
     frame_w     : int
     frame_h     : int
@@ -32,7 +32,7 @@ def get_video_infos(filename):
     cap = cv2.VideoCapture(filename)
     
     infos   = VideoInfos(
-        fps = int(cap.get(cv2.CAP_PROP_FPS)),
+        fps = float(cap.get(cv2.CAP_PROP_FPS)),
         nb_frames   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
         frame_h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
         frame_w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

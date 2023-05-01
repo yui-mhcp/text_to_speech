@@ -36,6 +36,7 @@ DETECT  = 'object detection'
 SEGMENT = 'object segmentation'
 CAPTION = 'image captioning'
 FACE_RECOGN = 'face recognition'
+SCENE_TEXT  = 'scene text detection'
 
 BOX_KEY     = 'box'
 N_BOX_KEY   = 'nb_box'
@@ -68,11 +69,14 @@ def image_dataset_wrapper(name, task, ** default_config):
                               
                               one_line_per_caption  = False,
                               
+                              return_raw    = False,
+                              
                               ** kwargs
                              ):
             assert not (one_line_per_box and one_line_per_caption)
             
             dataset = dataset_loader(directory, * args, ** kwargs)
+            if return_raw: return dataset
             
             dataset = [
                 {'filename' : file, ** row} for file, row in dataset.items()
@@ -82,6 +86,17 @@ def image_dataset_wrapper(name, task, ** default_config):
                 dataset = _replace_labels(dataset, labels_subtitutes)
 
                 dataset = _filter_labels(dataset, accepted_labels, keep_empty)
+
+                if any('mask' in row or 'segmentation' in row for row in dataset):
+                    for row in dataset:
+                        if 'mask' in row: key = 'mask'
+                        elif 'segmentation' in row: key = 'segmentation'
+                        else: continue
+                        
+                        max_len     = max([len(poly) for poly in row[key]])
+                        row[key]    = np.array(
+                            [poly + [-1] * (max_len - len(poly)) for poly in row[key]], dtype = np.int32
+                        )
 
                 if any(BOX_KEY in row for row in dataset):
                     for row in dataset: row.setdefault(BOX_KEY, [])
@@ -106,7 +121,10 @@ def image_dataset_wrapper(name, task, ** default_config):
             dataset = pd.DataFrame(dataset)
 
             if BOX_KEY in dataset.columns:
-                dataset[N_BOX_KEY] = dataset[BOX_KEY].apply(len) if not one_line_per_box else 1
+                dataset[BOX_KEY]    = dataset[BOX_KEY].apply(
+                    lambda boxes: np.array(boxes, dtype = np.int32) if isinstance(boxes, list) else boxes
+                )
+                dataset[N_BOX_KEY]  = dataset[BOX_KEY].apply(len) if not one_line_per_box else 1
             
             if add_image_size is None: add_image_size = True if BOX_KEY in dataset.columns else False
             if add_image_size and 'width' not in dataset.columns:
@@ -562,7 +580,7 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
     valid   = {'directory' : '{}/Wider_Face', 'subset' : 'val'}
 )
 def preprocess_wider_annots(directory, subset, label_name = 'face', keep_invalid = False,
-                            ** kwargs):
+                            add_box_infos = False, ** kwargs):
     """
         Arguments :
             - filename  : the annotation filename
@@ -635,9 +653,10 @@ def preprocess_wider_annots(directory, subset, label_name = 'face', keep_invalid
         metadata[img_filename] = {
             'label' : labels,
             BOX_KEY : boxes,
-            'box_infos' : boxes_infos,
             'category'  : category
         }
+        if add_box_infos:
+            metadata[img_filename]['box_infos'] = boxes_infos
     
     return metadata
                     
@@ -751,6 +770,64 @@ def preprocess_COCO_annots(directory,
                 metadata[row['image_id']].setdefault('segmentation', []).append(row['segmentation'])
     
     return {row['filename'] : {** row, 'id' : k} for k, row in metadata.items()}
+
+@image_dataset_wrapper(
+    name = 'COCO_Text', task = [SCENE_TEXT],
+    train   = {
+        'directory' : '{}/COCO', 'img_dir' : 'train2017', 'subset' : 'train',
+        'annot_file'    : os.path.join('annotations', 'cocotext.v2.json')
+    },
+    valid   = {
+        'directory' : '{}/COCO', 'img_dir' : 'train2017', 'subset' : 'val',
+        'annot_file'    : os.path.join('annotations', 'cocotext.v2.json')
+    }
+)
+def preprocess_COCO_text_annots(directory,
+                                annot_file,
+                                img_dir,
+                                subset      = 'train',
+                                
+                                skip_illegible  = True,
+                                default_label   = None,
+                                keep_boxes      = True,
+                                keep_segmentation   = True,
+                                
+                                ** kwargs
+                               ):
+    assert subset in ('train', 'val')
+
+    coco = preprocess_COCO_annots(
+        directory   = directory,
+        annot_file  = os.path.join(os.path.dirname(annot_file), 'instances_train2017.json'),
+        img_dir     = img_dir,
+        keep_boxes  = False,
+        keep_labels = False,
+        keep_caption    = False,
+        return_raw      = True
+    )
+    coco = {info['id'] : info for info in coco.values()}
+    
+    annot_file  = os.path.join(directory, annot_file)
+    
+    infos    = load_json(os.path.join(directory, annot_file))
+    
+    for img_id, ann_ids in infos['imgToAnns'].items():
+        if subset and infos['imgs'][img_id]['set'] != subset: continue
+        
+        annots = [infos['anns'][str(ann_id)] for ann_id in ann_ids]
+        if skip_illegible:
+            annots = [a for a in annots if a['legibility'] == 'legible']
+        
+        for ann in annots:
+            coco[int(img_id)].setdefault('label', []).append(
+                ann['utf8_string'] if not default_label else default_label
+            )
+            if keep_boxes:
+                coco[int(img_id)].setdefault(BOX_KEY, []).append(ann['bbox'])
+            if keep_segmentation:
+                coco[int(img_id)].setdefault('mask', []).append(ann['mask'])
+    
+    return {row['filename'] : row for _, row in coco.items() if 'label' in row}
 
 
 add_dataset(

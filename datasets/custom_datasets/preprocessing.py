@@ -37,18 +37,19 @@ def _resample_dataset(dataset, new_rate, max_workers = cpu_count(), tqdm = None)
         new_rate, processed.sum(), len(to_process)
     ))
     
-    callback = None
-    if tqdm is not None:
-        tqdm = tqdm(total = len(to_process), unit = 'file')
-        callback    = lambda it: tqdm.update()
-    
-    pool = Consumer(resample_file, keep_result = False, max_workers = max_workers)
-    pool.start()
-    
-    for idx, row in to_process.iterrows():
-        pool(row['filename'], new_rate = new_rate, filename_out = row[new_col], callback = callback)
+    if len(to_process) > 0:
+        callback = None
+        if tqdm is not None:
+            tqdm = tqdm(total = len(to_process), unit = 'file')
+            callback    = lambda it: tqdm.update()
 
-    pool.join()
+        pool = Consumer(resample_file, keep_result = False, max_workers = max_workers)
+        pool.start()
+
+        for idx, row in to_process.iterrows():
+            pool(row['filename'], new_rate = new_rate, filename_out = row[new_col], callback = callback)
+
+        pool.join()
     
     return dataset
 
@@ -82,6 +83,23 @@ def resample_siwis(directory, new_rate, langue = 'fr', parts = [1, 2, 3, 5], ** 
 
     dataset[new_col] = dataset['filename'].apply(
         lambda f: f.replace('wavs', new_col)
+    )
+    
+    _resample_dataset(dataset, new_rate, ** kwargs)
+    
+    return dataset
+
+def resample_kaggle(directory, new_rate, ** kwargs):
+    from datasets.custom_datasets.audio_datasets import preprocess_kaggle_single_speaker_annots
+    new_col = 'wavs_{}'.format(new_rate)
+    
+    dataset = preprocess_kaggle_single_speaker_annots(directory, ** kwargs)
+    
+    for spk_id in dataset['id'].unique():
+        os.makedirs(os.path.join(directory, '{}_{}'.format(spk_id, new_rate)), exist_ok = True)
+
+    dataset[new_col] = dataset['filename'].apply(
+        lambda f: f.replace(os.path.basename(f).split('.')[0], new_col, 1)
     )
     
     _resample_dataset(dataset, new_rate, ** kwargs)

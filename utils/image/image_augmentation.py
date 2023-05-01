@@ -70,9 +70,9 @@ def zoom(img, min_factor = 0.8, ** kwargs):
     
     return random_crop(img)
 
-def noise(img, factor = 25., seed = None, ** kwargs):
+def noise(img, factor = 25., clip = True, seed = None, ** kwargs):
     noise = tf.random.normal(tf.shape(img), seed = seed) / factor
-    return tf.clip_by_value(img + noise, 0., 1.)
+    return tf.clip_by_value(img + noise, 0., 1.) if clip else img + noise
 
 def quality(img, min_jpeg_quality = 25, max_jpeg_quality = 75, seed = None, ** kwargs):
     return tf.image.random_jpeg_quality(img, min_jpeg_quality, max_jpeg_quality, seed = seed)
@@ -90,11 +90,13 @@ def hue(img, max_delta = 0.15, seed = None, ** kwargs):
 def saturation(img, lower = 0.5, upper = 2., seed = None, ** kwargs):
     return tf.image.random_saturation(img, lower, upper, seed = seed)
 
-def brightness(img, max_delta = 0.15, seed = None, ** kwargs):
-    return tf.clip_by_value(tf.image.random_brightness(img, max_delta, seed = seed), 0., 1.)
+def brightness(img, max_delta = 0.15, clip = True, seed = None, ** kwargs):
+    img = tf.image.random_brightness(img, max_delta, seed = seed)
+    return tf.clip_by_value(img, 0., 1.) if clip else img
 
-def contrast(img, lower = 0.5, upper = 1.5, seed = None, ** kwargs):
-    return tf.clip_by_value(tf.image.random_contrast(img, lower, upper, seed = seed), 0., 1.)
+def contrast(img, lower = 0.5, upper = 1.5, clip = True, seed = None, ** kwargs):
+    img = tf.image.random_contrast(img, lower, upper, seed = seed)
+    return tf.clip_by_value(img, 0., 1.) if clip else img
 
 
 _image_augmentations_fn = {

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 _numeric_types  = (int, float, np.integer, np.floating)
 
-MAX_01_VALUE    = 1.1
+MAX_01_VALUE    = 1.25
 
 NORMALIZE_NONE  = 0
 NORMALIZE_01    = 1
@@ -243,13 +243,17 @@ def dezoom_box(x, y, w, h, factor, image_h = None, image_w = None):
         MAX_Y, MAX_X    = 1., 1.
     
     new_h, new_w = h * factor, w * factor
+    
     x   = max(0, x - ((new_w - w) / 2.))
     y   = max(0, y - ((new_h - h) / 2.))
     w   = min(new_w, MAX_X - x)
     h   = min(new_h, MAX_Y - y)
 
     return (x, y, w, h)
-    
+
+def get_box_infos(box, ** kwargs):
+    box = get_box_pos(box, with_label = True, ** kwargs)
+    return {'width' : box[2], 'height' : box[3], 'label' : box[4]}
     
 def get_box_pos(box,
                 box_mode    = 0,
@@ -312,12 +316,12 @@ def get_box_pos(box,
         logger.error("Unsupported box format (type {}) : {} ".format(type(box), box))
         return 0, 0, 0, 0
     
+    is_01 = _is_01_box(x1, y1, x2, y2)
+    
     x1, y1, w, h    = dezoom_box(x1, y1, w, h, dezoom_factor, image_h = image_h, image_w = image_w)
     x2, y2          = x1 + w, y1 + h
     
     if image_h is not None and image_w is not None and normalize_mode != NORMALIZE_NONE:
-        is_01 = _is_01_box(x1, y1, x2, y2)
-
         if normalize_mode == NORMALIZE_01 and not is_01:
             x1 = max(0., x1 / image_w)
             x2 = min(1., x2 / image_w)
@@ -372,14 +376,19 @@ def crop_box(filename, box, show = False, ** kwargs):
         
     return box_image, (x, y, w, h, label, score)
 
-def extract_boxes(filename, boxes, image = None, directory = None,
-                  file_format = '{}_box_{}.jpg', ** kwargs):
+def extract_boxes(filename,
+                  boxes,
+                  image     = None,
+                  directory = None,
+                  file_format   = '{}_box_{}.jpg',
+                  ** kwargs
+                 ):
     kwargs['show'] = False
     
     if image is None: image = load_image(filename)
     if hasattr(image, 'numpy'): image = image.numpy()
     
-    if directory and not file_format.startswith(directory):
+    if directory and isinstance(file_format, str) and not file_format.startswith(directory):
         file_format = os.path.join(directory, file_format)
     
     if isinstance(filename, str):
@@ -391,11 +400,26 @@ def extract_boxes(filename, boxes, image = None, directory = None,
             if f.startswith('image_') and '_box_' in f
         ])))
     
+    if not isinstance(file_format, (list, tuple)): file_format = [file_format] * len(boxes)
+    if len(file_format) != len(boxes):
+        raise RuntimeError('{} filenames for {} is incompatible !'.format(
+            len(file_format), len(boxes)
+        ))
+    
     infos = {}
-    for i, box in enumerate(boxes):
+    for i, (file, box) in enumerate(zip(file_format, boxes)):
         box_img, box_pos = crop_box(image, box, ** kwargs)
 
-        box_filename = file_format.format(basename, i)
+        if any(s == 0 for s in box_img.shape):
+            logger.error('The box has a 0 dimension ({}) : {}'.format(box_img.shape, box_pos))
+            continue
+        
+        if file.count('{}') == 2:
+            box_filename    = file.format(basename, i)
+        elif '{}' in file:
+            box_filename    = file.format(i)
+        else:
+            box_filename    = file
         save_image(filename = box_filename, image = box_img)
         
         infos[box_filename] = {
@@ -404,6 +428,7 @@ def extract_boxes(filename, boxes, image = None, directory = None,
             'height'    : box_pos[2],
             'width'     : box_pos[3]
         }
+    
     return infos
 
 def draw_boxes(filename,

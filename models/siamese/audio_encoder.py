@@ -48,10 +48,6 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
         
         super().__init__(** kwargs)
     
-    def _init_folders(self):
-        super()._init_folders()
-        os.makedirs(self.identification_dir, exist_ok = True)
-
     def build_encoder(self, 
                       depth             = 128,
                       encoder_type      = 'conv1d',
@@ -144,10 +140,6 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
         return get_architecture(** encoder_config)
 
     @property
-    def identification_dir(self):
-        return os.path.join(self.folder, 'identification')
-    
-    @property
     def encoder_input_shape(self):
         length = None if not self.use_fixed_length_input else self.max_input_length
         
@@ -165,7 +157,11 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
             return self.mel_fn.get_length(int(MIN_AUDIO_TIME * self.audio_rate))
         else:
             return int(MIN_AUDIO_TIME * self.audio_rate)
-        
+    
+    @property
+    def max_audio_length(self):
+        return int(self.max_audio_time * self.audio_rate)
+    
     @property
     def max_input_length(self):
         if self.use_mel_fn:
@@ -188,16 +184,16 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
         
         input_data = self.get_audio(data)
         
-        if tf.shape(input_data)[0] > self.max_input_length:
+        if tf.shape(input_data)[0] > self.max_audio_length:
             start = tf.random.uniform(
-                (), minval = 0, 
+                (),
+                minval = 0, 
                 maxval = tf.shape(input_data)[0] - self.max_input_length,
-                dtype = tf.int32
+                dtype  = tf.int32
             )
             input_data = input_data[start : start + self.max_input_length]
         
         return input_data
-    
     
     def augment_input(self, inp):
         return self.augment_audio(inp)
@@ -210,9 +206,12 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
                 'padded_shapes' : (input_shape[1:], ())
             }
         
+        if self.use_mel_fn:
+            kwargs['pad_kwargs']['padding_values'] = (self.pad_mel_value, 0)
+        
         return super().get_dataset_config(** kwargs)
-                        
-    def get_config(self, *args, ** kwargs):
+
+    def get_config(self, * args, ** kwargs):
         config = super().get_config(* args, ** kwargs)
         config.update({
             ** self.get_config_audio(),

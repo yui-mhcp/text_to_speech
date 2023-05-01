@@ -24,12 +24,21 @@ _clip_means = [0.48145466, 0.4578275, 0.40821073]
 _clip_std   = [0.26862954, 0.26130258, 0.27577711]
 _vggface_vals   = [91.4953, 103.8827, 131.0912]
 
+def normalize_01(image):
+    image = image - tf.reduce_min(image)
+    image = image / tf.maximum(1e-3, tf.reduce_max(image))
+    return image
+
 _image_normalization_styles = {
     None    : lambda image: image,
     "null"  : lambda image: image,
+    '01'    : normalize_01,
+    "mean"  : lambda image: (image - tf.reduce_mean(image)) / tf.maximum(1e-3, tf.math.reduce_std(image)),
     "identity"  : lambda image: image,
     'tanh'  : lambda image: image * 2. - 1.,
-    'vgg'   : lambda image: tf.keras.applications.vgg.preprocess_input(image),
+    'vgg'   : lambda image: tf.keras.applications.vgg16.preprocess_input(image),
+    'vgg16' : lambda image: tf.keras.applications.vgg16.preprocess_input(image),
+    'vgg19' : lambda image: tf.keras.applications.vgg19.preprocess_input(image),
     'vggface'   : lambda image: image[...,::-1] - tf.reshape(_vggface_vals, [1, 1, 1, 3]) / 255.,
     'mobilenet' : lambda image: tf.keras.applications.mobilenet.preprocess_input(image),
     'clip'  : lambda image: (image - tf.reshape(_clip_means, [1, 1, 1, 3])) / tf.reshape(_clip_std, [1, 1, 1, 3])
@@ -40,8 +49,7 @@ ImageTrainingHParams    = HParams(
 )
 
 class BaseImageModel(BaseModel):
-    def _init_image(self, input_size, * args, image_normalization = None,
-                    resize_kwargs = {}, ** kwargs):
+    def _init_image(self, input_size, image_normalization = None, resize_kwargs = {}, ** kwargs):
         if image_normalization not in _image_normalization_styles:
             raise ValueError('Unknown normalization style !\n  Accepted : {}\n  Got : {}'.format(
                 tuple(_image_normalization_styles.keys()), image_normalization
@@ -71,29 +79,40 @@ class BaseImageModel(BaseModel):
         des += '- Normalization style : {}\n'.format(self.image_normalization)
         return des
     
-    def get_image(self, filename):
+    def get_image(self, filename, ** kwargs):
+        """ Calls `utils.image.load_image` on the given `filename` """
         if isinstance(filename, (list, tuple)):
-            return tf.stack([self.get_image(f) for f in filename])
+            return tf.stack([self.get_image(f, ** kwargs) for f in filename])
         elif isinstance(filename, pd.DataFrame):
-            return tf.stack([self.get_image(row) for idx, row in filename.iterrows()])
+            return tf.stack([self.get_image(row, ** kwargs) for idx, row in filename.iterrows()])
         
         if isinstance(filename, (dict, pd.Series)):
             filename = filename['image'] if 'image' in filename else filename['filename']
         
         return load_image(
-            filename, target_shape = self.input_size, dtype = tf.float32, resize_kwargs = self.resize_kwargs
+            filename,
+            dtype   = tf.float32,
+            target_shape    = self.input_size,
+            resize_kwargs   = self.resize_kwargs,
+            ** kwargs
         )
     
-    def augment_image(self, image):
-        return augment_image(
-            image, self.augment_methods, self.augment_prct / len(self.augment_methods)
-        )
-    
-    def preprocess_image(self, image):
+    def normalize_image(self, image, ** kwargs):
+        """ Normalizes a (batch of) image by calling the normalization schema """
         return self.image_normalization_fn(image)
+
+    def augment_image(self, image, ** kwargs):
+        return augment_image(
+            image, self.augment_methods, self.augment_prct / len(self.augment_methods), ** kwargs
+        )
+    
+    def preprocess_image(self, image, ** kwargs):
+        """ Normalizes a (batch of) image by calling the normalization schema """
+        return self.normalize_image(image, ** kwargs)
     
     def get_config_image(self, * args, ** kwargs):
         return {
             'input_size' : self.input_size,
+            'resize_kwargs' : self.resize_kwargs,
             'image_normalization'   : self.image_normalization
         }

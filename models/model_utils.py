@@ -45,7 +45,8 @@ def get_model_infos(name):
     if name is None: return {}
     if not isinstance(name, str):
         return {
-            'class_name' : name.__class__.__name__, 'config' : name.get_config(with_trackable_variables = False)
+            'class_name' : name.__class__.__name__,
+            'config'     : name.get_config(with_trackable_variables = False)
         }
     return load_json(get_model_dir(name, 'config.json'), default = {})
 

@@ -39,8 +39,8 @@ def rgb2gray(rgb):
 def normalize_color(color, image = None):
     color = _color_to_rgb(color)
     if image is not None and image.dtype in (np.float32, tf.float32):
-        color = color / 255.
-    return tuple(color)
+        return tuple(float(ci) / 255. for ci in color)
+    return tuple(int(ci) for ci in color)
 
 @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
 def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
@@ -54,19 +54,34 @@ def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
     
     return color
 
-def resize_image(image, target_shape, preserve_aspect_ratio = False, ** kwargs):
-    """ Reshapes `image` to `target_shape` while possibly preserving aspect ratio """
-    image = tf.image.resize(
-        image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio, ** kwargs
-    )
-    if preserve_aspect_ratio:
-        pad_h = tf.cast(target_shape[0] - tf.shape(image)[0], tf.int32)
-        pad_w = tf.cast(target_shape[1] - tf.shape(image)[1], tf.int32)
+def resize_image(image, target_shape, preserve_aspect_ratio = False, pad_value = 0., ** kwargs):
+    """
+        Resizes `image` to the given shape while possibly preserving aspect ratio + padding
         
-        half_h, half_w  = pad_h // 2, pad_w // 2
-        
-        padding = [(half_h, pad_h - half_h), (half_w, pad_w - half_w), (0, 0)]
-        
-        image   = tf.pad(image, padding)
+        Arguments :
+            - image : 3-D or 4-D Tensor, the image to resize
+            - target_shape  : the expected target shape
+            - preserve_aspect_ratio : whether to keep the width / height ratio or not
+            - kwargs    : forwarded to `tf.image.resize`
+        Return :
+            - resized_image : the resized image
+    """
+    if image.shape[-3] != target_shape[0] or image.shape[-2] != target_shape[1]:
+        image = tf.image.resize(
+            image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio, ** kwargs
+        )
+        if preserve_aspect_ratio:
+            axe_0 = 0 if len(tf.shape(image)) == 3 else 1
+            pad_h = tf.cast(target_shape[0] - tf.shape(image)[axe_0], tf.int32)
+            pad_w = tf.cast(target_shape[1] - tf.shape(image)[axe_0 + 1], tf.int32)
+
+            half_h, half_w  = pad_h // 2, pad_w // 2
+
+            if len(tf.shape(image)) == 4:
+                padding = [(0, 0), (half_h, pad_h - half_h), (half_w, pad_w - half_w), (0, 0)]
+            else:
+                padding = [(half_h, pad_h - half_h), (half_w, pad_w - half_w), (0, 0)]
+
+            image   = tf.pad(image, padding, constant_values = pad_value)
 
     return image

@@ -645,11 +645,11 @@ class Tacotron2(tf.keras.Model):
         outputs = (decoder_output, mel_outputs, stop_tokens, alignment_history)
         return outputs if not return_state else (outputs, last_state)
 
-    @tf.function(experimental_relax_shapes = True)
+    @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
     def infer(self,
-              inputs,
+              inputs    : tf.Tensor,
               training  = False,
-              max_length    = -1,
+              max_length    : tf.Tensor = -1,
               early_stopping    = True,
               return_state  = False,
               ** kwargs

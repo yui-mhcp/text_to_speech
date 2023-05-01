@@ -76,7 +76,7 @@ def compare_types(value, allowed_types, ** kwargs):
     )
     
 def compare_primitive(target, value, max_err = 0., ** kwargs):
-    if isinstance(value, float):
+    if isinstance(value, (float, np.floating)):
         assert abs(target - value) <= max_err, 'Values differ of {}'.format(abs(value - target))
     else:
         assert target == value, "Target ({}) != value ({})".format(target, value)

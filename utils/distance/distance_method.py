@@ -86,58 +86,47 @@ def distance(x,
             method, tuple(x.shape), tuple(y.shape)
         ))
     
+    x, y = tf.cast(x, tf.float32), tf.cast(y, tf.float32)
     if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
     if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
 
-    max_x, max_y = -1, -1
+    max_x = -1
     if max_matrix_size > 0:
         if as_matrix:
-            max_x = tf.minimum(max_matrix_size // (tf.shape(x)[-1] * tf.shape(y)[0]) + 1, tf.shape(x)[0])
-            max_y = tf.minimum(max_matrix_size // (max_x * tf.shape(x)[-1]) + 1, tf.shape(y)[1])
+            max_x = tf.minimum(tf.shape(x)[0], tf.cast(tf.math.ceil(
+                max_matrix_size / (tf.shape(x)[-1] * tf.shape(y)[0])
+            ), tf.int32))
         else:
             max_x = tf.minimum(max_matrix_size // tf.square(tf.shape(x)[-1]) + 1, tf.shape(x)[0])
-            max_y = max_x
         
     
-    if max_x != -1 and (max_x < tf.shape(x)[0] or max_y < tf.shape(y)[1]):
+    if max_x != -1 and max_x < tf.shape(x)[0]:
+        n_slices    = tf.cast(tf.math.ceil(tf.shape(x)[0] / max_x), tf.int32)
+        elem_shape  = (None, ) if not as_matrix else (None, y.shape[0])
+        distances   = tf.TensorArray(
+            dtype = tf.float32, size = n_slices, element_shape = elem_shape
+        )
         if not as_matrix:
-            distances = tf.TensorArray(
-                dtype   = tf.float32,
-                size    = tf.cast(tf.math.ceil(x.shape[0] / max_x), tf.int32),
-                element_shape = (None, )
-            )
-            for i in tf.range(0, tf.shape(x)[0], max_x):
+            for i in tf.range(n_slices):
                 distances = distances.write(
                     i, tf.reshape(distance_fn(
-                        x[i : i + max_x], y[i : i + max_x], as_matrix = True, ** kwargs
+                        x[i * max_x : (i + 1) * max_x], y[i * max_x : (i + 1) * max_x],
+                        as_matrix = False, ** kwargs
                     ), [-1])
                 )
-            distances = distances.concat()
         else:
-            distances = tf.TensorArray(
-                dtype   = tf.float32,
-                size    = tf.cast(tf.math.ceil(x.shape[0] / max_x), tf.int32),
-                element_shape = (None, y.shape[0])
-            )
-            for i in tf.range(0, tf.shape(x)[0], max_x):
+            for i in tf.range(n_slices):
                 distances = distances.write(
-                    i, distance_fn(x[i : i + max_x], y, as_matrix = True, ** kwargs)
+                    i, distance_fn(x[i * max_x : (i + 1) * max_x], y, as_matrix = True, ** kwargs)
                 )
-            distances = distances.concat()
-            #distances = []
-            #for i in tf.range(0, tf.shape(x)[0], max_x):
-            #    distances.append(tf.concat([
-            #        distance_fn(x[i : i + max_x], y[j : j + max_y], as_matrix = True, ** kwargs)
-            #        for j in tf.range(0, tf.shape(y)[0], max_y)
-            #    ], axis = -1))
-            #distances = tf.concat(distances, axis = 0) if len(distances) > 1 else distances[0]
+        distances = distances.concat()
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
     
     if tf.executing_eagerly():
         logger.debug('Result shape : {}'.format(tuple(distances.shape)))
     
-    return distances if not force_distance or method not in _similarity_methods else -distances
+    return distances if not force_distance or method not in _similarity_methods else 1. - distances
 
 def cosine_similarity(x, y, as_matrix = False, ** kwargs):
     return dot_product(

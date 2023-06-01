@@ -25,6 +25,7 @@ def _kmeans(points  : tf.Tensor,
             threshold   : tf.Tensor = 1e-6,
             init_method = 'kmeans_pp',
             distance_metric = 'euclidian',
+            normalize       = False,
             random_state    = None
            ):
     if n_init > 1:
@@ -45,7 +46,8 @@ def _kmeans(points  : tf.Tensor,
             assignment.set_shape(best_assignment.shape)
             
             score = compute_score(
-                points, assignment, centroids, tf.range(k, dtype = tf.int32), distance_metric = distance_metric
+                points, assignment, centroids, tf.range(k, dtype = tf.int32),
+                distance_metric = distance_metric, normalize = normalize
             )
 
             if score < best_score or best_score == -1.:

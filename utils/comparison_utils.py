@@ -180,7 +180,7 @@ def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = Fal
         target.dtype, value.dtype
     )
     
-    if target.dtype in (np.bool, np.object):
+    if target.dtype in (bool, object):
         assert np.all(target == value), "Vallue differ for target with dtype {} ({} / {} diff, {:.23f} %)".format(
             target.dtype, np.sum(target != value), np.prod(target.shape), np.mean(target != value)
         )

@@ -125,7 +125,60 @@ def convert_bbox(x, y, w, h, label, mode):
         'width' : w, 'height' : h, 'name' : label
     }
         
+
+def poly_to_box(poly):
+    assert poly.shape[-2:] == (4, 2), 'Invalid poly shape : {}'.format(poly.shape)
+    min_fn = tf.reduce_min if isinstance(poly, tf.Tensor) else np.min
+    max_fn = tf.reduce_max if isinstance(poly, tf.Tensor) else np.max
+    return (
+        min_fn(poly[..., 0], axis = -1), min_fn(poly[..., 1], axis = -1),
+        max_fn(poly[..., 0], axis = -1), max_fn(poly[..., 1], axis = -1)
+    )
+
+def boxes_iou(boxes1, boxes2 = None):
+    def get_box_stats(boxes):
+        xmin, ymin, xmax, ymax = poly_to_box(boxes)
+        area = (xmax - xmin) * (ymax - ymin)
+        return (xmin, ymin, xmax, ymax, area)
     
+    xmin_1, ymin_1, xmax_1, ymax_1, areas_1 = get_box_stats(boxes1)
+    if boxes2 is None:
+        xmin_2, ymin_2, xmax_2, ymax_2, areas_2 = xmin_1, ymin_1, xmax_1, ymax_1, areas_1
+    else:
+        xmin_2, ymin_2, xmax_2, ymax_2, areas_2 = get_box_stats(boxes2)
+    
+    xmin, ymin = np.maximum(xmin_1[:, np.newaxis], xmin_2), np.maximum(ymin_1[:, np.newaxis], ymin_2)
+    xmax, ymax = np.minimum(xmax_1[:, np.newaxis], xmax_2), np.minimum(ymax_1[:, np.newaxis], ymax_2)
+
+    inter_w, inter_h = xmax - xmin, ymax - ymin
+    inter_w[inter_w < 0] = 0.
+    inter_h[inter_h < 0] = 0.
+    
+    inter = inter_w * inter_h
+    union = areas_1[:, np.newaxis] + areas_2 - inter
+    return inter / union
+
+def nms(boxes, scores = None, classes = None, threshold = 0.25):
+    if scores is not None:
+        boxes = boxes[np.flip(np.argsort(scores))]
+    
+    mask = np.arange(len(boxes))[:, np.newaxis] > np.arange(len(boxes))
+    
+    if classes is not None:
+        if len(classes.shape) == 2: classes = np.argmax(classes, axis = -1)
+        mask = mask & (classes[:, np.newaxis] == classes)
+        print(mask)
+
+    ious = boxes_iou(boxes) * mask
+
+    keep = np.ones((len(boxes), ), dtype = bool)
+    for i, iou in enumerate(ious):
+        if not keep[i] or i == 0: continue
+        if np.any(iou[keep] >= threshold):
+            keep[i] = False
+
+    return boxes[keep]
+
 def bbox_iou(box1, box2):
     """ Computes the Intersect Over Union (IOU) of 2 bounding boxes """
     xmin1, ymin1, w1, h1 = get_box_pos(box1)
@@ -215,12 +268,14 @@ def _interval_overlap(interval_a, interval_b):
 def _is_box_list(box):
     if isinstance(box, (BoundingBox, dict)): return False
     if isinstance(box, (tuple, list)):
-        if len(box) not in (4, 5, 6): return True
+        if len(box) not in (4, 5, 6, 8, 9): return True
         if isinstance(box[0], _numeric_types): return False
         return True
     elif hasattr(box, 'shape'):
         if len(box.shape) == 1: return False
+        elif box.shape == (4, 2): return False
         elif len(box.shape) == 2: return True
+        elif len(box.shape) == 3 and box.shape[1:] == (4, 2): return True
         else:
             raise ValueError('Invalid box shape : {}'.format(box.shape))
     else:
@@ -297,7 +352,10 @@ def get_box_pos(box,
         score = box.score
         label = box.label
     elif isinstance(box, (list, tuple, np.ndarray, tf.Tensor)):
-        if box_mode == 0:
+        if isinstance(box, (np.ndarray, tf.Tensor)) and box.shape == (4, 2):
+            x1, y1, x2, y2 = poly_to_box(box)
+            w, h = x2 - x1, y2 - y1
+        elif box_mode == 0:
             x1, y1, w, h = box[:4]
             y2, x2 = y1 + h, x1 + w
         else:
@@ -351,7 +409,7 @@ def get_box_area(box, ** kwargs):
     _, _, w, h = get_box_pos(box, ** kwargs)
     return w * h
 
-def crop_box(filename, box, show = False, ** kwargs):
+def crop_box(filename, box, show = False, box_mode = 0, ** kwargs):
     """
         Returns a tuple `(box_image, box_pos)` box `box_pos` is a tuple (x, y, w, h, label, score)
         `box` can be a list of boxes then the result will be a list of the above (single) result
@@ -359,7 +417,7 @@ def crop_box(filename, box, show = False, ** kwargs):
     image = load_image(filename) if isinstance(filename, str) else filename
     
     if _is_box_list(box):
-        box_images = [crop_box(image, b, ** kwargs) for b in box]
+        box_images = [crop_box(image, b, box_mode = box_mode, ** kwargs) for b in box]
         if show:
             plot_multiple(** {'box_{}'.format(i) : box_img for i, (box_img, _) in enumerate(boxes)})
         return box_images
@@ -367,7 +425,7 @@ def crop_box(filename, box, show = False, ** kwargs):
     image_h, image_w = get_image_size(image)
     
     x, y, w, h, label, score = get_box_pos(
-        box, image = image, with_label = True, normalize_mode = NORMALIZE_WH, ** kwargs
+        box, image = image, with_label = True, normalize_mode = NORMALIZE_WH, box_mode = box_mode, ** kwargs
     )
     
     box_image = image[y : y + h, x : x + w]
@@ -435,7 +493,8 @@ def draw_boxes(filename,
                boxes,
                shape    = Shape.RECTANGLE,
                color    = 'r',
-               thickness    = 3, 
+               show_text    = True,
+               thickness    = 3,
                use_label    = False,
                labels   = None, 
                vertical = True,
@@ -469,11 +528,13 @@ def draw_boxes(filename,
                 label_color[label] = color[len(label_color) % len(color)]
             c = label_color[label]
             
-            image = cv2.putText(
-                image, "{} ({}%)".format(label, int(conf * 100)), 
-                (x, y - 13), cv2.FONT_HERSHEY_SIMPLEX, 
-                1e-3 * image_h, c, 3
-            )
+            if show_text:
+                prct    = int(conf * 100)
+                text    = '{} ({}%)'.format(label, int(prct)) if label else '{}%'.format(prct)
+                image   = cv2.putText(
+                    image, text, (x, y - 13), cv2.FONT_HERSHEY_SIMPLEX, 
+                    1e-3 * image_h, c, 3
+                )
         
         if shape == Shape.RECTANGLE:
             image = cv2.rectangle(image, (x, y), (x + w, y + h), c, thickness)
@@ -512,7 +573,7 @@ def mask_boxes(filename, boxes, shape = Shape.RECTANGLE, dezoom_factor = 1., ** 
     
     return apply_mask(image, mask, ** kwargs)
 
-def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
+def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., box_mode = 0, ** kwargs):
     image = load_image(filename) if isinstance(filename, str) else filename
     if hasattr(image, 'numpy'): image = image.numpy()
     image_h, image_w = get_image_size(image)
@@ -524,7 +585,7 @@ def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., ** kwargs):
     
     for box in boxes:
         box_img, (x1, y1, w, h, label, score) = crop_box(
-            image, box, labels = labels, dezoom_factor = dezoom_factor
+            image, box, labels = labels, dezoom_factor = dezoom_factor, box_mode = box_mode
         )
                 
         if isinstance(label, int) and labels is not None: 

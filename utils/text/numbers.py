@@ -158,14 +158,15 @@ def _expand_number(m, lang = None, decimal_as_individual = False):
     return ' {} '.format(words)
 
 
-def normalize_numbers(text, lang = None, ** kwargs):
+def normalize_numbers(text, lang = None, expand_symbols = False, ** kwargs):
     global _lang
     if lang is None:
         lang = _lang
     else:
         _lang = lang
     
-    text = re.sub(_math_symbol_re,  _expand_math_symbols, text)
+    if expand_symbols:
+        text = re.sub(_math_symbol_re,  _expand_math_symbols, text)
     text = re.sub(_time_re,         _expand_time, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_tiret_number_re, _expand_tiret, text)

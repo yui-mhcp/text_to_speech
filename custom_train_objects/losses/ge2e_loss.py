@@ -149,17 +149,18 @@ class GE2ELoss(tf.keras.losses.Loss):
         )
     
     def softmax_loss(self, idx, similarity_matrix):
-        similarity_matrix = tf.nn.softmax(similarity_matrix, axis = -1)
-
         return tf.keras.losses.sparse_categorical_crossentropy(
-            idx, tf.reshape(similarity_matrix, [-1, tf.shape(similarity_matrix)[-1]])
+            idx, tf.reshape(similarity_matrix, [-1, tf.shape(similarity_matrix)[-1]]),
+            from_logits = True
         )
     
     def contrast_loss(self, idx, similarity_matrix):
         target_matrix = tf.one_hot(idx, depth = tf.shape(similarity_matrix)[-1])
-        return tf.reduce_mean(tf.reshape(tf.keras.losses.binary_crossentropy(
-            tf.reshape(target_matrix, [-1, 1]), tf.sigmoid(tf.reshape(similarity_matrix, [-1, 1]))
-        ), [-1, tf.shape(similarity_matrix)[-1]]), axis = -1)
+        return tf.reshape(tf.keras.losses.binary_crossentropy(
+            tf.reshape(target_matrix, [-1, tf.shape(similarity_matrix)[-1]]),
+            tf.reshape(similarity_matrix, [-1, tf.shape(similarity_matrix)[-1]]),
+            from_logits = True
+        ), [-1, tf.shape(similarity_matrix)[-1]])
     
     def call(self, y_true, y_pred):
         """

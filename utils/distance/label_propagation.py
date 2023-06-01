@@ -27,7 +27,8 @@ def _label_propagation(points,
                        ids  = None,
                        distance_matrix    = None,
                        distance_metric      = 'euclidian',
-                       plot = False
+                       plot = False,
+                       ** kwargs
                       ):
     from utils import plot_embedding
     

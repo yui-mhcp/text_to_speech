@@ -197,6 +197,8 @@ def read_audio(filename,
                fin      = 0,
                temps    = None,
                
+               read_method  = None,
+               
                ** kwargs
               ):
     """
@@ -215,13 +217,16 @@ def read_audio(filename,
             - kwargs    : propagated to `reduce_noise` and `trim_silence`
         Returns : (rate, audio)
     """
-    ext = filename.split('.')[-1]
-    if 'read' not in _supported_audio_formats.get(ext, {}):
-        raise ValueError("Unsupported audio format !\n  Accepted : {}\n  Got : {}".format(
-            [k for k, v in _supported_audio_formats.items() if 'read' in v], ext
-        ))
+    if read_method is None:
+        ext = filename.split('.')[-1]
+        if 'read' not in _supported_audio_formats.get(ext, {}):
+            raise ValueError("Unsupported audio format !\n  Accepted : {}\n  Got : {}".format(
+                [k for k, v in _supported_audio_formats.items() if 'read' in v], ext
+            ))
+        
+        read_method = _supported_audio_formats[ext]['read']
     
-    rate, audio = _supported_audio_formats[ext]['read'](filename, rate = target_rate)
+    rate, audio = read_method(filename, rate = target_rate)
     
     if len(audio) == 0:
         logger.warning("Audio {} is empty !".format(filename))

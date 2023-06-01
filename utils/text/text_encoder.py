@@ -179,6 +179,7 @@ class TextEncoder(object):
                  eos_token      = '[EOS]',  # End Of Sequence
                  sub_word_prefix    = '',   # Add for inner sub-word part
                  use_sos_and_eos    = False,
+                 add_special_tokens_at_end  = True,
                  
                  name           = 'Text encoder'
                 ):
@@ -200,7 +201,7 @@ class TextEncoder(object):
             logger.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
         
         self.name       = name
-        self.vocab      = list(vocab)
+        self._vocab     = list(vocab)
         self.level      = level
         
         self.lstrip = lstrip
@@ -220,6 +221,7 @@ class TextEncoder(object):
         self.mask_token = mask_token
         self.sub_word_prefix    = sub_word_prefix
         self.use_sos_and_eos    = use_sos_and_eos
+        self.add_special_tokens_at_end  = add_special_tokens_at_end
 
         
         self.splitter   = re.compile(split_pattern) if split_pattern is not None else None
@@ -229,38 +231,55 @@ class TextEncoder(object):
         self.cleaners_fn    = get_cleaners_fn(cleaners)
         
         self._special_tokens    = [token for token in self.tokens.values()]
-        self._cleaned_tokens    = {self.clean_text(token) : token for token in self._special_tokens}
         self._bpe_cache     = {}
         self._symbol_to_id  = {}
         self._id_to_symbol  = {}
-        self.__build_indexes(vocab_size)
+        self.__build_indexes(vocab_size, add_special_tokens_at_end)
+        self._cleaned_tokens    = {self.clean_text(token) : token for token in self._special_tokens}
         
-    def __build_indexes(self, vocab_size = None):
+    def __build_indexes(self, vocab_size = None, add_special_tokens_at_end = True):
+        def _add_symbols(symbols):
+            for s in symbols:
+                self._symbol_to_id.setdefault(s, len(self._symbol_to_id))
+        
         special_tokens = list(self.tokens.values())
         
         if vocab_size is not None:
             for spe in special_tokens:
-                if spe not in self.vocab: vocab_size -= 1
+                if spe not in self._vocab: vocab_size -= 1
                 
-            if len(self.vocab) > vocab_size:
-                self.vocab = self.vocab[: vocab_size]
-            elif len(self.vocab) < vocab_size:
-                self.vocab += ['ukn_{}'.format(i) for i in range(vocab_size - len(self.vocab))]
+            if len(self._vocab) > vocab_size:
+                logger.warning(
+                    'Truncating vocab to size {} (from {})'.format(len(self._vocab), vocab_size)
+                )
+                self._vocab = self._vocab[: vocab_size]
+            elif len(self._vocab) < vocab_size:
+                self._vocab += ['ukn_{}'.format(i) for i in range(vocab_size - len(self._vocab))]
         
+        self._symbol_to_id  = {}
+        if not add_special_tokens_at_end:
+            # Add special tokens (if required)
+            _add_symbols(special_tokens)
         # Build `symbol to id` pairs
-        self._symbol_to_id  = {s: i for i, s in enumerate(self.vocab)}
-        # Add special tokens (if required)
-        for spe in special_tokens:
-            self._symbol_to_id.setdefault(spe, len(self._symbol_to_id))
+        _add_symbols(self._vocab)
+
+        if add_special_tokens_at_end:
+            # Add special tokens (if required)
+            _add_symbols(special_tokens)
 
         # Build ID --> symbol pairs
         self._id_to_symbol  = {idx : s for s, idx in self._symbol_to_id.items()}
         
-        if self.bpe_pairs is not None and self.byte_encoder is None: self.byte_encoder = bytes_to_unicode()
+        if self.bpe_pairs is not None and self.byte_encoder is None:
+            self.byte_encoder = bytes_to_unicode()
         
     @property
     def vocab_size(self):
         return len(self._id_to_symbol)
+    
+    @property
+    def vocab(self):
+        return sorted(self._symbol_to_id.keys(), key = self._symbol_to_id.get)
     
     @property
     def word_split(self):
@@ -293,7 +312,8 @@ class TextEncoder(object):
     
     @property
     def blank_token_idx(self):
-        return self._symbol_to_id.get(self.pad_token, 0)
+        default = 0 if not self.use_sos_and_eos else self.eos_token_idx
+        return self._symbol_to_id.get(self.pad_token, default)
     
     @property
     def ukn_token_idx(self):
@@ -309,7 +329,9 @@ class TextEncoder(object):
     
     def __str__(self):
         des = "========== {} ==========\n".format(self.name)
-        des += "Vocab (size = {}) : {}\n".format(len(self), self.vocab[:50])
+        des += "Vocab (size = {}) : {}\n".format(
+            len(self), self.vocab if self.vocab_size <= 50 else '[{}, ...]'.format(str(self.vocab[:50])[1:-1])
+        )
         config = self.get_config()
         for k in ['name', 'vocab', 'bpe_pairs', 'byte_encoder']:
             config.pop(k)
@@ -329,7 +351,7 @@ class TextEncoder(object):
             return self._symbol_to_id[idx]
     
     def __contains__(self, label):
-        return label in self.vocab
+        return label in self._symbol_to_id
     
     def is_start_of_word(self, token, previous = None):
         if self.level == TextEncoderLevel.WORD: return True
@@ -355,7 +377,7 @@ class TextEncoder(object):
         for cleaned, token in tokens.items():
             text = text.replace(cleaned, token)
 
-        if self.level == TextEncoderLevel.CHAR and self.ukn_token_idx == -1:
+        if self.level == TextEncoderLevel.CHAR and self.ukn_token_idx == -1 and not self.use_sos_and_eos:
             text = ''.join([c for c in text if c in self])
             text = text.strip()
 
@@ -375,10 +397,10 @@ class TextEncoder(object):
                 new_parts.extend(split_and_join(part, token))
             parts = new_parts
         
-        tokens = []
+        splitted = []
         for part in parts:
-            tokens.extend(self.split_text(part, strip = strip) if part not in tokens else [part])
-        return tokens
+            splitted.extend(self.split_text(part, strip = strip) if part not in tokens else [part])
+        return splitted
     
     def _char_tokenize(self, token):
         return token
@@ -453,6 +475,7 @@ class TextEncoder(object):
                 tokens.extend(tok)
             else:
                 tokens.append(tok)
+        
         return tokens
     
     def encode(self, text, add_sos_and_eos = None, return_type = 'np', ** kwargs):
@@ -761,7 +784,7 @@ class TextEncoder(object):
     def get_config(self):
         return {
             'name'      : self.name,
-            'vocab'     : self.vocab,
+            'vocab'     : self._vocab,
             'level'     : self.level,
             
             'lstrip'    : self.lstrip,
@@ -779,7 +802,8 @@ class TextEncoder(object):
             'eos_token' : self.eos_token,
             'mask_token'    : self.mask_token,
             'sub_word_prefix'   : self.sub_word_prefix,
-            'use_sos_and_eos'   : self.use_sos_and_eos
+            'use_sos_and_eos'   : self.use_sos_and_eos,
+            'add_special_tokens_at_end' : self.add_special_tokens_at_end
         }
     
     @classmethod

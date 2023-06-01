@@ -14,6 +14,8 @@ import logging
 import numpy as np
 import tensorflow as tf
 
+from utils.image.box_utils import poly_to_box
+
 logger = logging.getLogger(__name__)
 
 """
@@ -105,7 +107,8 @@ def line_cross_point(lines1, lines2):
         k1, b1 = lines1[mask_n0n1, 0], lines1[mask_n0n1, 2]
         k2, b2 = lines2[mask_n0n1, 0], lines2[mask_n0n1, 2]
         
-        x = -(b1 - b2) / (k1 - k2)
+        with np.errstate(divide = 'ignore', invalid = 'ignore'):
+            x = np.nan_to_num(- (b1 - b2) / (k1 - k2), copy = False)
         points[mask_n0n1, 0] = x
         points[mask_n0n1, 1] = k1 * x + b1
     
@@ -817,6 +820,102 @@ def restore_rectangle_rbox(origin, geometry):
         rbox[len(angle_0) :] = p_rotate[:, :4] + p3_in_origin
 
     return rbox
+
+""" These functions are inspired from https://github.com/SakuraRiven/EAST """
+def get_rotation_matrix(theta):
+    return np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+
+def filter_polys(res, input_shape):
+    input_shape = np.array(input_shape)[::-1].reshape((1, 1, -1))
+    return np.sum(
+        np.any(res < 0, axis = -1) | np.any(res >= input_shape, axis = -1), axis = -1
+    ) <= 1
+
+def restore_polys(pos, d, angle, input_shape, output_shape):
+    scale   = np.array(input_shape) // np.array(output_shape)
+    pos     = pos * scale.reshape((1, -1))
+
+    x, y    = pos[:, 0], pos[:, 1]
+    
+    y_min, y_max    = y - d[:, 0], y + d[:, 1]
+    x_min, x_max    = x - d[:, 2], x + d[:, 3]
+
+    rotate_mat  = get_rotation_matrix(- angle)
+
+    temp_x      = np.array([[x_min, x_max, x_max, x_min]]) - x
+    temp_y      = np.array([[y_min, y_min, y_max, y_max]]) - y
+    coordinates = np.concatenate((temp_x, temp_y), axis = 0)
+
+    res = np.matmul(
+        np.transpose(coordinates, [2, 1, 0]),
+        np.transpose(rotate_mat, [2, 1, 0])
+    )
+    res[:, :, 0] += x[:, np.newaxis]
+    res[:, :, 1] += y[:, np.newaxis]
+
+    mask = filter_polys(res, input_shape)
+
+    return res[mask], np.argwhere(mask)[:, 0]
+
+def restore_polys_from_map(score_map,
+                           geo_map      = None,
+                           theta_map    = None,
+                           rbox_map     = None,
+                           scale        = 1.,
+                           threshold    = 0.5,
+                           nms_threshold    = 0.25,
+                           normalize    = False,
+                           return_boxes = False,
+                           ** kwargs
+                          ):
+    assert rbox_map is not None or (geo_map is not None and theta_map is not None)
+    
+    if rbox_map is not None:
+        geo_map     = rbox_map[0, :, :, :4]
+        theta_map   = rbox_map[0, :, :, 4]
+    
+    if len(score_map.shape) == 4:   score_map = score_map[0, :, :, 0]
+    elif len(score_map.shape) == 3: score_map = score_map[:, :, 0]
+    if len(geo_map.shape) == 4:     geo_map   = geo_map[0]
+    if len(theta_map.shape) == 4:   theta_map = theta_map[0, :, :, 0]
+    elif len(theta_map.shape) == 3: theta_map = theta_map[:, :, 0]
+    
+    # filter the score map
+    points = np.argwhere(score_map > threshold)
+
+    # sort the text boxes via the y axis
+    points = points[np.argsort(points[:, 0])]
+
+    scores  = score_map[points[:, 0], points[:, 1]]
+    # restore
+    input_shape = np.array(score_map.shape) * scale
+    valid_polys, valid_indices = restore_polys(
+        points[:, ::-1],
+        geo_map[points[:, 0], points[:, 1]],
+        theta_map[points[:, 0], points[:, 1]],
+        input_shape     = input_shape,
+        output_shape    = score_map.shape
+    )
+    scores  = scores[valid_indices]
+    
+    if normalize:
+        input_shape_wh = np.array(input_shape)[::-1].reshape(1, 1, 2)
+        valid_polys = (valid_polys / input_shape_wh).astype(np.float32)
+
+    if nms_threshold < 1. or return_boxes:
+        xmin, ymin, xmax, ymax = poly_to_box(valid_polys)
+        boxes   = tf.stack([ymin, xmin, ymax, xmax], axis = -1)
+
+    if nms_threshold < 1.:
+        indices = tf.image.non_max_suppression(
+            boxes, tf.cast(scores, tf.float32), len(scores), nms_threshold
+        ).numpy()
+    else:
+        indices = np.arange(len(valid_polys))
+    
+    if return_boxes:
+        return boxes.numpy()[indices], scores[indices]
+    return valid_polys[indices], scores[indices]
 
 """ Tf-graph optimized functions (but they are slower than the numpy version) """
 @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)

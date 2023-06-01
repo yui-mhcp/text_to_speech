@@ -15,6 +15,7 @@ import numpy as np
 import tensorflow as tf
 
 from matplotlib import colors
+from keras.layers.preprocessing.image_preprocessing import transform, get_rotation_matrix
 
 BASE_COLORS = list(colors.BASE_COLORS.keys())
 
@@ -54,21 +55,45 @@ def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
     
     return color
 
-def resize_image(image, target_shape, preserve_aspect_ratio = False, pad_value = 0., ** kwargs):
+def resize_image(image,
+                 target_shape   = None,
+                 target_max_shape   = None,
+                 target_multiple_shape  = None,
+                 
+                 method = 'bilinear',
+                 antialias  = False,
+                 preserve_aspect_ratio  = False,
+                 pad_value  = 0.,
+                 ** kwargs
+                ):
     """
         Resizes `image` to the given shape while possibly preserving aspect ratio + padding
         
         Arguments :
             - image : 3-D or 4-D Tensor, the image to resize
             - target_shape  : the expected target shape
-            - preserve_aspect_ratio : whether to keep the width / height ratio or not
-            - kwargs    : forwarded to `tf.image.resize`
+            - method / antialias / preserve_aspect_ratio : kwargs for `tf.image.resize`
+            - kwargs    : unused kwargs
         Return :
             - resized_image : the resized image
     """
+    if target_shape is None:
+        target_shape = tf.shape(image)[-3 : -1]
+    
+    target_shape = tf.cast(target_shape, tf.int32)
+    if target_max_shape is not None or target_multiple_shape is not None:
+        target_shape = get_resized_shape(
+            target_shape, max_shape = target_max_shape, multiples = target_multiple_shape
+        )
+    if tf.reduce_any(target_shape <= 0): return image
+    
     if image.shape[-3] != target_shape[0] or image.shape[-2] != target_shape[1]:
         image = tf.image.resize(
-            image, target_shape[:2], preserve_aspect_ratio = preserve_aspect_ratio, ** kwargs
+            image,
+            target_shape[:2],
+            method  = method,
+            antialias   = antialias,
+            preserve_aspect_ratio   = preserve_aspect_ratio
         )
         if preserve_aspect_ratio:
             axe_0 = 0 if len(tf.shape(image)) == 3 else 1
@@ -85,3 +110,52 @@ def resize_image(image, target_shape, preserve_aspect_ratio = False, pad_value =
             image   = tf.pad(image, padding, constant_values = pad_value)
 
     return image
+
+def get_resized_shape(shape, min_shape = None, max_shape = None, multiples = None):
+    if max_shape is not None:
+        shape = tf.minimum(shape, tf.cast(max_shape, shape.dtype))
+    
+    if min_shape is not None:
+        shape = tf.maximum(shape, tf.cast(min_shape, shape.dtype))
+    
+    if multiples is not None:
+        multiples   = tf.cast(multiples, shape.dtype)
+        shape   = shape // multiples * multiples
+    
+    return shape
+
+def rotate_image(image,
+                 angle,
+                 fill_mode  = 'constant',
+                 fill_value = 0.,
+                 interpolation  = 'bilinear',
+                 ** kwargs
+                ):
+    """
+        Rotates an image of `angle` degrees clock-wise (i.e. positive value rotates clock-wise)
+        
+        Arguments :
+            - image : 3D or 4D `tf.Tensor`, the image(s) to rotate
+            - angle : scalar or 1D `tf.Tensor`, the angle(s) (in degree) to rotate the image(s)
+            - fill_mode : the mode of filling values outside of the boundaries
+            - fill_value    : filling value (only if `fill_mode = 'constant'`)
+            - interpolation : the interpolation method
+    """
+    angle = tf.cast(- angle / 360. * 2. * np.pi, tf.float32)
+    
+    dim = len(tf.shape(image))
+    if dim == 3:
+        image = tf.expand_dims(image, axis = 0)
+    if len(tf.shape(angle)) == 0:
+        angle = tf.expand_dims(angle, axis = 0)
+    
+    image = transform(
+        image,
+        get_rotation_matrix(
+            angle, tf.cast(tf.shape(image)[-3], tf.float32), tf.cast(tf.shape(image)[-2], tf.float32)
+        ),
+        fill_mode   = fill_mode,
+        fill_value  = fill_value,
+        interpolation   = interpolation
+    )
+    return image if dim == 4 else image[0]

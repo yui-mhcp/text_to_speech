@@ -22,7 +22,7 @@ from collections import deque
 from threading import Thread, Lock, RLock
 from dataclasses import dataclass, field
 
-from utils.generic_utils import get_enum_item
+from utils.generic_utils import get_enum_item, create_iterator
 
 logger = logging.getLogger(__name__)
 _group_mutex    = Lock()
@@ -90,22 +90,6 @@ def update_item(item, clone = True, ** kwargs):
     return item
 
 
-def _create_generator(generator):
-    if isinstance(generator, pd.DataFrame):
-        def _df_iterator():
-            for idx, row in generator.iterrows():
-                yield row
-        return _df_iterator
-    elif isinstance(generator, Queue):
-        def _queue_iterator():
-            while True:
-                item = queue.get()
-                if item is None: raise StopIteration()
-                yield item
-        return _queue_iterator
-    else:
-        return lambda: iter(generator)
-
 def _get_thread_name(generator, name):
     if name is not None: return name
     if hasattr(generator, 'name'): return generator.name
@@ -134,6 +118,8 @@ class Producer(Thread):
                  stop_listeners     = None,
                  
                  run_main_thread    = False,
+                 
+                 raise_if_error     = True,
                  stop_no_more_listeners = True,
                  
                  name = None,
@@ -161,9 +147,10 @@ class Producer(Thread):
         """
         Thread.__init__(self, name = _get_thread_name(generator, name))
         
-        self.generator  = generator if callable(generator) else _create_generator(generator)
+        self.generator  = generator if callable(generator) else create_iterator(generator)
         self.description    = self.generator.__doc__ if not description and hasattr(self.generator, '__doc__') else description
         self.run_main_thread    = run_main_thread
+        self.raise_if_error     = raise_if_error
         self.stop_no_more_listeners = stop_no_more_listeners
 
         self._listeners     = {}
@@ -225,7 +212,7 @@ class Producer(Thread):
         return des
         
     def __iter__(self):
-        return self.generator()
+        return self.generator() if callable(self.generator) else self.generator
     
     def __len__(self):
         return len(self.generator) if self.generator is not self and hasattr(self.generator, '__len__') else self.size
@@ -317,14 +304,14 @@ class Producer(Thread):
             self._stopped = True
     
     def join(self, * args, recursive = False, ** kwargs):
-        logger.debug('[{}JOIN {}]{}'.format(
-            'RECURSIVE ' if recursive else '', self.name,
-            ' {} consumers'.format(len(self.item_listeners)) if recursive else ''
-        ))
+        logger.debug('[JOIN {}] Waiting...'.format(self.name))
         if not self.run_main_thread:
             super().join(* args, ** kwargs)
         
         if recursive:
+            logger.debug('[RECURSIVE JOIN {}] JOIN {} consumers'.format(
+                self.name, len(self.item_listeners)
+            ))
             for l, infos in self.item_listeners:
                 if 'consumer_class' not in infos: continue
                 infos['consumer_class'].join(* args, recursive = True, ** kwargs)
@@ -379,7 +366,10 @@ class Producer(Thread):
                     logger.error('[CONSUMER EXCEPTION {}] : consumer {}\n{}'.format(
                         self.name, infos['name'], e
                     ))
-                    raise e
+                    if self.raise_if_error:
+                        raise e
+                    else:
+                        infos['stopped'] = True
         
         n_stopped = 0
         to_remove = []

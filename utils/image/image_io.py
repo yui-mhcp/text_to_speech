@@ -72,6 +72,8 @@ def get_image_size(image):
 def load_image(filename,
                
                target_shape = None,
+               target_max_shape = None,
+               target_multiple_shape    = None,
                preserve_aspect_ratio    = False,
                resize_kwargs    = {},
 
@@ -140,9 +142,15 @@ def load_image(filename,
     elif mode == 'rgb' and image.shape[2] == 1:
         image = tf.image.grayscale_to_rgb(image)
     
-    if target_shape is not None:
+    if target_shape is not None or target_max_shape is not None or target_multiple_shape is not None:
         resize_kwargs.setdefault('preserve_aspect_ratio', preserve_aspect_ratio)
-        image = resize_image(image, target_shape, ** resize_kwargs)
+        image = resize_image(
+            image,
+            target_shape    = target_shape,
+            target_max_shape    = target_max_shape,
+            target_multiple_shape   = target_multiple_shape,
+            ** resize_kwargs
+        )
     
     return image
 
@@ -253,7 +261,7 @@ def stream_camera(cam_id    = 0,
                   output_shape  = None,
                   
                   show  = True,
-                  play_audio    = False,
+                  play_audio    = True,
                   copy_audio    = True,
                   imshow_flags  = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED,
                   

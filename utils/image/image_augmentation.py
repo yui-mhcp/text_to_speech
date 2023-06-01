@@ -12,6 +12,29 @@
 
 import tensorflow as tf
 
+from utils.generic_utils import get_kwargs
+from utils.image.image_utils import resize_image, rotate_image
+
+_image_augmentations_fn = {}
+_image_augmentation_kwargs  = {}
+
+def image_augmentation_wrapper(fn = None, nested = None):
+    def wrapper(fn, kwargs):
+        _image_augmentations_fn[fn.__name__]    = fn
+        _image_augmentation_kwargs[fn.__name__] = kwargs
+        return fn
+    
+    if fn is None: return lambda fn: wrapper(fn, get_image_augmentation_config(nested))
+    return wrapper(fn, get_kwargs(fn))
+
+def get_image_augmentation_config(methods):
+    if not isinstance(methods, (list, tuple)): methods = [methods]
+    
+    config = {}
+    for fn in methods:
+        config.update(_image_augmentation_kwargs.get(fn, {}))
+    return config
+
 def augment_image(img, transforms, prct = 0.25, ** kwargs):
     """
         Augment `img` by applying sequentially each `transforms`, each with `prct` probability
@@ -45,13 +68,16 @@ def augment_image(img, transforms, prct = 0.25, ** kwargs):
         )
     return img
 
+@image_augmentation_wrapper
 def flip_vertical(img, ** kwargs):
     return tf.image.flip_up_down(img)
 
+@image_augmentation_wrapper
 def flip_horizontal(img, ** kwargs):
     return tf.image.flip_left_right(img)
 
-def rotate(img, n = None, seed = None, ** kwargs):
+@image_augmentation_wrapper
+def rot90(img, n = None, seed = None, ** kwargs):
     if n is None: n = tf.random.uniform((), minval = 0, maxval = 4, dtype = tf.int32, seed = seed)
     return tf.image.rot90(img, n)
 
@@ -70,13 +96,34 @@ def zoom(img, min_factor = 0.8, ** kwargs):
     
     return random_crop(img)
 
-def noise(img, factor = 25., clip = True, seed = None, ** kwargs):
-    noise = tf.random.normal(tf.shape(img), seed = seed) / factor
+@image_augmentation_wrapper
+def noise(img, noise_factor = 1. / 25., clip = True, seed = None, ** kwargs):
+    noise = tf.random.normal(tf.shape(img), seed = seed) * noise_factor
     return tf.clip_by_value(img + noise, 0., 1.) if clip else img + noise
 
+@image_augmentation_wrapper
 def quality(img, min_jpeg_quality = 25, max_jpeg_quality = 75, seed = None, ** kwargs):
     return tf.image.random_jpeg_quality(img, min_jpeg_quality, max_jpeg_quality, seed = seed)
 
+@image_augmentation_wrapper
+def hue(img, max_hue_delta = 0.15, seed = None, ** kwargs):
+    return tf.image.random_hue(img, max_hue_delta, seed = seed)
+
+@image_augmentation_wrapper
+def saturation(img, lower_saturation = 0.5, upper_saturation = 2., seed = None, ** kwargs):
+    return tf.image.random_saturation(img, lower_saturation, upper_saturation, seed = seed)
+
+@image_augmentation_wrapper
+def brightness(img, max_brightness_delta = 0.15, clip = True, seed = None, ** kwargs):
+    img = tf.image.random_brightness(img, max_brightness_delta, seed = seed)
+    return tf.clip_by_value(img, 0., 1.) if clip else img
+
+@image_augmentation_wrapper
+def contrast(img, lower_contrast = 0.5, upper_contrast = 1.5, clip = True, seed = None, ** kwargs):
+    img = tf.image.random_contrast(img, lower_contrast, upper_contrast, seed = seed)
+    return tf.clip_by_value(img, 0., 1.) if clip else img
+
+@image_augmentation_wrapper(nested = ['hue', 'saturation', 'brightness', 'contrast'])
 def color(img, ** kwargs):
     img = hue(img, ** kwargs)
     img = saturation(img, ** kwargs)
@@ -84,32 +131,17 @@ def color(img, ** kwargs):
     img = contrast(img, ** kwargs)
     return img
 
-def hue(img, max_delta = 0.15, seed = None, ** kwargs):
-    return tf.image.random_hue(img, max_delta, seed = seed)
-
-def saturation(img, lower = 0.5, upper = 2., seed = None, ** kwargs):
-    return tf.image.random_saturation(img, lower, upper, seed = seed)
-
-def brightness(img, max_delta = 0.15, clip = True, seed = None, ** kwargs):
-    img = tf.image.random_brightness(img, max_delta, seed = seed)
-    return tf.clip_by_value(img, 0., 1.) if clip else img
-
-def contrast(img, lower = 0.5, upper = 1.5, clip = True, seed = None, ** kwargs):
-    img = tf.image.random_contrast(img, lower, upper, seed = seed)
-    return tf.clip_by_value(img, 0., 1.) if clip else img
-
-
-_image_augmentations_fn = {
-    'flip_vertical'     : flip_vertical,
-    'flip_horizontal'   : flip_horizontal,
-    'rotate'            : rotate,
+@image_augmentation_wrapper
+def random_resize(img, min_scale = 0.5, max_scale = 2., seed = None, ** kwargs):
+    factors = tf.random.uniform((2, ), min_scale, max_scale, dtype = tf.float32, seed = seed)
     
-    'noise'     : noise,
-    'quality'   : quality,
+    target_shape = tf.cast(tf.shape(img)[-3 : -1], tf.float32)
+    target_shape = tf.cast(target_shape * factors, tf.int32)
     
-    'color'     : color,
-    'hue'       : hue,
-    'saturation'    : saturation,
-    'brightness'    : brightness,
-    'contrast'      : contrast
-}
+    return resize_image(img, target_shape = target_shape, ** kwargs)
+
+@image_augmentation_wrapper
+def random_rotate(img, min_angle = -45., max_angle = 45., seed = None, ** kwargs):
+    angle   = tf.random.uniform((), min_angle, max_angle, dtype = tf.float32, seed = seed)
+    
+    return rotate_image(img, angle, ** kwargs)

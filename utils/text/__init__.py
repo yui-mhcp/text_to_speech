@@ -33,7 +33,7 @@ _maj_letters    = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 _min_letters    = 'abcdefghijklmnopqrstuvwxyz'
 _letters    = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 _accents    = 'éèêîçô'
-_maths      = '+*/'
+_maths      = '+*/%'
 _numbers    = '0123456789'
 
 _mini_punctuation   = ' \',.?!'
@@ -48,7 +48,8 @@ fr_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + lis
 
 _default_cleaners   = {
     'en'    : 'english_cleaners',
-    'fr'    : 'french_cleaners'
+    'fr'    : 'french_cleaners',
+    'multi' : 'french_cleaners' # toi avoid removing accents
 }
 
 accent_replacement_matrix = {
@@ -107,7 +108,8 @@ def get_symbols(lang,
                 maj     = True,
                 arpabet = True, 
                 accents = True,
-                numbers = False
+                numbers = False,
+                maths   = False
                ):
     symbols = [_pad] + list(_special)
     
@@ -117,10 +119,11 @@ def get_symbols(lang,
     
     symbols += list(_letters) if maj else list(_min_letters)
     
-    if lang == 'en' and arpabet: symbols += _arpabet
-    if lang == 'fr' and accents: symbols += list(_accents)
+    if lang == 'en' and arpabet:            symbols += _arpabet
+    if lang in ('fr', 'multi') and accents: symbols += list(_accents)
     
-    if numbers: symbols += _numbers
+    if numbers: symbols += list(_numbers)
+    if maths:   symbols += list(_maths)
     
     return symbols
 

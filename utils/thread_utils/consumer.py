@@ -15,7 +15,8 @@ import logging
 from threading import Thread, RLock, Semaphore
 from queue import Empty, Queue, LifoQueue, PriorityQueue
 
-from utils.thread_utils.producer import STOP_ITEM, _get_thread_name, _create_generator, Producer, Event, Item, StoppedException, update_item
+from utils.generic_utils import create_iterator
+from utils.thread_utils.producer import STOP_ITEM, _get_thread_name, Producer, Event, Item, StoppedException, update_item
 from utils.thread_utils.threaded_dict import ThreadedDict
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,7 @@ class Consumer(Producer):
     
     @property
     def is_stopped(self):
-        return self.stop_index != -1 or self.stop_empty
+        return self.stop_index != -1
     
     @property
     def multi_threaded(self):
@@ -333,7 +334,7 @@ class Consumer(Producer):
         result = [None] * len(items)
         clock  = Semaphore(0)
         
-        for i, item in enumerate(_create_generator(items)()):
+        for i, item in enumerate(create_iterator(items)):
             self.append(item, * args, callback = get_callback(i), ** kwargs)
         if not self.run_main_thread:
             for _ in range(len(items)): clock.acquire()
@@ -357,7 +358,7 @@ class Consumer(Producer):
         return result[0]
     
     def extend(self, items, * args, ** kwargs):
-        return [self.append(item, * args, ** kwargs) for item in _create_generator(items)()]
+        return [self.append(item, * args, ** kwargs) for item in create_iterator(items)]
     
     def append(self, item, * args, priority = -1, callback = None, ** kwargs):
         """ Add the item to the buffer (raise ValueError if `stop` has been called) """

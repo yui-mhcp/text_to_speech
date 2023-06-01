@@ -208,17 +208,27 @@ class BaseTextModel(BaseModel):
         
         self.save_text_encoder(force = True)
         
-        if hasattr(self.get_model(), 'change_vocabulary') and self.vocab != old_vocab:
-            self.get_model().change_vocabulary(
-                self.vocab,
-                old_vocab = old_vocab,
-                ** self.model_tokens,
-                ** kwargs
-            )
-            
-            self.save()
+        self.update_model_vocab(old_vocab)
+        if self.vocab != old_vocab: self.save()
         
         return self.text_encoder
+
+    def update_model_vocab(self, old_vocab, ** kwargs):
+        model = self.get_model()
+        if self.vocab != old_vocab:
+            if hasattr(model, 'change_vocabulary'):
+                model.change_vocabulary(
+                    self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
+                )
+            else:
+                if hasattr(model, 'encoder') and hasattr(model.encoder, 'change_vocabulary'):
+                    model.encoder.change_vocabulary(
+                        self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
+                    )
+                if hasattr(model, 'decoder') and hasattr(model.decoder, 'change_vocabulary'):
+                    model.decoder.change_vocabulary(
+                        self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
+                    )
     
     def clean_text(self, text, * args, ** kwargs):
         """ Equivalent to `self.text_encoder.clean_text(...)` """

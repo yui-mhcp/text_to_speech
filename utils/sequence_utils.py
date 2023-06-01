@@ -94,18 +94,35 @@ def concat_sequences(seq1, seq2, pad_value):
     
     return tf.concat([seq1, seq2], axis = 0)
 
-def pad_to_multiple(seq, multiple, axis = 1, pad_after = True, ** kwargs):
+def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
     """ Pad `seq[axis]` to the next multiple of `multiple` (if not a multiple of it) """
-    if axis < 0: axis = len(tf.shape(seq)) + axis
-    rest = tf.shape(seq)[axis] % multiple
-    if rest != 0:
-        pad = (0, multiple - rest) if pad_after else (multiple - rest, 0)
-        padding = [
-            (0, 0) for _ in range(axis)] + [pad] + [
-            (0, 0) for _ in range(axis + 1, len(tf.shape(seq)))
-        ]
+    if not isinstance(axis, (list, tuple, np.ndarray)):     axis = [axis]
+    if not isinstance(multiple, (list, tuple, np.ndarray)): multiple = [multiple]
+    axis = [ax if ax >= 0 else len(data.shape) - ax for ax in axis]
+    
+    should_pad = False
+    paddings = []
+    for i in range(len(data.shape)):
+        pad = 0
+        if i in axis:
+            mul  = multiple[axis.index(i)] if len(multiple) > 1 else multiple[0]
+            rest = data.shape[i] % mul
+            if rest != 0:
+                should_pad  = True
+                pad     = mul - rest
         
-        seq = tf.pad(seq, padding, ** kwargs)
+        if pad_mode == 'before':
+            padding = (pad, 0)
+        elif pad_mode == 'after':
+            padding = (0, pad)
+        elif pad_mode == 'even':
+            pad_half = pad // 2
+            padding = (pad_half, pad - pad_half)
         
-    return seq
+        paddings.append(padding)
+    
+    if should_pad:
+        data = tf.pad(data, paddings, ** kwargs)
+
+    return data
 

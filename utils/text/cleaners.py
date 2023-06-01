@@ -205,6 +205,7 @@ def complete_cleaners(text,
                       lang,
                       to_lowercase  = True,
                       to_expand     = True,
+                      to_expand_symbols = True,
                       to_expand_acronyms    = False,
                       abbreviations = None,
                       replacements  = None,
@@ -227,8 +228,9 @@ def complete_cleaners(text,
     if to_expand_acronyms:  text = expand_acronym(text, lang = lang, ** kwargs)
     if to_lowercase:        text = lowercase(text, ** kwargs)
     if to_expand:
-        text = expand_numbers(text, lang = lang, ** kwargs)
-        text = expand_special_symbols(text, lang = lang, ** kwargs)
+        text = expand_numbers(text, lang = lang, expand_symbols = to_expand_symbols, ** kwargs)
+        if to_expand_symbols:
+            text = expand_special_symbols(text, lang = lang, ** kwargs)
     text = collapse_whitespace(text, ** kwargs)
     return text
 

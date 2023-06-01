@@ -58,7 +58,7 @@ class HParams:
         return _remove_prefix(self.prefix, k) in self.config
         
     def __getattr__(self, key):
-        if '_HParams__' in key: return object.__getattribute__(self, key)
+        if '_HParams__' in key or key.startswith('__'): return object.__getattribute__(self, key)
         key = _remove_prefix(self.prefix, key)
         if key not in self.config:
             raise ValueError("{} not in parameters !".format(key))

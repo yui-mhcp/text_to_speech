@@ -24,7 +24,7 @@ def find_clusters(* args, method = 'kmeans', ** kwargs):
     return _clustering_methods[method](* args, ** kwargs)
 
 def clustering_wrapper(clustering_fn):
-    def wrapper(points, k, distance_metric = 'euclidian', ** kwargs):
+    def wrapper(points, k, distance_metric = 'euclidian', normalize = False, ** kwargs):
         points = tf.cast(points, tf.float32)
         if isinstance(k, (list, tuple, range)):
             from kneed import KneeLocator
@@ -34,7 +34,7 @@ def clustering_wrapper(clustering_fn):
                 if ki <= 1: continue
 
                 clusters = clustering_fn(
-                    points, ki, distance_metric = distance_metric, ** kwargs
+                    points, ki, distance_metric = distance_metric, normalize = normalize, ** kwargs
                 )
                 if isinstance(clusters, tuple):
                     centroids, assignment = clusters
@@ -43,7 +43,7 @@ def clustering_wrapper(clustering_fn):
                 
                 score = compute_score(
                     points, assignment, centroids, tf.range(tf.shape(centroids)[0], dtype = tf.int32),
-                    distance_metric = distance_metric
+                    distance_metric = distance_metric, normalize = normalize
                 ).numpy()
                 scores[ki] = {'score' : score, 'centroids' : centroids, 'assignment' : assignment}
 
@@ -118,7 +118,8 @@ def compute_score(points    : tf.Tensor,
                   ids       : tf.Tensor,
                   centroids : tf.Tensor,
                   centroid_ids  : tf.Tensor,
-                  distance_metric = 'euclidian'
+                  distance_metric = 'euclidian',
+                  normalize = False
                  ):
     """
         Computes a *clustering score* based on an assignment and a set of centroids
@@ -135,7 +136,13 @@ def compute_score(points    : tf.Tensor,
     mask    = tf.cast(
         tf.expand_dims(ids, axis = 1) == centroid_ids, tf.float32
     )
-    dist = tf_distance(points, centroids, distance_metric, as_matrix = True)
+    dist    = tf_distance(
+        points, centroids, distance_metric, as_matrix = True, force_distance = True
+    )
+    if normalize:
+        return tf.reduce_sum(tf.math.divide_no_nan(
+            tf.reduce_sum(dist * mask, axis = -1), tf.reduce_sum(mask, axis = -1)
+        ))
     return tf.reduce_sum(dist * mask)
 
 _clustering_methods = {}

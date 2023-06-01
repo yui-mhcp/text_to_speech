@@ -21,8 +21,8 @@ def log_softmax(x, axis = -1):
 
 def gelu(x):
     """ Gaussian Error Linear Unit """
-    cdf = 0.5 * (1.0 + tf.math.erf(x / tf.math.sqrt(2.0)))
-    return x * cdf
+    cdf = 0.5 * (1.0 + tf.math.erf(x / tf.cast(tf.math.sqrt(2.0), x.dtype)))
+    return x * tf.cast(cdf, x.dtype)
 
 def glu(x, axis = -1):
     """ Gated Linear Unit activation function (equivalent to torch.nn.functional.glu) """

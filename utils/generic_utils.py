@@ -14,7 +14,8 @@ import os
 import enum
 import json
 import queue
-import pickle
+import timeit
+import inspect
 import logging
 import datetime
 import argparse
@@ -116,10 +117,89 @@ def limit_gpu_memory(limit = 2048):
         logger.error("Error while limiting tensorflow GPU memory")
 
 def show_memory(gpu = 'GPU:0', message = ''):
+    mem_usage = tf.config.experimental.get_memory_info(gpu)
     print('{}{}'.format(message if not message else message + '\t: ', {
-        k : '{:.3f} Gb'.format(v / 1024 ** 3) for k, v in tf.config.experimental.get_memory_info('GPU:0').items()
+        k : '{:.3f} Gb'.format(v / 1024 ** 3) for k, v in mem_usage.items()
     }))
+    tf.config.experimental.reset_memory_stats(gpu)
+    return mem_usage
+
+def infer_downsampling_factor(model):
+    from tensorflow.keras.layers import (
+        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
+        AveragePooling1D, AveragePooling2D, AveragePooling3D
+    )
+    _downsampling_types = [
+        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
+        AveragePooling1D, AveragePooling2D, AveragePooling3D
+    ]
+    try:
+        from custom_layers import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D
+        _downsampling_types.extend([MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D])
+    except Exception as e:
+        pass
     
+    def _get_factor(model):
+        factor = 1
+        for l in model.layers:
+            if type(l) in _downsampling_types:
+                factor = factor * np.array(l.strides)
+            elif hasattr(l, 'layers'):
+                factor = factor * _get_factor(l)
+        
+        return factor
+    return _get_factor(model)
+
+def infer_upsampling_factor(model):
+    from tensorflow.keras.layers import (
+        UpSampling1D, UpSampling2D, UpSampling3D,
+        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
+    )
+    _downsampling_types = [
+        UpSampling1D, UpSampling2D, UpSampling3D,
+        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
+    ]
+    try:
+        from custom_architectures.unet_arch import UpSampling2DV1
+        _downsampling_types.append(UpSampling2DV1)
+    except Exception as e:
+        pass
+    
+    def _get_factor(model):
+        factor = 1
+        for l in model.layers:
+            if type(l) in _downsampling_types:
+                if hasattr(l, 'strides'):
+                    strides = l.strides
+                elif hasattr(l, 'size'):
+                    strides = l.size
+                elif hasattr(l, 'scale_factor'):
+                    strides = l.scale_factor
+                factor = factor * np.array(strides)
+            elif hasattr(l, 'layers'):
+                factor = factor * _get_factor(l)
+        
+        return factor
+    return _get_factor(model)
+
+def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = False):
+    if isinstance(f, dict):
+        return {name : benchmark(f_i, inputs, number, force_gpu_sync, display_memory) for name, f_i in f.items()}
+    times = []
+    if display_memory: show_memory(message = 'Before')
+    for inp in inputs:
+        if not isinstance(inp, tuple): inp = (inp, )
+        def _g():
+            if force_gpu_sync: one = tf.ones(())
+            f(* inp)
+            if force_gpu_sync: one = one.numpy()
+        
+        _g() # warmup 
+        t = timeit.timeit(_g, number = number)
+        times.append(t * 1000. / number)
+    if display_memory: show_memory(message = 'After')
+    return times
+
 def get_enum_item(value, enum, upper_names = True):
     if isinstance(value, enum): return value
     if isinstance(value, str):
@@ -184,7 +264,7 @@ def to_lower_keys(dico):
 def to_json(data):
     """ Convert a given data to json-serializable (if possible) """
     if isinstance(data, enum.Enum): data = data.value
-    if hasattr(data, 'numpy'):  data = data.numpy()
+    if isinstance(data, (tf.Tensor, tf.Variable)):  data = data.numpy()
     if isinstance(data, bytes): data = data.decode('utf-8')
     if isinstance(data, bool): return data
     elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%m %H:%M:%S")
@@ -271,6 +351,17 @@ def map_output_names(values, names):
         mapping.update(v)
 
     return mapping
+
+def get_kwargs(fn):
+    sign = inspect.getfullargspec(fn)
+    kwargs = {}
+    if sign.defaults:
+        kwargs.update({
+            k : v for k, v in zip(sign.args[- len(sign.defaults) :], sign.defaults)
+        })
+    if sign.kwonlydefaults:
+        kwargs.update(kwonlydefaults)
+    return kwargs
 
 def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
     """

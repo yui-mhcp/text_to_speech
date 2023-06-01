@@ -37,6 +37,7 @@ SEGMENT = 'object segmentation'
 CAPTION = 'image captioning'
 FACE_RECOGN = 'face recognition'
 SCENE_TEXT  = 'scene text detection'
+OCR     = 'OCR'
 
 BOX_KEY     = 'box'
 N_BOX_KEY   = 'nb_box'
@@ -112,7 +113,7 @@ def image_dataset_wrapper(name, task, ** default_config):
                 
                     if one_line_per_box:
                         dataset = _flatten_dataset(
-                            dataset, keys = ['label', BOX_KEY, 'box_infos', 'segmentation']
+                            dataset, keys = [BOX_KEY, 'label', 'box_infos', 'segmentation']
                         )
             
             if one_line_per_caption and 'text' in dataset[0]:
@@ -181,7 +182,8 @@ def _filter_labels(dataset, accepted_labels, keep_empty):
 
 def _flatten_dataset(dataset, keys):
     if not isinstance(keys, list): keys = [keys]
-    if any(not isinstance(dataset[0].get(k, []), list) for k in keys): return dataset
+    if any(not isinstance(dataset[0].get(k, []), (list, tuple, np.ndarray)) for k in keys):
+        return dataset
     
     flat = []
     for row in dataset:
@@ -772,7 +774,7 @@ def preprocess_COCO_annots(directory,
     return {row['filename'] : {** row, 'id' : k} for k, row in metadata.items()}
 
 @image_dataset_wrapper(
-    name = 'COCO_Text', task = [SCENE_TEXT],
+    name = 'COCO_Text', task = [SCENE_TEXT, OCR],
     train   = {
         'directory' : '{}/COCO', 'img_dir' : 'train2017', 'subset' : 'train',
         'annot_file'    : os.path.join('annotations', 'cocotext.v2.json')
@@ -829,6 +831,33 @@ def preprocess_COCO_text_annots(directory,
     
     return {row['filename'] : row for _, row in coco.items() if 'label' in row}
 
+@image_dataset_wrapper(
+    name = 'SynthText', task = [SCENE_TEXT, OCR], directory = '{}/SynthText/SynthText'
+)
+def preprocess_synthtext_annots(directory, tqdm = lambda x: x, ** kwargs):
+    from scipy.io import loadmat
+    
+    metadata_file = os.path.join(directory, 'gt.mat')
+    data = loadmat(metadata_file)
+    
+    dataset = {}
+    for i, (img, boxes, words) in enumerate(zip(tqdm(data['imnames'][0]), data['wordBB'][0], data['txt'][0])):
+        filename = os.path.join(directory, img[0])
+        
+        cleaned  = []
+        for w in words:
+            for part in w.split('\n'):
+                cleaned.extend(part.strip().split())
+        
+        if len(boxes.shape) == 2: boxes = np.expand_dims(boxes, axis = -1)
+        dataset[filename] = {
+            'filename' : filename,
+            'box'      : np.transpose(boxes, [2, 1, 0]).astype(np.int32),
+            'nb_box'   : boxes.shape[-1],
+            'label'    : cleaned
+        }
+    
+    return dataset
 
 add_dataset(
     'anime_faces', processing_fn = 'image_directory', task = GAN, directory = '{}/anime_faces/images'

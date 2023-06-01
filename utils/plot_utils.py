@@ -691,7 +691,7 @@ def plot_polygons(poly, * args, labels = None, ** kwargs):
     
     if hasattr(poly, 'shape') and len(poly.shape) == 3:
         if labels is None: labels = ['Poly #{}'.format(i) for i in range(len(poly))]
-        poly = {label : p for label, p in zip(poly, labels)}
+        poly = {label : p for label, p in zip(labels, poly)}
 
     if isinstance(poly, dict):
         return plot({
@@ -751,7 +751,7 @@ def plot_matrix(matrix = None, x = None, x_labels = None, y_labels = None, norm 
     assert matrix is not None or x is not None
     if matrix is None:           matrix = x
     if hasattr(matrix, 'numpy'): matrix = matrix.numpy()
-    if norm:    matrix = matrix.astype(np.float32) / np.sum(matrix, axis = -1, keepdims = True)
+    if norm:        matrix = matrix.astype(np.float32) / np.sum(matrix, axis = -1, keepdims = True)
     
     if x_labels is None: x_labels = list(range(matrix.shape[1]))
     if y_labels is None: y_labels = list(range(matrix.shape[0]))
@@ -934,30 +934,21 @@ def plot_volume(volume = None,
     if volume is None:           volume = x
     
     if isinstance(volume, tf.sparse.SparseTensor):
-        if len(volume.dense_shape) == 4:
-            new_values = tf.cast(volume.values, tf.int32)
-            if tf.reduce_any(new_values == tf.cast(background_label, tf.int32)):
-                new_values += 1
-            
-            volume = tf.sparse.SparseTensor(
-                indices = volume.indices[:, :-1],
-                values  = new_values,
-                dense_shape = volume.dense_shape[:-1]
-            )
-        volume = tf.sparse.to_dense(volume)
+        with tf.device('cpu'):
+            volume = tf.argmax(tf.sparse.to_dense(volume), axis = -1)
     
     if hasattr(volume, 'numpy'): volume = volume.numpy()
     if len(volume.shape) == 4:   volume = np.argmax(volume, axis = -1) + np.any(volume, axis = -1)
     
+    if any(stride != 1 for stride in strides):
+        volume = volume[:: strides[0], :: strides[1], :: strides[2]]
+
     if labels_to_show:
         mask = np.any(
             np.expand_dims(volume, axis = -1) == np.reshape(labels_to_show, [1, 1, 1, -1]),
             axis = -1
         )
         volume[~mask] = background_label
-    
-    if any(stride != 1 for stride in strides):
-        volume = volume[:: strides[0], :: strides[1], :: strides[2]]
     
     kwargs.update({'plot_type' : 'voxels', 'plot_3d' : True, 'facecolors' : volume, 'color' : None})
     for k, v in _default_volume_plot_config.items():

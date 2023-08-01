@@ -22,6 +22,7 @@ import tensorflow as tf
 from utils import dump_json, load_json, flatten, get_enum_item, convert_to_str, download_file
 from utils.text import cleaners as cleaners_module
 from utils.text.bpe import bytes_to_unicode, bpe
+from utils.text.ctc_decoder import ctc_decode
 from utils.text.text_processing import split_sentence, split_and_join
 from utils.distance.distance_method import distance
 
@@ -574,6 +575,24 @@ class TextEncoder(object):
             
         return text
     
+    def ctc_decode(self,
+                   sequence,
+                   lengths  = None,
+                   method   = 'beam',
+                   return_scores    = False,
+                   ** kwargs
+                  ):
+        """ Decode a given np.ndarray by replacing each known id by its corresponding token """
+        tokens, scores = ctc_decode(
+            sequence,
+            method  = method,
+            lengths = lengths,
+            blank_index = self.blank_token_idx
+        )
+
+        decoded = self.decode(tokens, ** kwargs)
+        return decoded if not return_scores else (decoded, scores)
+
     def invert(self, text, add_sos_and_eos = False, ** kwargs):
         return self.decode(self.encode(text, add_sos_and_eos = add_sos_and_eos, ** kwargs))
     

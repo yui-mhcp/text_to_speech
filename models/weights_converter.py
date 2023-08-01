@@ -114,7 +114,10 @@ def _get_layer_name(name, vars_mapping, skip_root = False, sep = None, root = No
     
     if len(name_parts) > 1:
         is_part0_root = _is_root(name_parts[0], root)
-        if len(name_parts) > 2 or not is_part0_root: name_parts = name_parts[:-1]
+        if len(name_parts) > 2 or not is_part0_root:
+            name_parts = name_parts[:-1]
+            if len(name_parts) >= 3 and name_parts[-2].startswith(('forward_', 'backward_')):
+                name_parts = name_parts[:-2]
         if skip_root and is_part0_root: name_parts = name_parts[1:]
     
     return sep.join(name_parts)
@@ -241,7 +244,7 @@ def find_layers_mapping(tf_model,
     
     tf_layers = get_layers(tf_model).copy()
     pt_layers = get_layers(pt_model, convert_to = convert_to, skip_root = skip_root).copy()
-    
+
     if patterns:
         for pat, repl in patterns.items():
             pt_layers = {re.sub(pat, repl, k) : v for k, v in pt_layers.items()}

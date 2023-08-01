@@ -108,6 +108,10 @@ class BaseTextModel(BaseModel):
         return os.path.join(self.save_dir, 'text_encoder.json')
 
     @property
+    def is_encoder_decoder(self):
+        return getattr(self.get_model(), 'decoder', None) is not None
+
+    @property
     def text_signature(self):
         return tf.TensorSpec(shape = (None, None), dtype = tf.int32)
 

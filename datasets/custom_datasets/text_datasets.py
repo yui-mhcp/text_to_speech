@@ -15,9 +15,12 @@ import logging
 import numpy as np
 import pandas as pd
 
+from functools import wraps
+
 from loggers import timer
-from utils import load_json
+from utils.file_utils import load_json
 from datasets.custom_datasets import add_dataset
+from datasets.dataset_utils import _maybe_load_embedding
 from datasets.custom_datasets.preprocessing import parse_nq_annots
 
 logger  = logging.getLogger(__name__)
@@ -33,6 +36,7 @@ TEXT_COMP   = 'Text comparison'
 def text_dataset_wrapper(name, task, ** default_config):
     def wrapper(dataset_loader):
         @timer(name = '{} loading'.format(name))
+        @wraps(dataset_loader)
         def _load_and_process(directory, * args, ** kwargs):
             dataset = dataset_loader(directory, * args, ** kwargs)
             
@@ -40,15 +44,9 @@ def text_dataset_wrapper(name, task, ** default_config):
             
             return dataset
         
-        from datasets.custom_datasets import add_dataset
+        add_dataset(name, processing_fn = _load_and_process, task = task, ** default_config)
         
-        fn = _load_and_process
-        fn.__name__ = dataset_loader.__name__
-        fn.__doc__  = dataset_loader.__doc__
-        
-        add_dataset(name, processing_fn = fn, task = task, ** default_config)
-        
-        return fn
+        return _load_and_process
     return wrapper
 
 def _clean_paragraph(para):

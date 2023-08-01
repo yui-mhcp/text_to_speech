@@ -316,7 +316,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
 
     if plot_type == 'bar' and x is None and isinstance(y, dict):
         xtick_labels, y = list(zip(* y.items()))
-    if plot_type == 'imshow' and len(y.shape) == 3 and y.shape[-1] == 1:
+    if plot_type == 'imshow' and hasattr(y, 'shape') and len(y.shape) == 3 and y.shape[-1] == 1:
         y = y[:, :, 0]
     if plot_type in ('bar', 'scatter') and x is None:
         x = np.arange(len(y))
@@ -935,10 +935,10 @@ def plot_volume(volume = None,
     
     if isinstance(volume, tf.sparse.SparseTensor):
         with tf.device('cpu'):
-            volume = tf.argmax(tf.sparse.to_dense(volume), axis = -1)
+            volume = tf.sparse.to_dense(volume).numpy()
     
     if hasattr(volume, 'numpy'): volume = volume.numpy()
-    if len(volume.shape) == 4:   volume = np.argmax(volume, axis = -1) + np.any(volume, axis = -1)
+    if len(volume.shape) == 4:   volume = np.argmax(volume, axis = -1)
     
     if any(stride != 1 for stride in strides):
         volume = volume[:: strides[0], :: strides[1], :: strides[2]]

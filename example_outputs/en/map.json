@@ -1,40 +1,12 @@
 {
-    "hello world ! hope you will enjoy this funny ae pe eye for text-to-speech !": {
-        "texts": [
-            "hello world ! hope you will enjoy this funny ae pe eye for text-to-speech !"
+    "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you train new models, do not hesitate to contact me, or add it in the available models !": {
+        "text": "\nHello world ! I hope you will enjoy this funny API for Text-To-Speech ! \nIf you train new models, do not hesitate to contact me, or add it in the available models !\n",
+        "parts": [
+            "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you train new models, do not hesitate to contact me, or add it in the available models !"
         ],
-        "mels": [
-            "example_outputs/en/mels/mel_0.npy"
-        ],
-        "audios": [
-            "example_outputs/en/sentence_audios/audio_0.mp3"
-        ],
-        "times": [
-            5.166439909297052
-        ],
-        "plots": [
-            "example_outputs/en/plots/attn_0.png"
-        ],
-        "audio": "example_outputs/en/sentence_audios/audio_0.mp3",
-        "time": 5.166439909297052
-    },
-    "if you train new models, do not hesitate to contact me or add it in the available models !": {
-        "texts": [
-            "if you train new models, do not hesitate to contact me or add it in the available models !"
-        ],
-        "mels": [
-            "example_outputs/en/mels/mel_1.npy"
-        ],
-        "audios": [
-            "example_outputs/en/sentence_audios/audio_1.mp3"
-        ],
-        "times": [
-            6.431927437641724
-        ],
-        "plots": [
-            "example_outputs/en/plots/attn_1.png"
-        ],
-        "audio": "example_outputs/en/sentence_audios/audio_1.mp3",
-        "time": 6.431927437641724
+        "timestamp": 1690618459.6623273,
+        "mel": "example_outputs/en/mels/mel_0.npy",
+        "audio": "example_outputs/en/audios/audio_0.mp3",
+        "time": 11.3081179138322
     }
 }

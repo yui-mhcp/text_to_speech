@@ -18,7 +18,7 @@ from utils.text.f1 import _normalize_text_f1, f1_score, exact_match
 from utils.text.bpe import bytes_to_unicode, bpe
 from utils.text.text_encoder import TextEncoder
 from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
-from utils.text.text_decoder import decode
+from utils.text.ctc_decoder import ctc_decode
 from utils.text.text_processing import *
 from utils.text.text_augmentation import random_mask
 
@@ -90,7 +90,7 @@ def get_encoder(lang = None, text_encoder = None, ** kwargs):
             encoder = TextEncoder.load_from_file(model_encoder_file)
         elif text_encoder == 'clip':
             encoder = TextEncoder.from_clip_pretrained()
-        elif text_encoder == 'whisper':
+        elif 'whisper' in text_encoder:
             encoder = TextEncoder.from_whisper_pretrained(** kwargs)
         else:
             encoder = TextEncoder.from_transformers_pretrained(text_encoder)

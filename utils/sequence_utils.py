@@ -100,13 +100,15 @@ def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
     if not isinstance(multiple, (list, tuple, np.ndarray)): multiple = [multiple]
     axis = [ax if ax >= 0 else len(data.shape) - ax for ax in axis]
     
+    shape   = tf.shape(data)
+    
     should_pad = False
     paddings = []
     for i in range(len(data.shape)):
         pad = 0
         if i in axis:
             mul  = multiple[axis.index(i)] if len(multiple) > 1 else multiple[0]
-            rest = data.shape[i] % mul
+            rest = shape[i] % mul
             if rest != 0:
                 should_pad  = True
                 pad     = mul - rest

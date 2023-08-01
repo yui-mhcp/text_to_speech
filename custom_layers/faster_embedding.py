@@ -22,9 +22,18 @@ class FasterEmbedding(tf.keras.layers.Embedding):
         self.mask_value         = mask_value
         self.supports_masking   = mask_value is not None
 
-    def change_vocabulary(self, new_vocab, ** kwargs):
+    def change_vocabulary(self, new_vocab, old_vocab = None, ** kwargs):
+        old_embeddings = self.embeddings.numpy()
+        
         self.input_dim = len(new_vocab)
         self.build((None, None))
+        
+        if old_vocab:
+            new_embeddings = old_embeddings[[
+                old_vocab.index(v) if v in old_vocab else i
+                for i, v in enumerate(new_vocab)
+            ]]
+            self.set_weights([new_embeddings])
 
     def compute_mask(self, inputs, mask = None):
         if mask is not None or self.mask_value is None: return mask

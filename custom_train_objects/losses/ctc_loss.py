@@ -15,7 +15,7 @@ import tensorflow as tf
 class CTCLoss(tf.keras.losses.Loss):
     def __init__(self, pad_value = 0, name = 'CTCLoss', **kwargs):
         super().__init__(name = name, ** kwargs)
-        self.pad_value      = pad_value
+        self.pad_value  = pad_value
     
     def call(self, y_true, y_pred):
         if not isinstance(y_true, (list, tuple)):

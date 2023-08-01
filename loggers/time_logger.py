@@ -14,7 +14,13 @@ import time
 import logging
 import threading
 import collections
-import tensorflow as tf
+
+from functools import wraps
+
+try:
+    from tensorflow import executing_eagerly
+except ImportError:
+    executing_eagerly = lambda: True
 
 try:
     from utils.generic_utils import time_to_string
@@ -160,16 +166,20 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
     """
     if fn is None:
         return lambda fn: timer(
-            fn, name = name, logger = logger, log_if_root = log_if_root,
+            fn,
+            name          = name,
+            logger        = logger,
+            log_if_root   = log_if_root,
             force_logging = force_logging
         )
     
     if isinstance(logger, str): logger = logging.getLogger(logger)
-    elif logger is None: logger = logging.getLogger()
-    if name is None: name = fn.__name__
+    elif logger is None:        logger = logging.getLogger()
+    if name is None:            name = fn.__name__
     
+    @wraps(fn)
     def fn_with_timer(* args, ** kwargs):
-        if not tf.executing_eagerly():
+        if not executing_eagerly():
             return fn(* args, ** kwargs)
         if not logger.isEnabledFor(TIME_LEVEL):
             return fn(* args, ** kwargs)
@@ -186,21 +196,17 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
         elif force_logging: logger.log_time(timer)
         return result
     
-    wrapper = fn_with_timer
-    wrapper.__doc__     = fn.__doc__
-    wrapper.__name__    = fn.__name__
-    
-    return wrapper
+    return fn_with_timer
 
 def start_timer(self, name, * args, ** kwargs):
-    if not tf.executing_eagerly(): return
+    if not executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
     
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
     self.timer.start_timer(name)
     
 def stop_timer(self, name, * args, ** kwargs):
-    if not tf.executing_eagerly(): return
+    if not executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
     
     if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)

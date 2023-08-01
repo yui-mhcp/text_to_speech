@@ -36,6 +36,7 @@ def _is_filename(data):
     
 def time_to_string(seconds):
     """ return a string representation of a time (given in seconds) """
+    if seconds < 0.0001: return '{} \u03BCs'.format(int(seconds * 1000000))
     if seconds < 1.: return '{} ms'.format(int(seconds * 1000))
     h = int(seconds // 3600)
     h = "" if h == 0 else "{}h ".format(h)

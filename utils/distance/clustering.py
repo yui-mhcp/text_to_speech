@@ -13,6 +13,8 @@
 import numpy as np
 import tensorflow as tf
 
+from functools import wraps
+
 from utils.embeddings import compute_centroids
 from utils.distance.distance_method import tf_distance
 
@@ -24,6 +26,7 @@ def find_clusters(* args, method = 'kmeans', ** kwargs):
     return _clustering_methods[method](* args, ** kwargs)
 
 def clustering_wrapper(clustering_fn):
+    @wraps(clustering_fn)
     def wrapper(points, k, distance_metric = 'euclidian', normalize = False, ** kwargs):
         points = tf.cast(points, tf.float32)
         if isinstance(k, (list, tuple, range)):
@@ -42,16 +45,22 @@ def clustering_wrapper(clustering_fn):
                     centroids, assignment = compute_centroids(points, clusters)[1], clusters
                 
                 score = compute_score(
-                    points, assignment, centroids, tf.range(tf.shape(centroids)[0], dtype = tf.int32),
-                    distance_metric = distance_metric, normalize = normalize
+                    points,
+                    assignment,
+                    centroids,
+                    tf.range(tf.shape(centroids)[0], dtype = tf.int32),
+                    distance_metric = distance_metric,
+                    normalize = normalize
                 ).numpy()
                 scores[ki] = {'score' : score, 'centroids' : centroids, 'assignment' : assignment}
 
             assert len(scores) > 0, 'k must be a range with at least 1 value > 1'
 
-            valids_k    = [ki for ki in k if ki > 1]
+            valids_k    = sorted(scores.keys())
             list_scores = np.array([scores[ki]['score'] for ki in valids_k])
-            convex      = all([list_scores[i] <= list_scores[i-1] for i in range(1, len(list_scores))])
+            convex      = all(
+                list_scores[i] <= list_scores[i - 1] for i in range(1, len(list_scores))
+            )
             if convex:
                 kl = KneeLocator(
                     valids_k, list_scores, curve = "convex", direction = "decreasing"
@@ -66,13 +75,9 @@ def clustering_wrapper(clustering_fn):
         return clustering_fn(points, k, distance_metric = distance_metric, ** kwargs)
     
     global _clustering_methods
-    
-    fn = wrapper
-    fn.__name__ = clustering_fn.__name__
-    fn.__doc__  = clustering_fn.__doc__
 
-    _clustering_methods[clustering_fn.__name__.lstrip('_')] = fn
-    return fn
+    _clustering_methods[clustering_fn.__name__.lstrip('_')] = wrapper
+    return wrapper
 
 def evaluate_clustering(y_true, y_pred):
     y_true  = tf.cast(y_true, tf.int32)

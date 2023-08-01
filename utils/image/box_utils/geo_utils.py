@@ -14,7 +14,8 @@ import logging
 import numpy as np
 import tensorflow as tf
 
-from utils.image.box_utils import poly_to_box
+from utils.image.box_utils.nms import nms
+from utils.image.box_utils.box_functions import BoxFormat, convert_box_format
 
 logger = logging.getLogger(__name__)
 
@@ -871,21 +872,30 @@ def restore_polys_from_map(score_map,
     assert rbox_map is not None or (geo_map is not None and theta_map is not None)
     
     if rbox_map is not None:
-        geo_map     = rbox_map[0, :, :, :4]
-        theta_map   = rbox_map[0, :, :, 4]
+        geo_map     = rbox_map[:, :, :, :4]
+        theta_map   = rbox_map[:, :, :, 4]
     
-    if len(score_map.shape) == 4:   score_map = score_map[0, :, :, 0]
-    elif len(score_map.shape) == 3: score_map = score_map[:, :, 0]
-    if len(geo_map.shape) == 4:     geo_map   = geo_map[0]
-    if len(theta_map.shape) == 4:   theta_map = theta_map[0, :, :, 0]
-    elif len(theta_map.shape) == 3: theta_map = theta_map[:, :, 0]
+    if len(score_map.shape) == 4:
+        return [restore_polys_from_map(
+            score_map   = s_map,
+            geo_map     = g_map,
+            theta_map   = t_map,
+            scale   = scale,
+            normalize   = normalize,
+            threshold   = threshold,
+            nms_threshold   = nms_threshold,
+            ** kwargs
+        ) for s_map, g_map, t_map in zip(score_map, geo_map, theta_map)]
+    
+    if len(score_map.shape) == 3:
+        score_map   = score_map[:, :, 0]
+        theta_map   = theta_map[:, :, 0]
     
     # filter the score map
     points = np.argwhere(score_map > threshold)
 
     # sort the text boxes via the y axis
-    points = points[np.argsort(points[:, 0])]
-
+    points  = points[np.argsort(points[:, 0])]
     scores  = score_map[points[:, 0], points[:, 1]]
     # restore
     input_shape = np.array(score_map.shape) * scale
@@ -899,23 +909,19 @@ def restore_polys_from_map(score_map,
     scores  = scores[valid_indices]
     
     if normalize:
-        input_shape_wh = np.array(input_shape)[::-1].reshape(1, 1, 2)
-        valid_polys = (valid_polys / input_shape_wh).astype(np.float32)
+        input_shape_wh  = np.array(input_shape)[::-1].reshape(1, 1, 2)
+        valid_polys     = (valid_polys / input_shape_wh).astype(np.float32)
 
-    if nms_threshold < 1. or return_boxes:
-        xmin, ymin, xmax, ymax = poly_to_box(valid_polys)
-        boxes   = tf.stack([ymin, xmin, ymax, xmax], axis = -1)
-
+    boxes, box_mode = valid_polys, BoxFormat.POLY
     if nms_threshold < 1.:
-        indices = tf.image.non_max_suppression(
-            boxes, tf.cast(scores, tf.float32), len(scores), nms_threshold
-        ).numpy()
-    else:
-        indices = np.arange(len(valid_polys))
-    
-    if return_boxes:
-        return boxes.numpy()[indices], scores[indices]
-    return valid_polys[indices], scores[indices]
+        boxes, scores = nms(
+            boxes, scores, box_mode = box_mode, nms_threshold = nms_threshold, ** kwargs
+        )
+        box_mode    = BoxFormat.CORNERS2
+
+    return convert_box_format(
+        boxes, BoxFormat.DICT, box_mode = box_mode, score = scores
+    )
 
 """ Tf-graph optimized functions (but they are slower than the numpy version) """
 @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)

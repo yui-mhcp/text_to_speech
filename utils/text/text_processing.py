@@ -223,7 +223,7 @@ def multi_split(text, * separators):
     
 def simple_text_split(text, max_length = _max_length):
     """
-        Split a text (word based) such that each part have at most 'max_length' caracters
+        Split a text (word based) such that each part have at most 'max_length' characters
     """
     words = text.split()
 
@@ -238,7 +238,7 @@ def simple_text_split(text, max_length = _max_length):
 
 def split_text(text, max_length = _max_length):
     """
-        Split a text such that each parts have at most 'max_length' caracters. 
+        Split a text such that each parts have at most 'max_length' characters. 
         The split is based on different criteria : 
         1) Split based on sentence ('_eos_chars' used as delimiters)
         2) If sentences are longer than 'max_length', split them based on comma

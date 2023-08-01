@@ -14,7 +14,7 @@ from loggers import timer
 from utils.generic_utils import print_objects
 
 from datasets.dataset_utils import *
-from datasets.custom_datasets import set_dataset_dir, get_dataset_dir, show_datasets, load_dataset, _custom_datasets
+from datasets.custom_datasets import set_dataset_dir, get_dataset_dir, show_datasets, load_dataset, is_custom_dataset
 from datasets.sqlite_dataset import SQLiteDataset
 
 _keras_datasets = {
@@ -29,14 +29,14 @@ _keras_datasets = {
 @timer(name = 'dataset loading')
 def get_dataset(ds_name, ds_type = 'tf', ** kwargs):
     if isinstance(ds_name, (list, tuple)): 
-        if all([n in _custom_datasets for n in ds_name]):
+        if is_custom_dataset(ds_name):
             return load_dataset(ds_name, ** kwargs)
         else:
             return [get_dataset(n, t, ** kwargs) for n, t in zip(ds_name, ds_type)]
     elif isinstance(ds_name, dict):
         return [get_dataset(n, ** ds_args) for n, ds_args in ds_name.items()]
     
-    if ds_name in _custom_datasets or ds_type == 'custom':
+    if is_custom_dataset(ds_name) or ds_type == 'custom':
         dataset = load_dataset(ds_name, ** kwargs)
     elif ds_type in ('tensorflow', 'tf'):
         import tensorflow_datasets as tfds

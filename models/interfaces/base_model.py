@@ -1100,7 +1100,7 @@ class BaseModel(metaclass = ModelInstances):
         
         try:
             for epoch in range(init_epoch, last_epoch):
-                logger.info("\nEpoch {} / {}".format(epoch + 1, last_epoch))
+                if verbose: logger.info("\nEpoch {} / {}".format(epoch + 1, last_epoch))
                 callbacks.on_epoch_begin(epoch)
                 
                 start_epoch_time = time.time()
@@ -1142,7 +1142,7 @@ class BaseModel(metaclass = ModelInstances):
                     step    = self.current_step,
                     epoch   = self.current_epoch + 1
                 )
-                
+
                 callbacks.on_epoch_end(epoch, logs = self.__history.training_logs)
                 
                 if verbose == 2:
@@ -1152,6 +1152,10 @@ class BaseModel(metaclass = ModelInstances):
                         time_to_string(epoch_time * (last_epoch - epoch)),
                         self.__history.to_string(mode = 'all')
                     ))
+                
+                if self.stop_training:
+                    logger.info('Epoch {} : Early stopping !'.format(epoch))
+                    break
 
         except KeyboardInterrupt:
             logger.warning("Training interrupted ! Saving model...")
@@ -1398,7 +1402,8 @@ class BaseModel(metaclass = ModelInstances):
     def restore_models(self, directory = None, checkpoint = None, compile = True):
         if directory is not None:
             logger.info("Model restoration from {}...".format(directory))
-            filename = os.path.join(directory, "config_models.json")
+            if not directory.endswith('.json'):
+                filename = os.path.join(directory, "config_models.json")
         else:
             logger.info("Model restoration...")
             filename = self.config_models_file
@@ -1406,16 +1411,20 @@ class BaseModel(metaclass = ModelInstances):
         variables_to_restore = load_json(filename)
         
         for model_name, infos in variables_to_restore['models'].items():
-            compile_infos = None
+            compile_infos = {}
             if infos['compiled'] and compile:
                 compile_infos = {
                     ** variables_to_restore['optimizers'].pop(infos['optimizer_name']),
                     ** variables_to_restore['losses'].pop(infos['loss_name']),
-                    'metrics' : [variables_to_restore['metrics'].pop(met_name) for met_name in infos['metrics_name']]
+                    'metrics' : [
+                        variables_to_restore['metrics'].pop(met_name)
+                        for met_name in infos['metrics_name']
+                    ]
                 }
             if not self.load_model(model_name, infos['save_path'], compile_infos):
                 self._build_model(** self.backend_kwargs)
-                self.compile(model_name = model_name, ** compile_infos, verbose = False)
+                if compile_infos:
+                    self.compile(model_name = model_name, ** compile_infos, verbose = False)
                 break
         
         if compile:
@@ -1509,6 +1518,12 @@ class BaseModel(metaclass = ModelInstances):
         if save_history: self.save_history()
         if save_config: self.save_config()
     
+    def save_weights(self, * args, ** kwargs):
+        self.get_model().save_weights(* args, ** kwargs)
+    
+    def load_weights(self, * args, ** kwargs):
+        self.get_model().load_weights(* args, ** kwargs)
+    
     def save_history(self):
         self.__history.save(self.history_file)
         
@@ -1574,7 +1589,7 @@ class BaseModel(metaclass = ModelInstances):
             )
         
         setattr(self, name, restored_model)
-        if compile_infos is not None:
+        if compile_infos:
             self.compile(model_name = name, ** compile_infos, verbose = False)
 
         logger.info("Successfully restored {} from {} !".format(name, filename))

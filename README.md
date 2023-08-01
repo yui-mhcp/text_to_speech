@@ -1,6 +1,6 @@
 # :yum: Text To Speech (TTS)
 
-**NEW : [CHANGELOG](https://github.com/yui-mhcp/yui-mhcp/blob/main/CHANGELOG.md) file ! Check it to have a global overview of the latest modifications !** :yum:
+Check the [CHANGELOG](https://github.com/yui-mhcp/yui-mhcp/blob/main/CHANGELOG.md) file to have a global overview of the latest modifications ! :yum:
 
 ## Project structure
 
@@ -38,8 +38,6 @@ Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more i
 
 \* Check my [Siamese Networks project](https://github.com/yui-mhcp/siamese_networks) for more information about the `models/siamese` module
 
-Note that some parts of the training notebooks may not properly work as they are quite old but the main training scripts should work properly as well as the `speech_to_text` notebook. 
-
 ## Available features
 
 - **Text-To-Speech** (module `models.tts`) :
@@ -65,7 +63,7 @@ Available architectures :
 
 \* Some speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture. More recent models use the `GE2E`-loss based encoders (like in the original paper), with a CNN architecture (instead of the 3-layers LSTM), as it is faster to train. 
 
-My SV2TTS models are fine-tuned from pretrained Tacotron2 models which speeds up a lot the training.
+My SV2TTS models are fine-tuned from pretrained Tacotron2 models, by using the *partial transfer learning* procedure (see below for details), which speeds up a lot the training.
 
 ### Model weights
 
@@ -77,7 +75,6 @@ My SV2TTS models are fine-tuned from pretrained Tacotron2 models which speeds up
 | sv2tts_siwis  | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1-WWfmQs7pGRQpcZPI6mn9c4FTWnrHZem/view?usp=sharing) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1GESyvKozvWEj7nfC7Qin2xuMJrL4pqTS/view?usp=sharing)  |
 | sv2tts_tacotron2_256_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1UK44V7C-hlj_pziAuQnJnHxAwLyoxcjt/view?usp=share_link)  |
 | sv2tts_siwis_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1BaCSuWeydNj5z0b6dgKddPUDM2j4rPvu/view?usp=share_link)  |
-
 
 You can download the `tensorflow` version of `WaveGlow` at [this link](https://drive.google.com/file/d/1Lx-MiiRuxWmBX4_ZORD9YT4LfgHb0Tfk/view?usp=sharing)
 
@@ -91,9 +88,9 @@ The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIW
 
 ### Demonstration
 
-You can find a demonstration on [this link](https://colab.research.google.com/drive/18odkKiBl8sm4Ba9S3TM1V128uO9HbDn0?usp=sharing) running on [Google Colab](https://colab.research.google.com/)
+A [Google Colab](https://colab.research.google.com) demo is available [at this link](https://colab.research.google.com/drive/18odkKiBl8sm4Ba9S3TM1V128uO9HbDn0?usp=sharing) !
 
-You can also find some audio generated in `example_outputs/` or directly in the notebooks.
+You can also find some audio generated in `example_outputs/`, or directly in the Colab notebook ;)
 
 ### Installation and usage
 
@@ -117,15 +114,10 @@ You also have to install `ffmpeg` for audio loading / saving.
 - [ ] Add document parsing to perform `TTS` on document (in progress)
 - [ ] Add new languages support
 - [ ] Add new TTS architectures / models
-- [x] Add `consumer-producer` based support for prediction
-- [x] Add pipeline-based prediction
 - [x] Train a `SV2TTS` model based on an encoder trained with the `GE2E` loss
+- [x] **Experimental** add support for long text inference
+- [ ] Add support for streaming inference
 
-## Pipeline-based prediction
-
-The `Tacotron2` model (as well as the vocoder inference) supports the pipeline-based prediction, meaning that all the tasks you see in the below graph are multi-threaded. Check the [data_processing project](https://github.com/yui-mhcp/data_processing) for a better understanding of the `producer-consumer` framework. 
-
-![Text-To-Speech pipeline](tts_pipeline.jpg)
 
 ## Multi-speaker Text-To-Speech
 
@@ -133,7 +125,7 @@ There exists 2 main ways to enable `multi-speaker` in the `Tacotron2` architectu
 1. Use a `speaker-id`, embed it with an `Embedding` layer and concat / add it to the `Encoder` output
 2. Use a `Speaker Encoder (SE)` to embed audio from speakers and concat / add this embedding to the `encoder output`
 
-I did not test the 1st idea but it is available in my implementation.
+I have not tested the 1st idea but it is available in my implementation.
 
 ### Automatic voice cloning with the `SV2TTS` architecture
 

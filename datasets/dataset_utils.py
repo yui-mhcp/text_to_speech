@@ -42,6 +42,12 @@ _accepted_datasets_types = {
     'tf.data.Dataset'   : 'tensorflow dataset'
 }
 
+def _maybe_load_embedding(directory, dataset, ** kwargs):
+    if 'embedding' in dataset.columns: return dataset
+    if any(k.startswith('embedding_') for k in kwargs.keys()):
+        return load_embedding(directory, dataset = dataset, ** kwargs)
+    return dataset
+
 def _get_infos(tensor, level = 0):
     indent = ' ' * level
     if isinstance(tensor, (list, tuple)):

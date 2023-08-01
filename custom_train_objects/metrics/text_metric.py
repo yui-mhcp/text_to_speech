@@ -37,7 +37,7 @@ class TextMetric(tf.keras.metrics.Metric):
         
         predicted_codes, _ = tf.nn.ctc_beam_search_decoder(
             tf.transpose(y_pred, [1, 0, 2]),
-            tf.zeros((tf.shape(y_pred)[0],), dtype = tf.int32) + tf.shape(y_pred)[1]
+            tf.fill((tf.shape(y_pred)[0], ), tf.shape(y_pred)[1])
         )
         predicted_codes = tf.cast(predicted_codes[0], tf.int32)
         codes = tf.sparse.from_dense(y_true)

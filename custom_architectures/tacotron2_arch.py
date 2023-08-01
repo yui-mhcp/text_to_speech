@@ -253,7 +253,9 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
             alignment_history   = tf.TensorSpec(shape = (), dtype = tf.float32)
         )
     
-    def get_initial_state(self, inputs, memory):
+    def get_initial_state(self, inputs, memory, rnn_states = None):
+        attn_rnn_state, decoder_rnn_state = rnn_states if rnn_states is not None else (None, None)
+        
         batch_size = tf.shape(memory)[0]
         
         self.attention_rnn.reset_dropout_mask()
@@ -265,10 +267,10 @@ class Tacotron2DecoderCell(tf.keras.layers.AbstractRNNCell):
         
         initial_attention_rnn_cell_states = self.attention_rnn.get_initial_state(
             None, batch_size, dtype = tf.float32
-        )
+        ) if attn_rnn_state is None else attn_rnn_state
         initial_decoder_rnn_cell_states = self.decoder_rnn.get_initial_state(
             None, batch_size, dtype = tf.float32
-        )
+        ) if decoder_rnn_state is None else decoder_rnn_state
         initial_context = self.attention_layer.get_initial_context(
             None, memory, batch_size = batch_size, dtype = tf.float32
         )
@@ -394,13 +396,34 @@ class Tacotron2Decoder(tf.keras.Model):
              encoder_mask   = None,
              
              max_length = None,
-             early_stopping = False
+             early_stopping = False,
+             
+             attn_mask_win_len  = -1
             ):
         def cond(t, last_frame, finished, cell_state, outputs, stop_tokens, lengths):
-            return t < max_length and not (early_stopping and tf.reduce_all(finished))
+            return not (early_stopping and tf.reduce_all(finished))
         
         def body(t, last_frame, finished, cell_state, outputs, stop_tokens, lengths):
             input_frame = last_frame if inputs is None else inputs[:, t]
+            
+            if attn_mask_win_len > 0 and attn_mask_win_len < encoder_len:
+                win_half = attn_mask_win_len // 2
+                
+                if t <= 10:
+                    center = tf.fill((batch_size, ), win_half)
+                else:
+                    center = tf.maximum(win_half, tf.argmax(
+                        cell_state.attention_state[0], output_type = tf.int32, axis = -1
+                    ))
+                    center = tf.minimum(center, encoder_len - win_half)
+
+                attn_mask   = tf.expand_dims(tf.range(encoder_len), axis = 0)
+                attn_mask   = tf.logical_and(
+                    center - win_half <= attn_mask, attn_mask <= center + win_half
+                )
+                attn_mask.set_shape(encoder_mask.shape)
+            else:
+                attn_mask   = encoder_mask
             
             (frame, stop_token), new_cell_state = self.cell(
                 input_frame,
@@ -409,7 +432,7 @@ class Tacotron2Decoder(tf.keras.Model):
                 processed_memory    = processed_memory,
                 
                 training    = training,
-                memory_mask = encoder_mask
+                memory_mask = attn_mask
             )
             
             finished = tf.logical_or(finished, stop_token[:, -1] > 0.5)
@@ -445,11 +468,12 @@ class Tacotron2Decoder(tf.keras.Model):
                     input_length, tf.shape(inputs)[1], dtype = tf.bool
                 )
 
-        if initial_state is None:
-            initial_state = self.cell.get_initial_state(inputs, encoder_output)
+        initial_state = self.cell.get_initial_state(inputs, encoder_output, initial_state)
 
         memory, processed_memory = self.cell.process_memory(encoder_output, mask = encoder_mask)
 
+        encoder_len = tf.shape(memory)[1]
+        
         dynamic_size    = True if inputs is None else False
         
         outputs     = tf.TensorArray(
@@ -647,13 +671,23 @@ class Tacotron2(tf.keras.Model):
 
     @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
     def infer(self,
-              inputs    : tf.Tensor,
+              inputs,
               training  = False,
+              
+              attn_mask_win_len : tf.Tensor = -1,
+              
               max_length    : tf.Tensor = -1,
               early_stopping    = True,
+              
+              initial_state = None,
               return_state  = False,
+              
               ** kwargs
              ):
+        print('Retracing with input(s) {} - attention mask : {} - max length : {}'.format(
+            tf.nest.map_structure(lambda t: tuple(t.shape), inputs),
+            attn_mask_win_len, max_length
+        ))
         if max_length <= 0: max_length = self.maximum_iterations
 
         # encoder_output shape == [batch_size, seq_in_len, encoder_embedding_dim]
@@ -667,7 +701,11 @@ class Tacotron2(tf.keras.Model):
             encoder_output  = encoder_output,
             encoder_mask    = encoder_mask,
             training    = training,
+            
+            attn_mask_win_len   = attn_mask_win_len,
+            
             max_length  = max_length,
+            initial_state   = initial_state,
             early_stopping  = early_stopping
         )
 

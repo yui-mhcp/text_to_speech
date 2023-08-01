@@ -1,50 +1,22 @@
 {
     "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !": {
-        "texts": [
-            "Bonjour tout le monde !",
-            "J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
+        "text": "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !",
+        "parts": [
+            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
         ],
-        "mels": [
-            "example_outputs/fr/mels/mel_0.npy",
-            "example_outputs/fr/mels/mel_1.npy"
-        ],
-        "audios": [
-            "example_outputs/fr/sentence_audios/audio_0.mp3",
-            "example_outputs/fr/sentence_audios/audio_1.mp3"
-        ],
-        "times": [
-            1.6370068027210884,
-            3.3668934240362813
-        ],
-        "plots": [
-            "example_outputs/fr/plots/attn_0.png",
-            "example_outputs/fr/plots/attn_1.png"
-        ],
+        "timestamp": 1690618488.8814902,
+        "mel": "example_outputs/fr/mels/mel_0.npy",
         "audio": "example_outputs/fr/audios/audio_0.mp3",
-        "time": 5.00390022675737
+        "time": 4.237641723356009
     },
     "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
-        "texts": [
-            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios !",
-            "Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !"
+        "text": "\nBonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes \nd'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !\n",
+        "parts": [
+            "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !"
         ],
-        "mels": [
-            "example_outputs/fr/mels/mel_2.npy",
-            "example_outputs/fr/mels/mel_3.npy"
-        ],
-        "audios": [
-            "example_outputs/fr/sentence_audios/audio_2.mp3",
-            "example_outputs/fr/sentence_audios/audio_3.mp3"
-        ],
-        "times": [
-            5.712108843537415,
-            4.435011337868481
-        ],
-        "plots": [
-            "example_outputs/fr/plots/attn_2.png",
-            "example_outputs/fr/plots/attn_3.png"
-        ],
+        "timestamp": 1690618506.6190047,
+        "mel": "example_outputs/fr/mels/mel_1.npy",
         "audio": "example_outputs/fr/audios/audio_1.mp3",
-        "time": 10.147120181405896
+        "time": 10.193560090702947
     }
 }

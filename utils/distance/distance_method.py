@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import logging
+import functools
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -20,11 +21,16 @@ logger = logging.getLogger(__name__)
 MAX_MATRIX_SIZE = 512 * 1024 * 1024
 
 def _maybe_expand_for_matrix(x, y, as_matrix = False):
-    if as_matrix and len(tf.shape(x)) == len(tf.shape(y)):
-        y = tf.expand_dims(y, axis = -3)
+    if isinstance(x, tf.Tensor):
+        rank_fn, expand_fn = lambda t: len(tf.shape(t)), tf.expand_dims
+    else:
+        rank_fn, expand_fn = lambda t: t.ndim, np.expand_dims
     
-    if len(tf.shape(x)) == len(tf.shape(y)) - 1:
-        x = tf.expand_dims(x, axis = -2)
+    if as_matrix and rank_fn(x) == rank_fn(y):
+        y = expand_fn(y, axis = -3)
+    
+    if rank_fn(x) == rank_fn(y) - 1:
+        x = expand_fn(x, axis = -2)
 
     return x, y
 
@@ -34,10 +40,12 @@ def tf_distance(x : tf.Tensor,
                 method,
                 as_matrix   = True,
                 force_distance  = False,
-                max_matrix_size = -1
+                max_matrix_size = -1,
+                ** kwargs
                ):
     return distance(
-        x, y, method, force_distance = force_distance, as_matrix = as_matrix, max_matrix_size = max_matrix_size
+        x, y, method, force_distance = force_distance, as_matrix = as_matrix,
+        max_matrix_size = max_matrix_size, ** kwargs
     )
 
 def distance(x,
@@ -81,17 +89,23 @@ def distance(x,
     if method in _str_distance_method:
         return _str_distance_method[method](x, y, ** kwargs)
 
-    if tf.executing_eagerly():
+    if tf.executing_eagerly() and logger.isEnabledFor(logging.DEBUG):
         logger.debug('Calling {} on matrices with shapes {} and {}'.format(
             method, tuple(x.shape), tuple(y.shape)
         ))
     
-    x, y = tf.cast(x, tf.float32), tf.cast(y, tf.float32)
-    if len(tf.shape(x)) == 1: x = tf.expand_dims(x, axis = 0)
-    if len(tf.shape(y)) == 1: y = tf.expand_dims(y, axis = 0)
+    if isinstance(x, tf.Tensor) or isinstance(y, tf.Tensor):
+        rank_fn, expand_fn = lambda t: len(tf.shape(t)), tf.expand_dims
+        x, y = tf.cast(x, tf.float32), tf.cast(y, tf.float32)
+    else:
+        rank_fn, expand_fn = lambda t: t.ndim, np.expand_dims
+        x, y = x.astype(np.float32), y.astype(np.float32)
+        
+    if rank_fn(x) == 1: x = expand_fn(x, axis = 0)
+    if rank_fn(y) == 1: y = expand_fn(y, axis = 0)
 
     max_x = -1
-    if max_matrix_size > 0:
+    if max_matrix_size > 0 and isinstance(x, tf.Tensor):
         if as_matrix:
             max_x = tf.minimum(tf.shape(x)[0], tf.cast(tf.math.ceil(
                 max_matrix_size / (tf.shape(x)[-1] * tf.shape(y)[0])
@@ -123,7 +137,7 @@ def distance(x,
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
     
-    if tf.executing_eagerly():
+    if tf.executing_eagerly() and logger.isEnabledFor(logging.DEBUG):
         logger.debug('Result shape : {}'.format(tuple(distances.shape)))
     
     return distances if not force_distance or method not in _similarity_methods else 1. - distances
@@ -154,6 +168,68 @@ def manhattan_distance(x, y, as_matrix = False, ** kwargs):
 def euclidian_distance(x, y, as_matrix = False, ** kwargs):
     x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
     return tf.math.sqrt(tf.reduce_sum(tf.square(x - y), axis = -1))
+
+def bbox_metric(x, y, box_mode, metric, as_matrix = False, ** kwargs):
+    from utils.image.box_utils import BoxFormat, convert_box_format
+    
+    if isinstance(x, tf.Tensor):
+        expand_fn, minimum_fn, maximum_fn = tf.expand_dims, tf.minimum, tf.maximum
+        divide_no_nan = tf.math.divide_no_nan
+    elif isinstance(x, np.ndarray):
+        expand_fn, minimum_fn, maximum_fn = np.expand_dims, np.minimum, np.maximum
+        divide_no_nan   = lambda num, den: np.divide(num, den, where = den != 0)
+    else:
+        minimum_fn, maximum_fn, divide_no_nan = min, max, lambda a, b: 0. if b == 0. else a / b
+    
+    shape_fn = tf.shape if not tf.executing_eagerly() else lambda t: t.shape
+    
+    if isinstance(x, (np.ndarray, tf.Tensor)):
+        if box_mode == BoxFormat.POLY:
+            if len(shape_fn(x)) == 2: x = expand_fn(x, axis = 0)
+            if len(shape_fn(y)) == 2: y = expand_fn(x, axis = 0)
+
+        if as_matrix:
+            x = expand_fn(x, axis = -3 if box_mode == BoxFormat.POLY else -2)
+            y = expand_fn(y, axis = -3 if box_mode == BoxFormat.POLY else -2)
+
+    
+    xmin_1, ymin_1, xmax_1, ymax_1 = convert_box_format(
+        x, box_mode = box_mode, output_format = BoxFormat.CORNERS, as_list = True
+    )
+    xmin_2, ymin_2, xmax_2, ymax_2 = convert_box_format(
+        y, box_mode = box_mode, output_format = BoxFormat.CORNERS, as_list = True
+    )
+    
+    if as_matrix:
+        xmin_1, xmin_2 = _maybe_expand_for_matrix(xmin_1, xmin_2, as_matrix = True)
+        ymin_1, ymin_2 = _maybe_expand_for_matrix(ymin_1, ymin_2, as_matrix = True)
+        xmax_1, xmax_2 = _maybe_expand_for_matrix(xmax_1, xmax_2, as_matrix = True)
+        ymax_1, ymax_2 = _maybe_expand_for_matrix(ymax_1, ymax_2, as_matrix = True)
+
+    areas_1 = (ymax_1 - ymin_1) * (xmax_1 - xmin_1)
+    areas_2 = (ymax_2 - ymin_2) * (xmax_2 - xmin_2)
+    
+    xmin, ymin = maximum_fn(xmin_1, xmin_2), maximum_fn(ymin_1, ymin_2)
+    xmax, ymax = minimum_fn(xmax_1, xmax_2), minimum_fn(ymax_1, ymax_2)
+
+    inter_w, inter_h = maximum_fn(0., xmax - xmin), maximum_fn(0., ymax - ymin)
+    
+    inter = inter_w * inter_h
+    
+    if metric == 'iou':
+        denom = areas_1 + areas_2 - inter
+    elif metric == 'intersect':
+        if not as_matrix:
+            denom = areas_1
+        else:
+            arange  = np.arange(len(areas_1))
+            denom   = areas_1 * (arange[np.newaxis] > arange[:, np.newaxis]) + areas_2 * (arange[np.newaxis] < arange[:, np.newaxis])
+
+    result = divide_no_nan(inter, denom)
+    return result if not as_matrix else result[..., 0]
+
+iou = functools.partial(bbox_metric, metric = 'iou')
+intersect   = functools.partial(bbox_metric, metric = 'intersect')
 
 def edit_distance(hypothesis,
                   truth,
@@ -254,7 +330,9 @@ _str_distance_method    = {
 
 _similarity_methods = {
     'cosine'    : cosine_similarity,
-    'dp'    : dot_product
+    'dp'    : dot_product,
+    'iou'   : iou,
+    'intersect'   : intersect
 }
 
 _distance_methods = {

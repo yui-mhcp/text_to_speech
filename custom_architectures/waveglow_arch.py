@@ -42,6 +42,12 @@ import tensorflow as tf
 
 from custom_layers import Invertible1x1Conv
 
+"""@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (), dtype = tf.int32)
+], jit_compile = True)
+"""
 def add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
     in_act = input_a + input_b
     t_act = tf.tanh(in_act[:, :, :n_channels])
@@ -211,7 +217,6 @@ class WaveGlow(tf.keras.Model):
         return self.infer(inputs)
         #raise NotImplementedError()
     
-    #@tf.function(reduce_retracing = True)
     def infer(self, spect, sigma = 1.0):
         spect = self.upsample(spect)
 
@@ -221,13 +226,13 @@ class WaveGlow(tf.keras.Model):
 
         spect = tf.image.extract_patches(
             tf.expand_dims(spect, -1),
-            sizes   = [1, self.n_group,1,1],
-            strides = [1,self.n_group,1,1],
-            rates   = [1,1,1,1],
+            sizes   = [1, self.n_group, 1, 1],
+            strides = [1, self.n_group, 1, 1],
+            rates   = [1, 1, 1, 1],
             padding = 'VALID'
         )
         spect = tf.reshape(spect, [tf.shape(spect)[0], tf.shape(spect)[1], -1])
-
+        
         audio = sigma * tf.random.normal([
             tf.shape(spect)[0], tf.shape(spect)[1], self.n_remaining_channels
         ])

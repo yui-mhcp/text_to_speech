@@ -26,7 +26,7 @@ from custom_architectures import get_architecture
 from models.interfaces.base_text_model import BaseTextModel
 from models.interfaces.base_audio_model import BaseAudioModel
 from models.weights_converter import pt_convert_model_weights
-from utils import time_to_string, load_json, dump_json, plot_spectrogram, pad_batch
+from utils import time_to_string, load_json, dump_json, convert_to_str, plot_spectrogram, pad_batch
 from utils.audio import write_audio, load_audio, display_audio
 from utils.text import default_english_encoder, split_text
 from utils.thread_utils import Producer, Consumer, Pipeline, ThreadedDict
@@ -124,7 +124,20 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return pred if len(pred) != 2 else pred[0]
     
     @timer(name = 'inference')
-    def infer(self, text, * args, early_stopping = True, max_length = -1, ** kwargs):
+    def infer(self,
+              text,
+              * args,
+              
+              attn_mask_win_len = -1,
+
+              max_length    = -1,
+              early_stopping    = True,
+              
+              return_state  = False,
+              initial_state = None,
+              
+              ** kwargs
+             ):
         if max_length <= 0: max_length = self.max_output_length
         
         if not isinstance(text, (list, tuple)):
@@ -134,7 +147,13 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                 text    = tf.expand_dims(text, axis = 0)
         
         return self.tts_model.infer(
-            text, early_stopping = early_stopping, max_length = max_length, return_state = False
+            text,
+            attn_mask_win_len   = tf.cast(attn_mask_win_len, tf.int32),
+            
+            max_length  = tf.cast(max_length, tf.int32),
+            early_stopping  = early_stopping,
+            initial_state   = initial_state,
+            return_state    = return_state
         )
     
     def compile(self, loss = 'tacotronloss', metrics = [], ** kwargs):
@@ -269,8 +288,317 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             np.save(os.path.join(mel_dir, prefix_i + '_pred.npy'), p_mel)
             np.save(os.path.join(mel_dir, prefix_i + '_infer.npy'), i_mel)
 
-    @timer
     def predict(self,
+                texts,
+                max_text_length = -1,
+                max_length  = 10.,
+                batch_size  = 1,
+                
+                min_fpt_ratio = 2.,
+                max_fpt_ratio = 10.,
+                
+                vocoder = None,
+                display = None,
+                play    = False,
+                show_plot   = False,
+                silence_time    = 0.15,
+                
+                save    = None,
+                save_mel    = None,
+                save_plot   = False,
+                save_audio  = None,
+                directory   = None,
+                overwrite   = False,
+                timestamp   = -1,
+                required_key    = None,
+                
+                filename    = 'audio_{}.mp3',
+                
+                expand_acronyms = True,
+                
+                post_processing      = None,
+                part_post_processing = None,
+                
+                tqdm    = lambda x: x,
+                
+                ** kwargs
+               ):
+        ####################
+        # helping function #
+        ####################
+        
+        def _get_filename(text, key, directory, file_format):
+            filename = predicted.get(text, {}).get(key, file_format)
+            if not filename.startswith(directory):
+                filename = os.path.join(directory, filename)
+            if '{}' in filename:
+                filename = filename.format(len(glob.glob(
+                    filename.replace('{}', '*')
+                )))
+            
+            return filename
+
+        @timer(name = 'pre-processing')
+        def split_and_encode(cleaned_text):
+            if isinstance(cleaned_text, list): splitted = cleaned_text
+            elif max_text_length == -1:        splitted = [cleaned_text]
+            elif max_text_length == -2:        splitted = split_sentence(cleaned_text)
+            else:                              splitted = split_text(cleaned_text, max_text_length)
+            
+            return splitted, [self.encode_text(text, cleaned = True) for text in splitted]
+        
+        def combine_outputs(mels, attentions, audios):
+            audio = None
+            if audios:
+                audio = [audios[0]]
+                for a in audios[1:]: audio.extend([silence, a])
+                audio = np.concatenate(audio, axis = 0)
+            
+            return np.concatenate(mels, axis = 0), attentions, audio
+        
+        @timer(name = 'post-processing')
+        def post_process(idx):
+            while idx < len(results) and results[idx] is not None:
+                text, infos = results[idx]
+                
+                if display and 'audio' in infos:
+                    display_audio(infos['audio'], rate = self.audio_rate)
+                
+                if post_processing is not None:
+                    post_processing(infos, text = text)
+                
+                idx += 1
+            
+            return idx
+        
+        def get_text(text):
+            return convert_to_str(text['text'] if isinstance(text, (dict, pd.Series)) else text)
+        
+        def should_predict(text):
+            if isinstance(text, (dict, pd.Series)) and 'text' in text: text = text['text']
+            if required_key in predicted.get(text, {}):
+                if not overwrite or (timestamp != -1 and timestamp <= predicted[text].get('timestamp', -1)):
+                    return False
+            return True
+        
+        now = time.time()
+        
+        if isinstance(texts, pd.DataFrame): texts = texts.to_dict('records')
+        if not isinstance(texts, (list, tuple, np.ndarray, tf.Tensor)): texts = [texts]
+        
+        ##############################
+        #   Saving initialization    #
+        ##############################
+        
+        time_logger.start_timer('initialization')
+        
+        if required_key is None: required_key    = 'mel' if vocoder is None else 'audio'
+
+        if save is None:        save = True if directory or vocoder is None else False
+        if save_mel is None:    save_mel    = save
+        if save_plot is None:   save_plot   = save
+        if save_audio is None:  save_audio  = save
+        if vocoder is None:     save_audio  = False
+        if display is None:     display     = not save
+        
+        save = save_mel or save_plot or save_audio
+        if vocoder is not None:
+            if save:    save_audio = True
+            else:       display = True
+        
+        # get saving directory
+        if directory is None: directory = self.pred_dir
+        mel_dir, plot_dir, audio_dir = None, None, None
+
+        map_file = os.path.join(directory, 'map.json')
+
+        keys_to_skip = ['attention', 'mel' if not save_mel else None, 'audio' if not save_audio else None]
+        if save:
+            if save_mel:
+                mel_dir = '/'.join((directory, 'mels'))
+                os.makedirs(mel_dir, exist_ok = True)
+
+            if save_plot:
+                plot_dir = '/'.join((directory, 'plots'))
+                os.makedirs(plot_dir, exist_ok = True)
+
+            if save_audio:
+                audio_dir = '/'.join((directory, 'audios'))
+                os.makedirs(audio_dir, exist_ok = True)
+        # load previous generated (if any)
+        predicted = load_json(map_file, default = {})
+        
+        ####################
+        #  Pre-processing  #
+        ####################
+
+        results     = [None] * len(texts)
+        duplicatas  = {}
+        requested   = [(get_text(txt), txt) for txt in texts]
+        
+        inputs, cleaned = [], {}
+        for i, (text, data) in enumerate(requested):
+            if isinstance(text, str):
+                if text not in cleaned: cleaned[text] = self.clean_text(text, expand_acronyms = expand_acronyms)
+                clean = cleaned[text]
+                if not should_predict(clean):
+                    results[i] = (text, predicted[clean])
+                    continue
+
+                duplicatas.setdefault(clean, []).append(i)
+                if len(duplicatas[clean]) > 1:
+                    continue
+            else:
+                clean = [self.clean_text(t, expand_acronyms = expand_acronyms) for t in text]
+            
+            inputs.append((i, text, clean, data))
+
+        # pre-compute the silence : used for empty sentences + between each sub-parts of a long text
+        silence = np.zeros((int(self.audio_rate * silence_time), ))
+        
+        time_logger.stop_timer('initialization')
+        
+        ####################
+        #  Inference loop  #
+        ####################
+        
+        show_idx = post_process(0)
+        
+        if len(inputs) > 0:
+            for (i, text, clean, data) in inputs:
+                splitted, encoded = split_and_encode(clean)
+                
+                all_outputs = {'mels' : [], 'attentions' : [], 'audios' : []}
+                for s in range(0, len(encoded), batch_size):
+                    batch = encoded[s : s + batch_size]
+                    batch = pad_batch(batch, pad_value = self.blank_token_idx) if len(batch) > 1 else tf.expand_dims(
+                        batch[0], axis = 0
+                    )
+                    
+                    max_infer_length = max_length if not isinstance(max_length, float) else int(max_length * batch.shape[1])
+
+                    start_synth_infer_time = time.time()
+                    
+                    _, mels, gates, attentions = self.infer(
+                        batch, max_length = tf.cast(max_infer_length, tf.int32), ** kwargs
+                    )
+                    n_infer = 1
+                    ratio = mels.shape[1] / batch.shape[1]
+                    while (min_fpt_ratio != -1 and ratio <= min_fpt_ratio) or (max_fpt_ratio > 0 and ratio >= max_fpt_ratio):
+                        logger.info('Inference failed (shape : {}, frape / token ratio : {:.2f}), re-executing it !'.format(
+                            mels.shape, ratio
+                        ))
+                        _, mels, gates, attentions = self.infer(
+                            batch, max_length = tf.cast(max_infer_length, tf.int32), ** kwargs
+                        )
+                        ratio = mels.shape[1] / batch.shape[1]
+                        n_infer += 1
+                        if n_infer == 5:
+                            logger.warning('Inference failed 5 times for text(s) {}'.format(splitted[s : s + batch_size]))
+                            break
+                    
+                    synth_gen_time   = time.time() - start_synth_infer_time
+                    vocoder_gen_time = 0
+                    
+                    gates, attentions = gates.numpy(), attentions.numpy()
+                    for idx in range(len(batch)):
+                        mel, gate, attn = mels[idx], gates[idx], attentions[idx]
+                        
+                        if len(batch) > 1:
+                            stop_gate    = np.where(gate > 0.5)[0]
+                            if len(stop_gate) > 0:
+                                mel, attn = mel[: stop_gate[0]], attn[: stop_gate[0]]
+                        
+                        audio = None
+                        if vocoder is not None:
+                            start_vocoder_time = time.time()
+                            
+                            audio = vocoder(mel, ** kwargs)
+                            if hasattr(audio, 'numpy'): audio = audio.numpy()
+                            if audio.ndim == 2: audio = audio[0]
+                            all_outputs['audios'].append(audio)
+                            
+                            vocoder_gen_time += time.time() - start_vocoder_time
+                        
+                        all_outputs['mels'].append(mel.numpy())
+                        all_outputs['attentions'].append(attn)
+                        
+                        if part_post_processing is not None:
+                            part_post_processing(text = splitted[s * batch_size + idx], mel = mel, attention = attn, audio = audio)
+                
+                mel, attention, audio = combine_outputs(** all_outputs)
+                
+                audio_time = len(audio) / self.audio_rate if vocoder is not None else -1
+                infos = {
+                    'text'  : text,
+                    'parts' : splitted,
+                    'timestamp' : now,
+                    'mel'   : mel,
+                    'attention' : attention,
+                    'audio' : audio,
+                    'time'  : audio_time
+                }
+                
+                if vocoder is not None:
+                    logger.info('{} generated in {} ({} generated / sec) : {} synthesizer + {} vocoder'.format(
+                        time_to_string(audio_time),
+                        time_to_string(synth_gen_time + vocoder_gen_time),
+                        time_to_string(audio_time / (synth_gen_time + vocoder_gen_time)),
+                        time_to_string(synth_gen_time),
+                        time_to_string(vocoder_gen_time)
+                    ))
+                
+                show_idx = post_process(show_idx)
+                
+                if save:
+                    if save_mel:
+                        time_logger.start_timer('saving mel')
+                        infos['mel'] = _get_filename(clean, 'mel', mel_dir, 'mel_{}.npy')
+                        np.save(infos['mel'], mel)
+                        time_logger.stop_timer('saving mel')
+                    
+                    if save_plot:
+                        time_logger.start_timer('saving plot')
+                        infos['plot'] = _get_filename(clean, 'plot', plot_dir, 'plot_{}.png')
+                        data_to_plot = {'mel' : mel}
+                        if len(attention) > 1:
+                            data_to_plot.update({
+                                'Attention part #{}'.format(i + 1) : attn for i, attn in enumerate(attention)
+                            })
+                        else:
+                            data_to_plot['attention'] = attention[0]
+                        if vocoder is not None:
+                            data_to_plot['audio'] = {'x' : audio, 'rate' : self.audio_rate, 'plot_type' : 'audio'}
+
+                        plot_spectrogram(
+                            ** data_to_plot, title = "Text :\n{}".format(text), filename = infos['plot'], show = show_plot
+                        )
+                        time_logger.stop_timer('saving plot')
+                    
+                    if save_audio:
+                        time_logger.start_timer('saving audio')
+                        infos['audio'] = _get_filename(clean, 'audio', audio_dir, filename)
+                        write_audio(audio = audio, filename = infos['audio'], rate = self.audio_rate)
+                        time_logger.stop_timer('saving audio')
+                    
+                    predicted[clean] = {k : v for k, v in infos.items() if k not in keys_to_skip}
+                    
+                    time_logger.start_timer('saving json')
+                    dump_json(filename = map_file, data = predicted, indent = 4)
+                    time_logger.stop_timer('saving json')
+                    
+                if isinstance(clean, str):
+                    for duplicate_idx in duplicatas[clean]:
+                        results[duplicate_idx] = (text, infos)
+                else:
+                    results[i] = (text, infos)
+                
+                show_idx = post_process(show_idx)
+        
+        return results
+
+    @timer
+    def predict_old(self,
                 sentences,
                 max_text_length = -1,
                 batch_size  = 1,

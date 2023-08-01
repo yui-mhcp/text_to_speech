@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -11,25 +10,29 @@
 # limitations under the License.
 
 import os
-import librosa
 import logging
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
 from tqdm import tqdm
-from unidecode import unidecode
-from multiprocessing import cpu_count
+from functools import wraps
 
 from loggers import timer
 from utils import load_json, load_embedding
-from datasets.dataset_utils import prepare_dataset
+from datasets.custom_datasets import add_dataset
+from datasets.dataset_utils import _maybe_load_embedding, prepare_dataset
 
 logger = logging.getLogger(__name__)
+
+TTS = 'TTS'
+STT = 'STT'
+SI  = 'Speaker Identification'
 
 def audio_dataset_wrapper(name, task, ** default_config):
     def wrapper(dataset_loader):
         @timer(name = '{} loading'.format(name))
+        @wraps(dataset_loader)
         def _load_and_process(directory, * args, add_audio_time = False, ** kwargs):
             dataset = dataset_loader(directory, * args, ** kwargs)
             
@@ -45,28 +48,19 @@ def audio_dataset_wrapper(name, task, ** default_config):
             
             return dataset
         
-        from datasets.custom_datasets import add_dataset
+        add_dataset(name, processing_fn = _load_and_process, task = task, ** default_config)
         
-        fn = _load_and_process
-        fn.__name__ = dataset_loader.__name__
-        fn.__doc__  = dataset_loader.__doc__
-        
-        add_dataset(name, processing_fn = fn, task = task, ** default_config)
-        
-        return fn
+        return _load_and_process
     return wrapper
 
-def _maybe_load_embedding(directory, dataset, ** kwargs):
-    if 'embedding' in dataset.columns: return dataset
-    if 'embedding_name' in kwargs or 'embedding_dim' in kwargs:
-        return load_embedding(directory, dataset = dataset, ** kwargs)
-    return dataset
-
 def _add_audio_time(dataset):
+    import librosa
+    
     dataset['time'] = dataset['filename'].apply(lambda f: librosa.get_duration(filename = f))
     return dataset
 
 def _add_default_rate(dataset):
+    import librosa
     if len(dataset) == 0: raise ValueError("Dataset is empty !")
         
     default_rate = librosa.get_samplerate(dataset.at[0, 'filename'])
@@ -74,7 +68,7 @@ def _add_default_rate(dataset):
     
     return dataset
 
-@audio_dataset_wrapper(name = 'siwis', task = ['tts', 'stt'], directory = '{}/SIWIS')
+@audio_dataset_wrapper(name = 'siwis', task = (TTS, STT), directory = '{}/SIWIS')
 def preprocess_SIWIS_annots(directory, lang = 'fr', parts = [1, 2, 3, 5], ** kwargs):
     base_dir = os.path.join(directory, lang)
     
@@ -103,7 +97,7 @@ def preprocess_SIWIS_annots(directory, lang = 'fr', parts = [1, 2, 3, 5], ** kwa
     
     return _maybe_load_embedding(base_dir, dataset, ** kwargs)
 
-@audio_dataset_wrapper(name = 'VoxForge', task = ['tts', 'stt'], directory = '{}/VoxForge')
+@audio_dataset_wrapper(name = 'VoxForge', task = (TTS, STT, SI), directory = '{}/VoxForge')
 def preprocess_VoxForge_annots(directory, lang = 'fr', ** kwargs):
     def process_speaker(main_dir, name):
         speaker_dir = os.path.join(main_dir, name)
@@ -120,7 +114,7 @@ def preprocess_VoxForge_annots(directory, lang = 'fr', ** kwargs):
             if l == '': continue
             l = l.split(' ')
             # Add original informations
-            audio_name, text = unidecode(l[0]), ' '.join(l[1:])
+            audio_name, text = l[0], ' '.join(l[1:])
             infos = {
                 'id' : name,
                 'filename' : os.path.join(speaker_dir, original_audio_dir, audio_name) + '.' + ext,
@@ -144,11 +138,19 @@ def preprocess_VoxForge_annots(directory, lang = 'fr', ** kwargs):
 
     return pd.DataFrame(data)
 
-@audio_dataset_wrapper(name = 'common voice', task = ['tts', 'stt'], directory = '{}/CommonVoice')
-def preprocess_CommonVoice_annots(directory, file = 'validated.tsv', 
-                                  dropna = False, sexe = None, age = None, 
-                                  accent = None, pop_down = True, pop_votes = True, 
-                                  ** kwargs):
+@audio_dataset_wrapper(name = 'common voice', task = (TTS, STT, SI), directory = '{}/CommonVoice')
+def preprocess_CommonVoice_annots(directory,
+                                  file  = 'validated.tsv',
+                                  
+                                  sexe  = None,
+                                  age   = None,
+                                  accent    = None,
+                                  
+                                  dropna    = False,
+                                  pop_down  = True,
+                                  pop_votes = True,
+                                  ** kwargs
+                                 ):
     def filter_col(dataset, col, values):
         if values is None: return dataset
         if not isinstance(values, (list, tuple)): values = [values]
@@ -193,7 +195,7 @@ def preprocess_CommonVoice_annots(directory, file = 'validated.tsv',
     return dataset.reset_index(drop = True)
 
 @audio_dataset_wrapper(
-    name    = 'mls', task = ['tts', 'stt'],
+    name    = 'mls', task = (TTS, STT, SI),
     train   = {'directory' : '{}/MLS', 'subset' : 'train'},
     valid   = {'directory' : '{}/MLS', 'subset' : 'test'}
 )
@@ -244,7 +246,7 @@ def preprocess_mls_annots(directory, lang = 'fr', subset = 'train', ** kwargs):
     return _maybe_load_embedding(base_dir, dataset, ** kwargs)
 
 @audio_dataset_wrapper(
-    name    = 'LibriSpeech', task = ['tts', 'stt'],
+    name    = 'LibriSpeech', task = (TTS, STT, SI),
     train   = {'directory' : '{}/LibriSpeech', 'subsets' : ['train-clean-100', 'train-clean-360']},
     valid   = {'directory' : '{}/LibriSpeech', 'subsets' : 'test-clean'}
 )
@@ -318,7 +320,7 @@ def preprocess_LibriSpeech_annots(directory, subsets = None, ** kwargs):
     return dataset
 
 @audio_dataset_wrapper(
-    name = 'kaggle_tts', task = ['tts', 'stt'], directory = '{}/kaggle/single_speaker'
+    name = 'kaggle_tts', task = (TTS, STT), directory = '{}/kaggle/single_speaker'
 )
 def preprocess_kaggle_single_speaker_annots(directory, book = None, ** kwargs):
     with open(os.path.join(directory, 'transcript.txt'), 'r', encoding = 'utf-8') as file:
@@ -346,7 +348,7 @@ def preprocess_kaggle_single_speaker_annots(directory, book = None, ** kwargs):
     
     return pd.DataFrame(metadata)
 
-@audio_dataset_wrapper(name = 'identification', task = ['tts', 'stt'])
+@audio_dataset_wrapper(name = 'identification', task = (TTS, STT))
 def preprocess_identification_annots(directory, by_part = False, ** kwargs):
     if 'parts' not in os.listdir(directory):
         return pd.concat([preprocess_identification_annots(
@@ -390,8 +392,9 @@ def make_siwis_mel(directory, stft_fn, target_rate, langue = 'fr', parts = [1, 2
         len(dataset), transformed.sum(), len(dataset) - transformed.sum()
     ))
     
-    tf_dataset = prepare_dataset(dataset[~transformed][['filename']], batch_size = 0, 
-                                 map_fn = map_mel_fn, cache = False)
+    tf_dataset = prepare_dataset(
+        dataset[~transformed][['filename']], map_fn = map_mel_fn, batch_size = 0, cache = False
+    )
     
     for p in parts:
         dir_name = os.path.join(directory, langue, mel_dir_name, 'part{}'.format(p))
@@ -425,8 +428,9 @@ def make_CV_mel(directory, stft_fn, target_rate, file = 'validated.tsv'):
         len(dataset), transformed.sum(), len(dataset) - transformed.sum()
     ))
     
-    tf_dataset = prepare_dataset(dataset[~transformed][['path']], batch_size = 0, 
-                                 map_fn = map_mel_fn, cache = False)
+    tf_dataset = prepare_dataset(
+        dataset[~transformed][['path']], map_fn = map_mel_fn, batch_size = 0, cache = False
+    )
         
     for filename, mel in tqdm(tf_dataset):
         filename = filename.numpy().decode('utf-8')

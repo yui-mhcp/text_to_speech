@@ -17,30 +17,51 @@ from utils.sequence_utils import pad_batch
 
 _inf = float('inf')
 
-def decode(encoded, method = 'greedy', ** kwargs):
-    if method not in _decoder_method:
+def ctc_decode(sequence, lengths = None, blank_index = 0, method = 'greedy', ** kwargs):
+    if method not in _ctc_decoder_methods:
         raise ValueError("Unknown decoder !\n  Accepted : {}\n  Got : {}".format(
             tuple(_decoder_method.keys()), method
         ))
     
-    if len(tf.shape(encoded)) == 2: encoded = tf.expand_dims(encoded, axis = 0)
+    if len(sequence.shape) == 2: sequence = tf.expand_dims(sequence, axis = 0)
     
-    return _decoder_method[method](encoded, ** kwargs)
-
-def greedy_decoder(encoded, ** kwargs):
-    return tf.argmax(encoded, axis = -1)
-
-def tf_beam_search_decoder(encoded, blank_index = 0, return_score = False, ** kwargs):
-    tokens, scores = tf.nn.ctc_beam_search_decoder(
-        tf.transpose(encoded, [1, 0, 2]),
-        tf.fill([tf.shape(encoded)[0]], tf.shape(encoded)[1]),
-        ** kwargs
+    if lengths is None:
+        lengths = tf.fill((sequence.shape[0], ), sequence.shape[1])
+    else:
+        lengths = tf.cast(lengths, tf.int32)
+        if len(lengths.shape) == 0: lengths = tf.expand_dims(lengths, axis = 0)
+    
+    return _ctc_decoder_methods[method](
+        sequence, lengths = lengths, blank_index = blank_index
     )
 
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
+    tf.TensorSpec(shape = (), dtype = tf.int32)
+])
+def ctc_greedy_decoder(sequence, lengths, blank_index):
+    tokens, score = tf.nn.ctc_greedy_decoder(
+        tf.transpose(sequence, [1, 0, 2]), lengths, blank_index = blank_index
+    )
     tokens = tf.sparse.to_dense(tokens[0])
-    return tokens if not return_score else (tokens, scores)
+    return tokens, scores[:, 0] / tf.cast(lengths, scores.dtype)
 
-def beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
+@tf.function(input_signature = [
+    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
+    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
+    tf.TensorSpec(shape = (), dtype = tf.int32)
+])
+def tf_ctc_beam_search_decoder(sequence, lengths, blank_index = 0):
+    tokens, scores = tf.nn.ctc_beam_search_decoder(
+        tf.transpose(sequence, [1, 0, 2]), lengths, beam_width = 25
+    )
+    tokens = tf.sparse.to_dense(tokens[0])
+    scores = scores[:, 0] / tf.reduce_sum(tf.cast(tokens != 0, scores.dtype), axis = -1)
+    
+    return tokens, scores
+
+def ctc_beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
     def build_beam(p_tot = - _inf, p_b = - _inf, p_nb = - _inf, p_text = 0):
         return {'p_tot' : p_tot, 'p_b' : p_b, 'p_nb' : p_nb, 'p_text' : p_text}
     
@@ -90,8 +111,8 @@ def beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwa
     best_beam = sorted(beams.items(), key = lambda b: b[1]['p_tot'], reverse = True)[0]
     return np.array(best_beam[0])
 
-_decoder_method = {
-    'greedy'    : greedy_decoder,
-    'beam'      : beam_search_decoder,
-    'beam_with_lm'  : beam_search_decoder
+_ctc_decoder_methods = {
+    'greedy'    : ctc_greedy_decoder,
+    'beam'      : tf_ctc_beam_search_decoder,
+    'beam_with_lm'  : ctc_beam_search_decoder
 }

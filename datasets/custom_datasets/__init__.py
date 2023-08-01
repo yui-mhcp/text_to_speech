@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -11,7 +10,6 @@
 # limitations under the License.
 
 import os
-import glob
 import logging
 import pandas as pd
 
@@ -26,16 +24,26 @@ _dataset_dir = os.environ.get(
 )
 
 def __load():
-    for module_name in glob.glob(os.path.join('datasets', 'custom_datasets', '*.py')):
-        if module_name.endswith('__init__.py'): continue
-        module_name = module_name.replace(os.path.sep, '.')[:-3]
+    for path in os.listdir('datasets/custom_datasets'):
+        if path.startswith(('_', '.')): continue
+        module = __import__('.'.join(('datasets', 'custom_datasets', path.replace('.py', ''))))
 
-        module = __import__(module_name)
+def set_dataset_dir(dataset_dir):
+    global _dataset_dir
+    _dataset_dir = dataset_dir
+
+def get_dataset_dir(ds_name = None):
+    global _dataset_dir, _custom_datasets
+    if not ds_name: return _dataset_dir
+    return _custom_datasets.get(clean_dataset_name(ds_name), {}).get('directory', None)
+
+def clean_dataset_name(name):
+    return name.lower().strip().replace(' ', '_')
 
 def add_dataset(name, processing_fn, task, ** kwargs):
     global _custom_datasets, _custom_processing, _dataset_tasks
     
-    name = name.lower().replace(' ', '_')
+    name = clean_dataset_name(name)
     
     if kwargs:
         _custom_datasets[name] = kwargs
@@ -46,13 +54,10 @@ def add_dataset(name, processing_fn, task, ** kwargs):
     if not isinstance(task, (list, tuple)): task = [task]
     for t in task: _dataset_tasks.setdefault(t, []).append(name)
 
-def set_dataset_dir(dataset_dir):
-    global _dataset_dir
-    _dataset_dir = dataset_dir
-
-def get_dataset_dir():
-    global _dataset_dir
-    return _dataset_dir
+def is_custom_dataset(ds_name):
+    global _custom_datasets
+    if isinstance(ds_name, (list, tuple)): return all(is_custom_dataset(ds) for ds in ds_name)
+    return clean_dataset_name(ds_name) in _custom_datasets
 
 def load_dataset(ds_name,
                  dataset_dir    = None,
@@ -110,6 +115,7 @@ def load_dataset(ds_name,
         
         return datasets if len(datasets) > 1 else list(datasets.values())[0]
     
+    ds_name = clean_dataset_name(ds_name)
     if ds_name not in _custom_datasets and type_annots is None:
         raise ValueError("Unknown dataset !\n  Got : {}\n  Accepted : {}".format(
             ds_name, list(_custom_datasets.keys())
@@ -150,7 +156,7 @@ def show_datasets(task = None):
     global _dataset_tasks
     
     for t, datasets in _dataset_tasks.items():
-        if task and t not in tasks: continue
+        if task and t not in task: continue
         print('Task {} :\t{}'.format(t, tuple(datasets)))
 
 _custom_processing  = {}

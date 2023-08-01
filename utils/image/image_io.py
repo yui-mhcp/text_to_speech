@@ -37,6 +37,8 @@ time_logger = logging.getLogger('timer')
 DELAY_MS = 10
 DELAY_SEC   = DELAY_MS / 1000.
 
+_resize_kwargs  = ('target_shape', 'target_max_shape', 'target_multiple_shape')
+
 def display_image(image):
     """
         Displays the image with `IPython.display.Image`
@@ -54,7 +56,9 @@ def get_image_size(image):
             - [height, width]   : image's size
     """
     if isinstance(image, (np.ndarray, tf.Tensor)):
-        if len(image.shape) in (2, 3):
+        if not tf.executing_eagerly():
+            return tf.shape(image)[0], tf.shape(image)[1]
+        elif len(image.shape) in (2, 3):
             return image.shape[0], image.shape[1]
         elif len(image.shape) == 4:
             return image.shape[1], image.shape[2]
@@ -82,6 +86,7 @@ def load_image(filename,
                dtype    = tf.float32,
                
                bbox     = None,
+               box_mode = -1,
                
                ** kwargs
               ):
@@ -132,7 +137,7 @@ def load_image(filename,
     
     if bbox is not None:
         from utils.image.box_utils import crop_box
-        image, _ = crop_box(image, bbox, ** kwargs)
+        _, image = crop_box(image, bbox, box_mode = box_mode, extended = False, ** kwargs)
     
     if image.dtype != dtype:
         image = tf.image.convert_image_dtype(image, dtype)
@@ -142,15 +147,15 @@ def load_image(filename,
     elif mode == 'rgb' and image.shape[2] == 1:
         image = tf.image.grayscale_to_rgb(image)
     
-    if target_shape is not None or target_max_shape is not None or target_multiple_shape is not None:
-        resize_kwargs.setdefault('preserve_aspect_ratio', preserve_aspect_ratio)
-        image = resize_image(
-            image,
-            target_shape    = target_shape,
-            target_max_shape    = target_max_shape,
-            target_multiple_shape   = target_multiple_shape,
-            ** resize_kwargs
-        )
+    resize_kwargs   = {
+        'preserve_aspect_ratio' : preserve_aspect_ratio,
+        ** {kw : val for kw, val in zip(
+            _resize_kwargs, (target_shape, target_max_shape, target_multiple_shape)
+        )},
+        ** resize_kwargs
+    }
+    if any(resize_kwargs[kw] is not None for kw in _resize_kwargs):
+        image = resize_image(image, ** resize_kwargs)
     
     return image
 
@@ -188,6 +193,7 @@ def frame_generator(cam_id,
                     fps         = None,
                     max_time    = 60,
                     nb_frames   = -1,
+                    skip_frames = -1,
                     add_copy    = False,
                     return_index    = False,
                     ** kwargs
@@ -221,6 +227,8 @@ def frame_generator(cam_id,
     
     while should_continue(start_time, start_iter_time, n):
         if logger_available: time_logger.start_timer('frame generation')
+        if skip_frames > 0:
+            for _ in range(skip_frames): camera.read()
         ret, frame = camera.read()
         if ret:
             frame = frame[..., ::-1]
@@ -245,6 +253,7 @@ def frame_generator(cam_id,
 def stream_camera(cam_id    = 0,
                   max_time  = 60,
                   nb_frames = -1,
+                  skip_frames   = -1,
                   
                   fps   = -1,
                   show_fps  = None,
@@ -333,8 +342,12 @@ def stream_camera(cam_id    = 0,
     # variable initialization
     if max_time <= 0:   max_time = None
     
-    display_name = '{} {}'.format('Camera' if isinstance(cam_id, int) else 'File', cam_id)
-    cap = cv2.VideoCapture(cam_id)
+    if isinstance(cam_id, (int, str)):
+        display_name = '{} {}'.format('Camera' if isinstance(cam_id, int) else 'File', cam_id)
+        cap = cv2.VideoCapture(cam_id)
+    else:
+        display_name    = str(cam_id)
+        cap = cam_id
     
     # if streaming is not on camera but on video file
     if isinstance(cam_id, str):
@@ -366,7 +379,7 @@ def stream_camera(cam_id    = 0,
     #####################
     
     prod = Producer(frame_generator(
-        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy
+        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, skip_frames = skip_frames
     ), run_main_thread = max_workers < 0, stop_listeners = cap.release)
     
     transformer = prod.add_consumer(
@@ -391,7 +404,7 @@ def stream_camera(cam_id    = 0,
             stop_listeners = video_writer.release
         )
         # Adds a listener to copy the video file's audio to the output file (if expected)
-        if copy_audio:
+        if copy_audio and isinstance(cam_id, str):
             from utils.image import video_utils
             writer_cons.add_listener(
                 lambda: video_utils.copy_audio(cam_id, output_file), on = 'stop'

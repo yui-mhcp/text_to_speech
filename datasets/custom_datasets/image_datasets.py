@@ -19,13 +19,14 @@ import tensorflow as tf
 import xml.etree.ElementTree as ET
 
 from tqdm import tqdm
-from PIL import Image
+from functools import wraps
 from multiprocessing import cpu_count
 
 from loggers import timer
 from utils.thread_utils import Consumer
 from utils.file_utils import load_json, dump_json
 from datasets.custom_datasets import add_dataset
+from datasets.dataset_utils import _maybe_load_embedding
 
 logger      = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
@@ -55,6 +56,7 @@ def image_dataset_wrapper(name, task, ** default_config):
                 - (optional) text   : the image's caption(s)
         """
         @timer(name = '{} loading'.format(name))
+        @wraps(dataset_loader)
         def _load_and_process(directory,
                               * args,
                               add_image_size = None,
@@ -63,7 +65,6 @@ def image_dataset_wrapper(name, task, ** default_config):
                               accepted_labels   = None,
                               labels_subtitutes = None,
                               
-                              box_mode  = 'xywh',
                               min_box_per_image = -1,
                               max_box_per_image = -1,
                               one_line_per_box  = False,
@@ -90,13 +91,14 @@ def image_dataset_wrapper(name, task, ** default_config):
 
                 if any('mask' in row or 'segmentation' in row for row in dataset):
                     for row in dataset:
-                        if 'mask' in row: key = 'mask'
+                        if 'mask' in row:           key = 'mask'
                         elif 'segmentation' in row: key = 'segmentation'
                         else: continue
                         
                         max_len     = max([len(poly) for poly in row[key]])
                         row[key]    = np.array(
-                            [poly + [-1] * (max_len - len(poly)) for poly in row[key]], dtype = np.int32
+                            [poly + [-1] * (max_len - len(poly)) for poly in row[key]],
+                            dtype = np.int32
                         )
 
                 if any(BOX_KEY in row for row in dataset):
@@ -113,7 +115,7 @@ def image_dataset_wrapper(name, task, ** default_config):
                 
                     if one_line_per_box:
                         dataset = _flatten_dataset(
-                            dataset, keys = [BOX_KEY, 'label', 'box_infos', 'segmentation']
+                            dataset, keys = [BOX_KEY, 'label', 'box_infos', 'segmentation', 'mask']
                         )
             
             if one_line_per_caption and 'text' in dataset[0]:
@@ -136,16 +138,9 @@ def image_dataset_wrapper(name, task, ** default_config):
             
             return dataset
         
+        add_dataset(name, processing_fn = _load_and_process, task = task, ** default_config)
         
-        from datasets.custom_datasets import add_dataset
-        
-        fn = _load_and_process
-        fn.__name__ = dataset_loader.__name__
-        fn.__doc__  = dataset_loader.__doc__
-        
-        add_dataset(name, processing_fn = fn, task = task, ** default_config)
-        
-        return fn
+        return _load_and_process
     return wrapper
 
 def _replace_labels(dataset, labels_subtitutes):
@@ -209,12 +204,6 @@ def _add_image_size(dataset):
     
     return dataset
 
-def _maybe_load_embedding(directory, dataset, ** kwargs):
-    if 'embedding' in dataset.columns: return dataset
-    if 'embedding_name' in kwargs or 'embedding_dim' in kwargs:
-        return load_embedding(directory, dataset = dataset, ** kwargs)
-    return dataset
-
 def _rectangularize_boxes(dataset):
     max_box = dataset['nb_box'].max()
     def to_rectangular_box(row):
@@ -260,7 +249,7 @@ def preprocess_annotation_annots(directory, img_dir = None, one_line_per_box = F
     """
     if img_dir is None: img_dir = directory
     
-    dataset = []
+    dataset = {}
     for metadata_file in os.listdir(directory):
         if not metadata_file.endswith('_boxes.json'): continue
         
@@ -268,24 +257,19 @@ def preprocess_annotation_annots(directory, img_dir = None, one_line_per_box = F
         
         metadata = load_json(os.path.join(directory, metadata_file))
         
-        metadata = [
-            {'filename' : os.path.join(img_dir, sub_img_dir, img_name), ** infos}
+        metadata = {
+            os.path.join(img_dir, sub_img_dir, img_name) : infos
             for img_name, infos in metadata.items()
-        ]
-        metadata = [m for m in metadata if os.path.exists(m['filename'])]
-        for data in metadata:
-            data['label'] = [box[-1] for box in data['boxes']]
-            data['boxes']  = [box[:4] for box in data['boxes']]
-            
-            image = Image.open(data['filename'])
-            w, h = image.size
-            data.update({'height' : h, 'width' : w})
+        }
+        metadata = {file : infos for file, infos in metadata.items() if os.path.exists(file)}
+        for file, data in metadata.items():
+            data.update({
+                'label' : [box[-1] for box in data['boxes']],
+                BOX_KEY : [box[:4] for box in data['boxes']]
+            })
+            data.pop('boxes', None)
         
-        dataset.extend(metadata)
-    
-    dataset = pd.DataFrame(dataset)
-    dataset = dataset.rename(columns = {'boxes' : 'box'})
-    dataset['nb_box'] = dataset['box'].apply(len)
+        dataset.update(metadata)
     
     return dataset
 
@@ -512,6 +496,8 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
                 
         ainsi qu'un dictionnaire reprenant le nombre de fois que chaque label a été vu. 
     """
+    from utils.image import get_image_size
+    
     assert box_mode in (0, 1, 2)
     assert one_line_per_box in (True, False)
     
@@ -537,8 +523,7 @@ def preprocess_yolo_output_annots(filename, img_dir=None, one_line_per_box=False
             logger.warning('{} is in annotation file but does not exist'.format(img_filename))
             continue
             
-        image = Image.open(img_filename)
-        image_w, image_h = image.size
+        image_w, image_h = get_image_size(img_filename)
         
         boxes, labels = [], []
         for j in range(n_pers):
@@ -837,6 +822,8 @@ def preprocess_COCO_text_annots(directory,
 def preprocess_synthtext_annots(directory, tqdm = lambda x: x, ** kwargs):
     from scipy.io import loadmat
     
+    from utils.image.box_utils import BoxFormat, convert_box_format
+    
     metadata_file = os.path.join(directory, 'gt.mat')
     data = loadmat(metadata_file)
     
@@ -851,10 +838,12 @@ def preprocess_synthtext_annots(directory, tqdm = lambda x: x, ** kwargs):
         
         if len(boxes.shape) == 2: boxes = np.expand_dims(boxes, axis = -1)
         dataset[filename] = {
-            'filename' : filename,
-            'box'      : np.transpose(boxes, [2, 1, 0]).astype(np.int32),
-            'nb_box'   : boxes.shape[-1],
-            'label'    : cleaned
+            'filename'  : filename,
+            'box'       : convert_box_format(
+                np.transpose(boxes, [2, 1, 0]).astype(np.int32), BoxFormat.XYWH, box_mode = BoxFormat.POLY
+            ),
+            'nb_box'    : boxes.shape[-1],
+            'label'     : cleaned
         }
     
     return dataset

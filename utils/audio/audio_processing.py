@@ -18,44 +18,30 @@ import librosa.util as librosa_util
 from scipy.signal import get_window
 
 from utils.generic_utils import get_enum_item
+from utils.wrapper_utils import dispatch_wrapper
 
-max_int16 = (2 ** 15) - 1
+_trimming_methods = {}
 
 class WindowType(enum.IntEnum):
     MEAN    = 0
     LINEAR  = 1
     TRIANGULAR  = 2
 
+@dispatch_wrapper(_trimming_methods, 'method', default = 'window')
 def trim_silence(audio, method = 'window', ** kwargs):
     """
-        Reduce silence at the beginning or inside theaudio depending on the method 
+        Removes silence with the given `method` (see below for available techniques)
+        
         Arguments : 
-            - audio : the audio to process
+            - audio : `np.ndarray`, the audio to process
             - method    : the trim method to use
             - kwargs    : kwargs to passto the trim function
         Return :
-            - trimmed_audio
-        
-        Method available :
-        - window    : trim silence start / end by using a convolutional window in order to smooth the audios and reduce the impact of 'tic' noise at the beginning / end. 
-        - remove    : use the same concept as the window version but allowto remove silence longer than a maximum 'max_silence' time
-        - default   : will use the 'simple' method which trims silence at start / end just by thresholding
+            - trimmed_audio : `np.ndarray`, the audio with silence trimmed
     """
     return _trimming_methods.get(method, trim_silence_simple)(audio, ** kwargs)
 
-def remove_silence(audio, rate = 22050, threshold = 0.025, max_silence = 0.15, 
-                   ** kwargs):
-    """
-        Create a mean-window, compute the convolution of it and remove all zones that are lower than the threshold. 
-    """
-    window_length = int(max_silence * rate)
-
-    mask = np.ones((window_length,)) / (window_length * threshold)
-
-    conv = np.convolve(np.square(audio), mask, mode = 'same')
-    
-    return audio[conv > min(threshold, np.mean(conv) / 2)]
-    
+@trim_silence.dispatch
 def trim_silence_window(audio,
                         rate    = 22050,
                         power   = 2,
@@ -81,13 +67,18 @@ def trim_silence_window(audio,
         Arguments :
             - audio : the audio to trim
             - rate  : the audio rate (only used if `window_length` is a float)
+            
             - power : the power to use to smooth the audio
             - mode  : either 'start', 'end' or 'start_end' (where to trim)
+            
             - threshold : the threshold to use
             - adaptive_threshold    : if True, the threshold is the median between `threshold`, `thredho / 25` and `np.mean(conv[...]) * 5`. It allows to dynamically reduce the threshold if the start / end of the audio is already small
+            
             - window_type   : the shape for the convolution window
             - window_length : the length for the window (if float, `window_length = int(window_length * rate)`)
+            
             - max_trim_factor   : returns the original audio if the trimmed length is smaller than the length of the original audio divided by this value
+            
             - debug / plot_kwargs   : whether to plot the trimming
             - kwargs    : unused
         Returns : the trimmed audio
@@ -143,6 +134,20 @@ def trim_silence_window(audio,
     
     return trimmed if len(trimmed) > len(audio) // max_trim_factor else audio
 
+@trim_silence.dispatch('remove')
+def remove_silence(audio, rate = 22050, threshold = 0.025, max_silence = 0.15,  ** kwargs):
+    """
+        Create a mean-window, compute the convolution of it and remove all zones that are lower than the threshold. 
+    """
+    window_length = int(max_silence * rate)
+
+    mask = np.ones((window_length,)) / (window_length * threshold)
+
+    conv = np.convolve(np.square(audio), mask, mode = 'same')
+    
+    return audio[conv > min(threshold, np.mean(conv) / 2)]
+    
+@trim_silence.dispatch('threshold')
 def trim_silence_simple(audio, threshold = 0.1, mode = 'start_end', ** kwargs):
     assert mode in ('start', 'end', 'start_end')
     
@@ -153,6 +158,7 @@ def trim_silence_simple(audio, threshold = 0.1, mode = 'start_end', ** kwargs):
             
     return audio
 
+@trim_silence.dispatch
 def trim_silence_mel(mel, mode = 'start_end', min_factor = 0.5, ** kwargs):
     max_amp = tf.reduce_max(mel)
     min_amp = tf.reduce_min(mel)
@@ -183,14 +189,18 @@ def trim_silence_mel(mel, mode = 'start_end', min_factor = 0.5, ** kwargs):
                 
         return mel[start : stop]
     
-def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, use_v1 = True, ** kwargs):
+def reduce_noise(audio, noise_length = 0.2, rate = None, noise = None, use_v1 = True, ** kwargs):
     """
         Use the noisereduce.reduce_noise method in order to reduce audio noise
-        It takes as 'noise sample' the 'noise_length' first seconds of the audio
+        It takes as 'noise sample' the 'noise_length' first seconds of the audio (if `noise is None`)
     """
-    if isinstance(noise_length, float): noise_length = int(noise_length * rate)
+    if noise is None:
+        if isinstance(noise_length, float):
+            assert rate is not None
+            noise_length = int(noise_length * rate)
+        
+        noise = audio[: noise_length]
     
-    if noise is None: noise = audio[: noise_length]
     if use_v1:
         import utils.audio.noisereducev1 as nr
         return nr.reduce_noise(audio, noise)
@@ -198,6 +208,17 @@ def reduce_noise(audio, noise_length = 0.2, rate = 22050, noise = None, use_v1 =
         import noisereduce as nr
         return nr.reduce_noise(audio, sr = rate, y_noise = noise)
     
+
+def convert_audio_dtype(audio, dtype):
+    """ Converts `audio` to `dtype` by normalizing by the `dtype` or `audio.dtype` max value """
+    if audio.dtype == dtype: return audio
+    if np.issubdtype(audio.dtype, np.floating) and np.issubdtype(dtype, np.floating):
+        return audio.astype(dtype)
+    
+    if np.issubdtype(audio.dtype, np.integer): audio = audio / np.iinfo(audio.dtype).max
+    if np.issubdtype(dtype, np.integer): audio = audio * np.iinfo(dtype).max
+    
+    return audio.astype(dtype)
 
 def tf_normalize_audio(audio, max_val = 1., dtype = tf.float32):
     return tf.cast((audio / tf.maximum(tf.reduce_max(tf.abs(audio)), 1e-6)) * max_val, dtype)
@@ -207,7 +228,9 @@ def normalize_audio(audio, max_val = 32767, dtype = np.int16, normalize_by_mean 
         Normalize audio either to np.int16 (default) or on [-1, 1] range (max_val = 1.) with dtype np.float32
     """
     if max_val <= 1.: dtype = np.float32
+    
     audio = audio - np.mean(audio)
+    
     if normalize_by_mean:
         max_audio_val = np.mean(np.sort(np.abs(audio))[-len(audio) // 100:])
     else:
@@ -290,25 +313,22 @@ def griffin_lim(magnitudes, stft_fn, n_iters = 30):
 
 def dynamic_range_compression(x, C = 1, clip_val = 1e-5):
     """
-    PARAMS
-    ------
-    C: compression factor
+        Arguments :
+            - x : `tf.Tensor`, the audio to compress
+            - C : compression factor
+        Return :
+            - compressed    : `tf.Tensor` with same shape as `x`
     """
-    return tf.math.log(tf.clip_by_value(
-        x,  clip_value_min = clip_val,  clip_value_max = tf.reduce_max(x)
-    ) * C)
+    return tf.math.log(tf.maximum(x, clip_val) * C)
 
 
 def dynamic_range_decompression(x, C = 1):
     """
-    PARAMS
-    ------
-    C: compression factor used to compress
+        Arguments :
+            - x : `tf.Tensor`, the audio to decompress
+            - C : compression factor
+        Return :
+            - decompressed  : `tf.Tensor` with same shape as `x`
     """
     return tf.exp(x) / C
 
-_trimming_methods   = {
-    'window'    : trim_silence_window,
-    'mel'       : trim_silence_mel,
-    'remove'    : remove_silence
-}

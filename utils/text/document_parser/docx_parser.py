@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -13,10 +12,13 @@
 import os
 import logging
 
+from utils.text.document_parser.parser import parse_document
+
 logger = logging.getLogger(__name__)
 
+@parse_document.dispatch
 def parse_docx(filename, ** kwargs):
-    """ Parse `.docx` files and return the list of paragraphs in the form {'text' : str} """
+    """ Parses `.docx` files and return the list of paragraphs in the form {'text' : str} """
     try:
         from docx import Document
     except ImportError as e:
@@ -26,7 +28,3 @@ def parse_docx(filename, ** kwargs):
     doc = Document(filename)
     
     return [{'text' : p.text} for p in doc.paragraphs]
-    return paragraphes
-
-def save_first_page_as_image_docx(filename, image_name = 'first_page.jpg'):
-    raise NotImplementedError()

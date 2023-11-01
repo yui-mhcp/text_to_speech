@@ -28,7 +28,7 @@ from tensorflow.python.keras.callbacks import CallbackList
 from loggers import DEV
 from hparams import HParams, HParamsTraining, HParamsTesting
 from datasets import train_test_split, prepare_dataset, summarize_dataset
-from utils import time_to_string, load_json, dump_json, create_iterator, get_metric_names, map_output_names
+from utils import time_to_string, load_json, dump_json, create_stream, get_metric_names, map_output_names
 from custom_architectures import get_architecture, custom_objects
 from custom_train_objects import History, MetricList
 from custom_train_objects import get_optimizer, get_loss, get_metrics, get_callbacks
@@ -807,6 +807,8 @@ class BaseModel(metaclass = ModelInstances):
         config['batch_size']    = batch_size
         config['shuffle_size']  = shuffle_size if not is_validation else 0
         
+        if hasattr(self, 'augment_original_data') and not is_validation:
+            config.setdefault('augment_original_fn', self.augment_original_data)
         if hasattr(self, 'encode_data'): config.setdefault('encode_fn', self.encode_data)
         if hasattr(self, 'filter_data'): config.setdefault('filter_fn', self.filter_data)
         if hasattr(self, 'augment_data') and not is_validation:
@@ -1363,27 +1365,14 @@ class BaseModel(metaclass = ModelInstances):
             include_signature   = self.include_signature
         )
     
-    def predict(self, inputs, name = None, **kwargs):
+    def predict(self, inputs, name = None, ** kwargs):
         model = self.get_model(name)
-        return model.predict(inputs, **kwargs)
+        return model.predict(inputs, ** kwargs)
     
-    def stream(self, stream, callback = None, timeout = None, return_results = False, ** kwargs):
-        if callback is not None and not callable(callback):
-            if hasattr(callback, 'put'): callback = callback.put
-            else: raise ValueError('Callback {} must be callable or have a `put` method'.format(callback))
-        
-        logger.debug('[STREAM] Start...')
-        
-        results = [] if return_results else None
-        for data in create_iterator(stream, timeout = timeout):
-            res = self.predict(data, ** kwargs)
-            if return_results: results.append(res)
-            if callback is not None: callback(res)
-        
-        logger.debug('[STREAM] End')
-        return results
+    def stream(self, stream, ** kwargs):
+        return create_stream(self.predict, stream, logger = logger, ** kwargs)
 
-    def evaluate(self, datas, name = None, **kwargs):
+    def evaluate(self, datas, name = None, ** kwargs):
         model = self.get_model(name)
         dataset_config = self.get_dataset_config(** kwargs)
         dataset = prepare_dataset(datas, ** dataset_config)

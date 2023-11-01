@@ -15,7 +15,7 @@ import logging
 from threading import Thread, RLock, Semaphore
 from queue import Empty, Queue, LifoQueue, PriorityQueue
 
-from utils.generic_utils import create_iterator
+from utils.stream_utils import create_iterator
 from utils.thread_utils.producer import STOP_ITEM, _get_thread_name, Producer, Event, Item, StoppedException, update_item
 from utils.thread_utils.threaded_dict import ThreadedDict
 
@@ -31,16 +31,16 @@ _queues = {
     'min_priority' : PriorityQueue
 }
 
-def get_buffer(buffer):
+def get_buffer(buffer, * args, ** kwargs):
     if buffer is not None:
         if isinstance(buffer, str):
             if buffer not in _queues:
                 raise ValueError('`buffer` is an unknown queue type :\n  Accepted : {}\n  Got : {}\n'.format(tuple(_queues.keys()), buffer))
-            buffer = _queues[buffer]()
+            buffer = _queues[buffer](* args, ** kwargs)
         elif not isinstance(buffer, Queue):
             raise ValueError('`buffer` must be a queue.Queue instance or subclass')
     else:
-        buffer = Queue()
+        buffer = Queue(* args, ** kwargs)
     return buffer
 
 class Consumer(Producer):
@@ -48,6 +48,7 @@ class Consumer(Producer):
                  consumer,
                  * args,
                  buffer     = None,
+                 buffer_size    = 0,
                  
                  stateful   = False,
                  init_state = None,
@@ -103,7 +104,7 @@ class Consumer(Producer):
         )
         
         self.consumer   = consumer
-        self.buffer     = get_buffer(buffer)
+        self.buffer     = get_buffer(buffer, buffer_size)
         self.buffer_type    = buffer
 
         self.stateful   = stateful

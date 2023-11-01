@@ -22,7 +22,7 @@ from utils.text.ctc_decoder import ctc_decode
 from utils.text.text_processing import *
 from utils.text.text_augmentation import random_mask
 
-from utils.text.document_parser import _wiki_cleaner, parse_document, parse_pdf, parse_docx, parse_html
+from utils.text.document_parser import _wiki_cleaner, parse_document
 
 logger = logging.getLogger(__name__)
 
@@ -142,4 +142,3 @@ def default_english_encoder(cleaners = ['english_cleaners'], level = 'char', ** 
 
 def default_french_encoder(cleaners = ['french_cleaners'], level = 'char', ** kwargs):
     return TextEncoder(fr_symbols, level = level, cleaners = cleaners, ** kwargs)
-

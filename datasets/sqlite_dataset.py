@@ -13,7 +13,7 @@
 import os
 import pandas as pd
 
-class SQLiteDataset(object):
+class SQLiteDataset:
     def __init__(self, path, default_table = 'documents'):
         self.__path = path
         self.__default_table = default_table

@@ -13,6 +13,7 @@
 import tensorflow as tf
 
 from utils.generic_utils import get_kwargs
+from utils.wrapper_utils import dispatch_wrapper
 from utils.image.image_utils import resize_image, rotate_image
 
 _image_augmentations_fn = {}
@@ -20,7 +21,9 @@ _image_augmentation_kwargs  = {}
 
 def image_augmentation_wrapper(fn = None, nested = None):
     def wrapper(fn, kwargs):
-        _image_augmentations_fn[fn.__name__]    = fn
+        augment_image.dispatch(fn, fn.__name__)
+        
+
         _image_augmentation_kwargs[fn.__name__] = kwargs
         return fn
     
@@ -35,38 +38,39 @@ def get_image_augmentation_config(methods):
         config.update(_image_augmentation_kwargs.get(fn, {}))
     return config
 
-def augment_image(img, transforms, prct = 0.25, ** kwargs):
+@dispatch_wrapper(_image_augmentations_fn, 'method')
+def augment_image(image, method, prct = 0.25, ** kwargs):
     """
-        Augment `img` by applying sequentially each `transforms`, each with `prct` probability
+        Augments `image` by applying sequentially each `method`, each with `prct` probability
         
         Arguments :
-            - img       : the image to augment
-            - transforms    : (list of) str / callable, transformations to apply
+            - image     : `tf.Tensor`, the image to augment
+            - transforms    : (list of) str / callable, augmentation method(s) to apply
             - prct      : the probability to apply each transformation (between [0., 1.])
             - kwargs    : kwargs passed to each transformation function
         Return :
             - transformed : (maybe) transformed image
         
-        Supported transformations' names are in the `_image_augmentations_fn` variable which associate name with function.
-        All functions have an unused `kwargs` argument which allows to pass kwargs for each transformation function without disturbing other. 
+        All functions have an unused `kwargs` argument, which allows to pass kwargs for each transformation function without disturbing other. 
         
-        Note that the majority of these available functions are simply the application of 1 or multiple `tf.image.random_*` function
+        Note that the majority of the available functions are simply the application of 1 or multiple `tf.image.random_*` function
     """
-    if not isinstance(transforms, (list, tuple)): transforms = [transforms]
-    for transfo in transforms:
-        if not callable(transfo) and transfo not in _image_augmentations_fn:
+    if not isinstance(method, (list, tuple)): method = [method]
+    
+    for transform in method:
+        if not callable(transform) and transform not in _image_augmentations_fn:
             raise ValueError("Unknown transformation !\n  Accepted : {}\n  Got : {}".format(
-                tuple(_image_augmentations_fn.keys()), transfo
+                tuple(_image_augmentations_fn.keys()), transform
             ))
         
-        fn = transfo if callable(transfo) else _image_augmentations_fn[transfo]
+        fn = transform if callable(transform) else _image_augmentations_fn[transform]
         
-        img = tf.cond(
+        image = tf.cond(
             tf.random.uniform((), seed = kwargs.get('seed', None)) <= prct,
-            lambda: fn(img, ** kwargs),
-            lambda: img
+            lambda: fn(image, ** kwargs),
+            lambda: image
         )
-    return img
+    return image
 
 @image_augmentation_wrapper
 def flip_vertical(img, ** kwargs):
@@ -145,3 +149,19 @@ def random_rotate(img, min_angle = -45., max_angle = 45., seed = None, ** kwargs
     angle   = tf.random.uniform((), min_angle, max_angle, dtype = tf.float32, seed = seed)
     
     return rotate_image(img, angle, ** kwargs)
+
+def augment_box(box, min_factor = 0.95, max_factor = 1.2, ** kwargs):
+    x, y, w, h = tf.unstack(tf.cast(box, tf.float32), axis = -1, num = 4)
+    
+    factor_x = tf.random.uniform((), min_factor, max_factor, dtype = tf.float32)
+    factor_y = tf.random.uniform((), min_factor, max_factor, dtype = tf.float32)
+    
+    center_x = x + w / 2.
+    center_y = y + h / 2.
+    
+    new_h, new_w = h * factor_y, w * factor_x
+    return tf.cast(tf.stack([
+        center_x - new_w / 2., center_y - new_h / 2., new_w, new_h
+    ], axis = -1), tf.int32)
+
+    

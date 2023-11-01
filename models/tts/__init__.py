@@ -15,7 +15,7 @@ import shutil
 import logging
 import numpy as np
 
-from utils import load_json
+from utils import load_json, create_stream
 from utils.text import parse_document, get_encoder
 from utils.audio import read_audio, write_audio
 from models.model_utils import get_model_dir, get_model_config, is_model_name
@@ -32,6 +32,7 @@ _text_encoders  = {}
 
 _default_vocoder = 'WaveGlow' if is_model_name('WaveGlow') else None
 
+
 def clean_text(text, model = None, lang = None):
     """ Cleans the `text` given a model or language """
     if model is None: model = get_model_name(lang)
@@ -45,7 +46,7 @@ def clean_text(text, model = None, lang = None):
     
     return _text_encoders[model].clean_text(text)
 
-def load_tts_models(model = None, tf_compile = False):
+def load_tts_models(model = None, tf_compile = False, ** kwargs):
     """ Loads all default models (in `_pretrained`) """
     from models import get_pretrained
     
@@ -56,12 +57,15 @@ def load_tts_models(model = None, tf_compile = False):
     
     vocoder = get_pretrained(_default_vocoder) if isinstance(_default_vocoder, str) else None
     
+    kwargs.update({
+        'max_length' : 10, 'max_trial' : 1, 'save' : False, 'play' : False, 'display' : False
+    })
     for name in model:
         synthesizer = get_pretrained(name)
         if tf_compile:
+            logger.debug('Call `predict` to compile the model...')
             for txt in ('A', 'AB'):
-                mel = synthesizer.infer(txt, max_length = 10)[1]
-                if vocoder is not None: vocoder.infer(mel)
+                synthesizer.infer(txt, vocoder = vocoder, ** kwargs)[1]
 
 def get_model_lang(model):
     """ Returns the language of a model """
@@ -176,11 +180,18 @@ def fast_tts(text, model = None, lang = None, vocoder = _default_vocoder, ** kwa
     )
     return model.fast_predict(text, ** kwargs)
 
-def tts_stream(stream = None, model = None, lang = None, vocoder = None, ** kwargs):
-    model = get_tts_model(
-        lang = lang, model = model, vocoder = vocoder
+def tts_stream(stream = None, save = False, display = True, play = True, ** kwargs):
+    if stream is None:
+        model = get_tts_model(
+            lang    = kwargs.pop('lang', None),
+            model   = kwargs.pop('model', None),
+            vocoder = kwargs.pop('vocoder', _default_vocoder)
+        )
+        return model.stream(save = save, display = display, play = play, ** kwargs)
+        
+    return create_stream(
+        tts, stream, logger = logger, save = save, display = display, play = play, ** kwargs
     )
-    return model.stream(stream, ** kwargs)
 
 _models = {
     'SV2TTSTacotron2'   : SV2TTSTacotron2,

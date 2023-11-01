@@ -18,6 +18,7 @@ import numpy as np
 
 from PIL import Image
 
+from utils.text.document_parser.parser import parse_document, first_page_to_image
 try:
     from loggers import DEV
 except ImportError as e:
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 _final_punctuation = re.compile(r"[\.\?\!,]\s*$")
 _final_space = re.compile(r'\s+$')
 
+@parse_document.dispatch
 def parse_pdf(filename,
               pagenos       = None,
               save_images   = True,
@@ -39,8 +41,27 @@ def parse_pdf(filename,
               max_diff_overlap  = 0.01,
               
               tqdm  = lambda x: x,
+              
               ** kwargs
              ):
+    """
+        Parses `pdf` files
+        
+        Arguments :
+            - filename  : the `.pdf` document filename
+            - pagenos   : list of page numbers to parse
+            - save_images   : whether to extract images or not
+            - img_folder    : where to save images
+            
+            - add_eol_comma : whether to add a comma at the end of lines
+            - skip_margin   : the margin to skip
+            - max_diff_overlap  : maximal distance between blocks to be considered as belonging to the same paragraph
+            
+            - tqdm  : progress bar
+            - kwargs    : unused
+        Return :
+            - document  : `dict` of pages `{page_index : paragraphs}`
+    """
     from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
     from pdfminer.converter import TextConverter
     from pdfminer.layout import LAParams
@@ -53,10 +74,8 @@ def parse_pdf(filename,
     if not save_images:
         img_folder = None
     else:
-        if img_folder is None: img_folder = os.path.join(os.path.dirname(filename), 'images')
+        if img_folder is None: img_folder = os.path.splitext(filename)[0] + '_images'
         if os.path.exists(img_folder): shutil.rmtree(img_folder)
-        os.makedirs(img_folder, exist_ok = True)
-    paragraphes = []
     
     manager         = PDFResourceManager()
     layout_params   = LAParams(all_texts = False, line_margin = 0.001)
@@ -79,12 +98,14 @@ def parse_pdf(filename,
             paragraphes = []
             last_layout = None
             
-            logger.log(DEV, "Page #{} layout : {}".format(page_number, page_layout))
+            if logger.isEnabledFor(DEV):
+                logger.log(DEV, "Page #{} layout : {}".format(page_number, page_layout))
             
             # split page into 2 columns (if page is structured in 2-column format). 
             page_h, page_w = page_layout.bbox[3], page_layout.bbox[2]
             
-            logger.log(DEV, "\nMargin filtering...")
+            if logger.isEnabledFor(DEV): logger.log(DEV, "\nMargin filtering...")
+            
             left_col = sorted([
                 l for l in page_layout
                 if l.bbox[0] < page_w / 2 and not is_in_margin(l, page_h, page_w, skip_margin)
@@ -106,9 +127,10 @@ def parse_pdf(filename,
                 elif isinstance(l, LTTextBox) and len(l.get_text().strip()) == 0:
                     continue
                 
-                logger.log(DEV, 'Layout {} (box : {}) :\n  {}'.format(
-                    layout_idx, [float('{:.2f}'.format(coord)) for coord in l.bbox], l
-                ))
+                if logger.isEnabledFor(DEV):
+                    logger.log(DEV, 'Layout {} (box : {}) :\n  {}'.format(
+                        layout_idx, [float('{:.2f}'.format(coord)) for coord in l.bbox], l
+                    ))
                 
                 overlap = False
                 if last_layout is not None:
@@ -131,6 +153,8 @@ def parse_pdf(filename,
                 
                 elif isinstance(l, (LTImage, LTFigure)):
                     if img_folder is not None:
+                        os.makedirs(img_folder, exist_ok = True)
+                        
                         img_name = 'image_{}.jpg'.format(len(os.listdir(img_folder)))
                         img, (height, width) = extract_lt_image(
                             filename = filename, 
@@ -241,7 +265,7 @@ def extract_lt_image(filename, page_idx, page_layout, img_layout, save_name = No
         logger.error("Error while processing image : {}".format(e))
         return None, (-1, -1)
 
-
+@first_page_to_image.dispatch
 def save_first_page_as_image_pdf(filename, image_name = 'first_page.jpg'):
     from pdf2image import convert_from_path
     image = convert_from_path(filename, single_file = True, fmt = 'jpg')[0]

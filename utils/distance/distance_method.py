@@ -16,38 +16,55 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from utils.tensorflow_utils import tf_compile
+from utils.wrapper_utils import dispatch_wrapper, partial
+
 logger = logging.getLogger(__name__)
 
-MAX_MATRIX_SIZE = 512 * 1024 * 1024
+MAX_MATRIX_SIZE = 1024 * 1024 * 512
 
-def _maybe_expand_for_matrix(x, y, as_matrix = False):
-    if isinstance(x, tf.Tensor):
-        rank_fn, expand_fn = lambda t: len(tf.shape(t)), tf.expand_dims
-    else:
-        rank_fn, expand_fn = lambda t: t.ndim, np.expand_dims
+_str_distance_methods   = {}
+_similarity_methods     = {}
+_distance_methods       = {}
+
+def distance_method_wrapper(fn      = None,
+                            name    = None,
+                            str_only    = False,
+                            is_similarity   = False,
+                            expand  = True
+                           ):
+    def wrapper(fn):
+        @functools.wraps(fn)
+        def inner(x, y, as_matrix = False, ** kwargs):
+            if not str_only and expand:
+                x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
+            return fn(x, y, as_matrix = as_matrix, ** kwargs)
+        
+        key = name if name else fn.__name__.split('_')[0]
+        
+        distance.dispatch(inner, key)
+        
+        if str_only:        _str_distance_methods[key] = inner
+        if is_similarity:   _similarity_methods[key] = inner
+        return inner
     
-    if as_matrix and rank_fn(x) == rank_fn(y):
-        y = expand_fn(y, axis = -3)
-    
-    if rank_fn(x) == rank_fn(y) - 1:
-        x = expand_fn(x, axis = -2)
+    return wrapper if fn is None else wrapper(fn)
 
-    return x, y
+similarity_method_wrapper = partial(distance_method_wrapper, is_similarity = True)
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
 def tf_distance(x : tf.Tensor,
                 y : tf.Tensor,
                 method,
                 as_matrix   = True,
                 force_distance  = False,
-                max_matrix_size = -1,
                 ** kwargs
                ):
     return distance(
-        x, y, method, force_distance = force_distance, as_matrix = as_matrix,
-        max_matrix_size = max_matrix_size, ** kwargs
+        x, y, method, force_distance = force_distance, as_matrix = as_matrix, ** kwargs
     )
 
+@dispatch_wrapper(_distance_methods, 'method')
 def distance(x,
              y,
              method,
@@ -59,17 +76,17 @@ def distance(x,
              ** kwargs
             ):
     """
-        Compute distance between `x` and `y` with `method` function
+        Computes the distance between `x` and `y` with `method` function
         
         Arguments : 
             - x : 1D vector or 2D matrix
             - y : 2D matrix of points
-            - method : string (the name of the method)
+            - method : the name of the distance function to use
             - as_matrix : whether to compute matrix or point-wise distance (see notes)
             - max_matrix_size : maximum number of values in the matrix distance computation
             - kwargs : kwargs to pass to the distance function
         Return : 
-            - `method` function applied to `x` and `y`
+            - distance  : the result of `method` function applied to `x` and `y`
         
         Note : 
         If `as_matrix is True` : return a matrix such that `matrix[i, j]` is the distance between `x[i]` and `y[j]`
@@ -86,8 +103,8 @@ def distance(x,
             list(_distance_methods.keys()), method
         ))
     
-    if method in _str_distance_method:
-        return _str_distance_method[method](x, y, ** kwargs)
+    if method in _str_distance_methods:
+        return _str_distance_methods[method](x, y, ** kwargs)
 
     if tf.executing_eagerly() and logger.isEnabledFor(logging.DEBUG):
         logger.debug('Calling {} on matrices with shapes {} and {}'.format(
@@ -95,37 +112,40 @@ def distance(x,
         ))
     
     if isinstance(x, tf.Tensor) or isinstance(y, tf.Tensor):
-        rank_fn, expand_fn = lambda t: len(tf.shape(t)), tf.expand_dims
+        expand_fn = tf.expand_dims
+        shape_fn    = tf.shape if not tf.executing_eagerly() else lambda t: t.shape
         x, y = tf.cast(x, tf.float32), tf.cast(y, tf.float32)
     else:
-        rank_fn, expand_fn = lambda t: t.ndim, np.expand_dims
+        shape_fn, expand_fn = lambda t: t.shape, np.expand_dims
         x, y = x.astype(np.float32), y.astype(np.float32)
         
-    if rank_fn(x) == 1: x = expand_fn(x, axis = 0)
-    if rank_fn(y) == 1: y = expand_fn(y, axis = 0)
+    if len(shape_fn(x)) == 1: x = expand_fn(x, axis = 0)
+    if len(shape_fn(y)) == 1: y = expand_fn(y, axis = 0)
 
-    max_x = -1
-    if max_matrix_size > 0 and isinstance(x, tf.Tensor):
+    max_x, transpose = -1, False
+    if max_matrix_size > 0:
+        if len(x) < len(y): x, y, transpose = y, x, as_matrix
         if as_matrix:
-            max_x = tf.minimum(tf.shape(x)[0], tf.cast(tf.math.ceil(
-                max_matrix_size / (tf.shape(x)[-1] * tf.shape(y)[0])
+            max_x = tf.minimum(shape_fn(x)[0], tf.cast(tf.math.ceil(
+                max_matrix_size / (shape_fn(x)[-1] * shape_fn(y)[0])
             ), tf.int32))
         else:
-            max_x = tf.minimum(max_matrix_size // tf.square(tf.shape(x)[-1]) + 1, tf.shape(x)[0])
+            max_x = tf.minimum(
+                shape_fn(x)[0], tf.cast(tf.math.ceil(max_matrix_size / shape_fn(x)[-1]), tf.int32)
+            )
         
-    
-    if max_x != -1 and max_x < tf.shape(x)[0]:
-        n_slices    = tf.cast(tf.math.ceil(tf.shape(x)[0] / max_x), tf.int32)
+    if max_x != -1 and max_x < shape_fn(x)[0]:
+        n_slices    = tf.cast(tf.math.ceil(shape_fn(x)[0] / max_x), tf.int32)
         elem_shape  = (None, ) if not as_matrix else (None, y.shape[0])
         distances   = tf.TensorArray(
             dtype = tf.float32, size = n_slices, element_shape = elem_shape
         )
         if not as_matrix:
             for i in tf.range(n_slices):
+                y_i = y if  shape_fn(y)[0] == 1 else y[i * max_x : (i + 1) * max_x]
                 distances = distances.write(
                     i, tf.reshape(distance_fn(
-                        x[i * max_x : (i + 1) * max_x], y[i * max_x : (i + 1) * max_x],
-                        as_matrix = False, ** kwargs
+                        x[i * max_x : (i + 1) * max_x], y_i, as_matrix = False, ** kwargs
                     ), [-1])
                 )
         else:
@@ -137,11 +157,14 @@ def distance(x,
     else:
         distances = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
     
+    if transpose: distances = tf.transpose(distances)
+
     if tf.executing_eagerly() and logger.isEnabledFor(logging.DEBUG):
         logger.debug('Result shape : {}'.format(tuple(distances.shape)))
     
     return distances if not force_distance or method not in _similarity_methods else 1. - distances
 
+@similarity_method_wrapper(expand = False)
 def cosine_similarity(x, y, as_matrix = False, ** kwargs):
     return dot_product(
         tf.math.l2_normalize(x, axis = -1),
@@ -149,25 +172,45 @@ def cosine_similarity(x, y, as_matrix = False, ** kwargs):
         as_matrix = as_matrix, ** kwargs
     )
 
-def dot_product(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
-    return tf.reduce_sum(x * y, axis = -1)
+@similarity_method_wrapper(name = 'dp')
+def dot_product(x, y, ** kwargs):
+    sum_fn = tf.reduce_sum if isinstance(x, tf.Tensor) else np.sum
+    return sum_fn(x * y, axis = -1)
 
-def l1_distance(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
-    return tf.abs(x - y)
+@distance_method_wrapper
+def l1_distance(x, y, ** kwargs):
+    abs_fn = tf.abs if isinstance(x, tf.Tensor) else np.abs
+    return abs_fn(x - y)
 
-def l2_distance(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
-    return tf.square(x, y)
+@distance_method_wrapper
+def l2_distance(x, y, ** kwargs):
+    square_fn = tf.square if isinstance(x, tf.Tensor) else np.square
+    return square_fn(x - y)
 
-def manhattan_distance(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
-    return tf.reduce_sum(tf.abs(x - y), axis = -1)
+@distance_method_wrapper
+def manhattan_distance(x, y, ** kwargs):
+    sum_fn, abs_fn = (tf.reduce_sum, tf.abs) if isinstance(x, tf.Tensor) else (np.sum, np.abs)
+    return sum_fn(abs_fn(x - y), axis = -1)
 
-def euclidian_distance(x, y, as_matrix = False, ** kwargs):
-    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
-    return tf.math.sqrt(tf.reduce_sum(tf.square(x - y), axis = -1))
+@distance_method_wrapper
+def euclidian_distance(x, y, ** kwargs):
+    if isinstance(x, tf.Tensor):
+        sqrt_fn, sum_fn, square_fn = tf.math.sqrt, tf.reduce_sum, tf.square
+    else:
+        sqrt_fn, sum_fn, square_fn = np.sqrt, np.sum, np.square
+    
+    return sqrt_fn(sum_fn(square_fn(x - y), axis = -1))
+
+@similarity_method_wrapper
+def dice_coeff(x, y, ** kwargs):
+    if isinstance(x, tf.Tensor):
+        sum_fn, max_fn = tf.reduce_sum, tf.maximum
+    else:
+        sum_fn, max_fn = np.sum, np.maximum
+
+    inter = sum_fn(x * y)
+    union = sum_fn(x) + sum_fn(y)
+    return 2. * inter / max_fn(union, 1e-6)
 
 def bbox_metric(x, y, box_mode, metric, as_matrix = False, ** kwargs):
     from utils.image.box_utils import BoxFormat, convert_box_format
@@ -228,9 +271,14 @@ def bbox_metric(x, y, box_mode, metric, as_matrix = False, ** kwargs):
     result = divide_no_nan(inter, denom)
     return result if not as_matrix else result[..., 0]
 
-iou = functools.partial(bbox_metric, metric = 'iou')
-intersect   = functools.partial(bbox_metric, metric = 'intersect')
+iou = similarity_method_wrapper(
+    partial(bbox_metric, metric = 'iou'), expand = False, name = 'iou'
+)
+intersect   = similarity_method_wrapper(
+    partial(bbox_metric, metric = 'intersect'), expand = False, name = 'intersect'
+)
 
+@similarity_method_wrapper(str_only = True)
 def edit_distance(hypothesis,
                   truth,
                   partial   = False,
@@ -271,6 +319,8 @@ def edit_distance(hypothesis,
     matrix = np.zeros((len(hypothesis) + 1, len(truth) + 1))
     # Deletion cost
     deletion_costs = np.array([0] + [deletion_cost.get(h, default_del_cost) for h in hypothesis])
+    insertion_costs = np.array([insertion_cost.get(t, default_insert_cost) for t in truth])
+    
     matrix[:, 0] = np.cumsum(deletion_costs)
     # Insertion cost
     if not partial:
@@ -287,7 +337,7 @@ def edit_distance(hypothesis,
         
         min_costs = np.minimum(deletions, matches)
         for j in range(1, len(truth) + 1):
-            insertion   = matrix[i, j-1] + insertion_cost.get(truth[j-1], 1)
+            insertion   = matrix[i, j-1] + insertion_costs[j-1]
 
             matrix[i, j] = min(min_costs[j-1], insertion)
     
@@ -302,6 +352,7 @@ def edit_distance(hypothesis,
     
     return distance if not return_matrix else (distance, matrix)
 
+@distance_method_wrapper(str_only = True)
 def hamming_distance(hypothesis, truth, replacement_matrix = {}, normalize = True,
                      ** kwargs):
     """
@@ -323,23 +374,23 @@ def hamming_distance(hypothesis, truth, replacement_matrix = {}, normalize = Tru
     return distance
 
 
-_str_distance_method    = {
-    'hamming'   : hamming_distance,
-    'edit'      : edit_distance
-}
 
-_similarity_methods = {
-    'cosine'    : cosine_similarity,
-    'dp'    : dot_product,
-    'iou'   : iou,
-    'intersect'   : intersect
-}
+def _maybe_expand_for_matrix(x, y, as_matrix = False):
+    """
+        Expands `x` and `y` such that a mathematical operation between them will compute all pairs, resulting in a matrix-like operation
+        
+        Example :
+            `x.shape == (A, 1, d)` * `b.shape == (1, B, d)` -> `res.shape == (A, B, d)`
+    """
+    if isinstance(x, tf.Tensor):
+        rank_fn, expand_fn = lambda t: len(tf.shape(t)), tf.expand_dims
+    else:
+        rank_fn, expand_fn = lambda t: t.ndim, np.expand_dims
+    
+    if as_matrix and rank_fn(x) == rank_fn(y):
+        y = expand_fn(y, axis = -3)
+    
+    if rank_fn(x) == rank_fn(y) - 1:
+        x = expand_fn(x, axis = -2)
 
-_distance_methods = {
-    ** _str_distance_method,
-    ** _similarity_methods,
-    'l1'        : l1_distance,
-    'l2'        : l2_distance,
-    'manhattan' : manhattan_distance,
-    'euclidian' : euclidian_distance
-}
+    return x, y

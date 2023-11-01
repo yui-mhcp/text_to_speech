@@ -24,6 +24,7 @@ HParamsMHA = HParams(
     query_bias  = None,
     key_bias    = None,
     value_bias  = None,
+    output_bias = True,
 
     mask_factor = -1e4,
     attention_drop_rate    = 0.,
@@ -65,7 +66,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         kwargs.update({'num_heads' : num_heads, 'attention_dim' : attention_dim,})
         self.hparams = HParamsMHA.extract(kwargs)
         
-        for k in ('query_bias', 'key_bias', 'value_bias'):
+        for k in ('query_bias', 'key_bias', 'value_bias', 'output_bias'):
             if self.hparams[k] is None: self.hparams[k] = self.hparams.use_bias
         
         for attr in self._attr_to_set:
@@ -103,7 +104,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
             raise ValueError('When `residual = True`, `attention_dim` must equal `output_dim`')
         
         self.output_layer   = tf.keras.layers.Dense(
-            out_dim, name = 'output_layer'
+            out_dim, use_bias = self.hparams.output_bias, name = 'output_layer'
         ) if self.hparams.use_output_layer else None
         self.dropout        = tf.keras.layers.Dropout(self.hparams.drop_rate)
         self.inp_norm_layer = tf.keras.layers.LayerNormalization(

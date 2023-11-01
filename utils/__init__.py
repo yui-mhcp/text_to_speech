@@ -10,12 +10,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 from utils.distance import *
 from utils.embeddings import *
 from utils.file_utils import *
 from utils.plot_utils import *
 from utils.pandas_utils import *
 from utils.thread_utils import *
+from utils.stream_utils import *
 from utils.generic_utils import *
 from utils.sequence_utils import *
+from utils.tensorflow_utils import *
 from utils.comparison_utils import *
+from utils.wrapper_utils import *
+
+logger = logging.getLogger(__name__)
+
+_timer, _logger_available = None, None
+
+def get_timer():
+    global _timer, _logger_available
+    if _timer is None:
+        try:
+            from loggers import timer
+            _timer, _logger_available = timer, True
+        except ImportError as e:
+            logger.warning('The `loggers` module is not available : the time performance tracking are disabled')
+            _timer, _logger_available = fake_wrapper, False
+    
+    return _timer, _logger_available

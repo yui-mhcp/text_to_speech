@@ -13,10 +13,13 @@
 import re
 import logging
 
+from utils.text.document_parser.parser import parse_document
+
 logger = logging.getLogger(__name__)
 
 _wiki_cleaner = r'(\[edit\]|\[[0-9]\])'
 
+@parse_document.dispatch
 def parse_html(text,
                level    = 2,
                

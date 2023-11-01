@@ -16,44 +16,10 @@ import tensorflow as tf
 
 from hparams import HParams
 from utils import infer_downsampling_factor, infer_upsampling_factor, pad_to_multiple
-from utils.image import load_image, augment_image, pad_image, get_image_augmentation_config
+from utils.image import load_image, augment_image, augment_box, pad_image, get_image_augmentation_config, get_image_normalization_fn
 from models.interfaces.base_model import BaseModel
 
 _default_augmentations = ['hue', 'brightness', 'saturation', 'contrast', 'noise']
-
-_clip_means = [0.48145466, 0.4578275, 0.40821073]
-_clip_std   = [0.26862954, 0.26130258, 0.27577711]
-_east_means = [0.5, 0.5, 0.5]
-_east_std   = [0.5, 0.5, 0.5]
-_vggface_vals   = [91.4953, 103.8827, 131.0912]
-
-def normalize_01(image):
-    image = image - tf.reduce_min(image)
-    image = image / tf.maximum(1e-3, tf.reduce_max(image))
-    return image
-
-def build_mean_normalize(means, std):
-    means   = np.reshape(means, [1, 1, 1, -1])
-    std     = np.reshape(std,   [1, 1, 1, -1])
-    return lambda image: (image - means) / std
-
-_no_normalization   = (None, 'null', '01', 'identity')
-_image_normalization_styles = {
-    None    : lambda image: image,
-    "null"  : lambda image: image,
-    '01'    : normalize_01,
-    "mean"  : lambda image: (image - tf.reduce_mean(image)) / tf.maximum(1e-3, tf.math.reduce_std(image)),
-    "identity"  : lambda image: image,
-    'tanh'  : lambda image: image * 2. - 1.,
-    'vgg'   : lambda image: tf.keras.applications.vgg16.preprocess_input(image),
-    'vgg16' : lambda image: tf.keras.applications.vgg16.preprocess_input(image),
-    'vgg19' : lambda image: tf.keras.applications.vgg19.preprocess_input(image),
-    'vggface'   : lambda image: image[...,::-1] - tf.reshape(_vggface_vals, [1, 1, 1, 3]) / 255.,
-    'mobilenet' : lambda image: tf.keras.applications.mobilenet.preprocess_input(image),
-    'clip'      : build_mean_normalize(_clip_means, _clip_std),
-    'east'      : build_mean_normalize(_east_means, _east_std),
-    'easyocr'   : build_mean_normalize(0.5, 0.5)
-}
 
 ImageTrainingHParams    = HParams(
     image_augmentation_methods = []
@@ -69,11 +35,6 @@ class BaseImageModel(BaseModel):
                     image_normalization_fn  = None,
                     ** kwargs
                    ):
-        if image_normalization_fn is None and image_normalization not in _image_normalization_styles:
-            raise ValueError('Unknown normalization style !\n  Accepted : {}\n  Got : {}'.format(
-                tuple(_image_normalization_styles.keys()), image_normalization
-            ))
-
         if resize_method not in ('resize', 'pad'):
             raise ValueError('Unknown resizing method !\n  Accepted : (resize, pad)\n  Got : {}'.format(resize_method))
         
@@ -86,16 +47,25 @@ class BaseImageModel(BaseModel):
         self.image_normalization    = image_normalization
         
         if image_normalization_fn is None:
-            image_normalization_fn = _image_normalization_styles[image_normalization]
+            image_normalization_fn = get_image_normalization_fn(image_normalization)
+        
         self.image_normalization_fn = image_normalization_fn
         self._downsampling_factor   = None
         self._upsampling_factor     = None
     
     @property
+    def target_image_shape(self):
+        return tuple(s if s is not None else -1 for s in self.input_size)
+    
+    @property
     def max_image_shape(self):
         if not self.has_variable_input_size or self.max_image_size in (-1, None): return None
-        if isinstance(self.max_image_size, (list, tuple)): return self.max_image_size
-        return (self.max_image_size, self.max_image_size)
+        max_shape = self.max_image_size
+        if not isinstance(max_shape, (list, tuple)): max_shape = (max_shape, max_shape)
+        max_shape = [
+            max_s if s in (None, -1) else s for s, max_s in zip(self.input_size, max_shape)
+        ]
+        return tuple(s if s is not None else -1 for s in max_shape)
     
     @property
     def has_fixed_input_size(self):
@@ -103,7 +73,7 @@ class BaseImageModel(BaseModel):
     
     @property
     def has_variable_input_size(self):
-        return any(size in (None, -1) for size in self.input_size)
+        return any(size in (None, -1) for size in self.input_size[:2])
     
     @property
     def should_pad_to_multiple(self):
@@ -187,24 +157,24 @@ class BaseImageModel(BaseModel):
         if isinstance(filename, (dict, pd.Series)):
             if use_box and 'box' in filename:
                 bbox_kwargs['bbox'] = filename['box']
-                if 'box_mode' in filename: bbox_kwargs['box_mode'] = filename['box_mode']
-            filename = filename['image'] if 'image' in filename else filename['filename']
+                if 'box_mode' in filename:
+                    bbox_kwargs['box_mode'] = filename['box_mode']
+                if 'dezoom_factor' in filename:
+                    bbox_kwargs['dezoom_factor'] = filename['dezoom_factor']
+            
+            filename = filename['image' if 'image' in filename else 'filename']
         
+        # Case 1 : not has_variable_input_size -> tar_shape = input_size
+        # Case 2 : all input sizes are variable -> max_shape = max_image_shape
+        # Case 3 : input size is semi-variable : tar_shape = input_size, max_shape = max_image_shape
         tar_shape, tar_max_shape, tar_mul_shape = None, None, None
         if self.resize_method == 'resize':
-            if self.has_variable_input_size:
-                if any(s not in (-1, None) for s in self.input_size[:-1]):
-                    tar_shape   = tuple(s if s is not None else -1 for s in self.input_size[:2])
-                tar_max_shape   = self.max_image_shape
-                if self.should_pad_to_multiple:
-                    tar_mul_shape   = self.downsampling_factor
-            else:
-                tar_shape       = self.input_size
+            tar_shape = self.target_image_shape
+            max_shape = self.max_image_shape
+            if self.should_pad_to_multiple:
+                tar_mul_shape = self.downsampling_factor
         else:
-            if self.has_fixed_input_size:
-                tar_max_shape   = self.input_size
-            else:
-                tar_max_shape   = self.max_image_shape
+            max_shape = self.max_image_shape
 
         return load_image(
             filename,
@@ -226,7 +196,35 @@ class BaseImageModel(BaseModel):
         return self.image_normalization_fn(image)
 
     def filter_image(self, image):
-        return tf.reduce_all(tf.shape(image) > 0)
+        img_shape   = tf.shape(image)
+        
+        good_shape  = True
+        if self.has_fixed_input_size and self.resize_method == 'resize':
+            target_shape = tf.cast(self.target_image_shape[:2], img_shape.dtype)
+            good_shape = tf.reduce_all(tf.logical_or(
+                target_shape == -1, img_shape[:2] == target_shape[:2]
+            ))
+
+        small_enough = True
+        if self.has_variable_input_size and self.max_image_shape is not None:
+            max_shape       = tf.cast(self.max_image_shape, img_shape.dtype)
+            small_enough    = tf.reduce_all(tf.logical_or(
+                max_shape == -1, img_shape[:2] <= max_shape
+            ))
+        
+        return tf.logical_and(
+            tf.reduce_all(img_shape > 0),
+            tf.logical_and(small_enough, good_shape)
+        )
+    
+    def augment_box(self, data, ** kwargs):
+        if 'box' in data:
+            data['box'] = tf.cond(
+                tf.random.uniform((), 0., 1.) <= self.augment_prct,
+                lambda: augment_box(data['box'], ** kwargs),
+                lambda: data['box']
+            )
+        return data
     
     def augment_image(self, image, ** kwargs):
         if self.has_variable_input_size:
@@ -250,7 +248,7 @@ class BaseImageModel(BaseModel):
         if self.resize_method == 'pad':
             image = pad_image(
                 image,
-                target_shape    = self.input_size if not self.has_variable_input_size else None,
+                target_shape    = self.target_image_shape if self.has_fixed_input_size else None,
                 target_multiple_shape   = self.downsampling_factor if self.should_pad_to_multiple else None,
                 ** self.resize_kwargs
             )

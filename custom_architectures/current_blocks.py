@@ -22,6 +22,7 @@ logger  = logging.getLogger(__name__)
 _flatten_type   = (None, 'max', 'mean', 'avg', 'average', 'lstm', 'gru', 'bi_lstm', 'bilstm', 'bi_gru', 'bigru')
 _concat_type    = (True, 'add', 'mul', 'concat')
 _pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampling')
+_residual_type  = (None, 'none', False) + _concat_type
 
 _str_layers     = {
     'dense'     : Dense,
@@ -170,7 +171,9 @@ def _get_padding_layer(kernel_size, dim, * args, dilation_rate = 1, use_mask = N
     assert dim in ('1d', '2d')
     
     if dim == '2d':
-        raise NotImplementedError('not supported for 2D yet')
+        if use_mask:
+            raise NotImplementedError('Padding + mask is not supported for 2D yet')
+        return ZeroPadding2D((padding, padding))
     else:
         return ZeroPadding1D(padding) if not use_mask else MaskedZeroPadding1D(padding)
 
@@ -206,6 +209,7 @@ def _layer_bn(model, layer_type, n, * args,
               
               residual      = False,
               residual_kwargs   = {},
+              residual_tensor   = None,
               
               name  = None, 
               ** kwargs
@@ -240,11 +244,12 @@ def _layer_bn(model, layer_type, n, * args,
             - name  : the name to use for the `layer_type`
         Returns : the updated `model` (if Sequential API) or the new `tf.Tensor`
     """
-    assert bnorm in ('before', 'after', 'never'), 'Invalid `bnorm` : {}'.format(bnorm)
-    assert pooling in _pool_type, '{} is not a valid pooling type'.format(pooling)
+    assert bnorm in ('before', 'after_all', 'after', 'never'), 'Invalid `bnorm` : {}'.format(bnorm)
+    assert pooling in _pool_type, 'Invalid `pooling` : {}'.format(pooling)
+    assert residual in _residual_type, 'Invalid `residual` : {}'.format(residual)
     
     if residual and isinstance(model, tf.keras.Sequential):
-        raise ValueError('When `residual = True` `model` cannot be a `Sequential` !')
+        raise ValueError('When `residual` is not `None / False`, `model` cannot be a `Sequential` !')
     
     x = model
     
@@ -253,10 +258,13 @@ def _layer_bn(model, layer_type, n, * args,
             momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
     
+    if n > 1 and name and '{}' not in name: name = name + '_{}'
+    if n > 1 and bn_name and bnorm == 'after_all' and '{}' not in bn_name: bn_name = bn_name + '_{}'
+
     for i in range(n):
         args_i      = [_get_var(a, i) for a in args]
         kwargs_i    = {k : _get_var(v, i) for k, v in kwargs.items()}
-        kwargs_i['name'] = '{}_{}'.format(name, i + 1) if name and n > 1 else name
+        kwargs_i['name'] = name.format(i + 1) if n > 1 else name
         
         if i > 0: kwargs_i.pop('input_shape', None)
         
@@ -276,6 +284,12 @@ def _layer_bn(model, layer_type, n, * args,
         
         x = _add_layer(x, layer_type(* args_i, ** kwargs_i))
         
+        if bnorm == 'after_all':
+            bn_name_i = bn_name.format(i + 1) if n > 1 else bn_name
+            x = _add_layer(x, BatchNormalization(
+                momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name_i
+            ))
+
         if activation and i < n - 1:
             x = _add_layer(x, get_activation(activation, ** activation_kwargs))
     
@@ -284,12 +298,14 @@ def _layer_bn(model, layer_type, n, * args,
             momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
     
-    if residual and tuple(x.shape) == tuple(model.shape):
-        x = _get_concat_layer(residual, ** residual_kwargs)([x, model])
-    elif residual:
-        logger.warning("Skip connection failed : shape mismatch ({} vs {})".format(
-            model.shape, x.shape
-        ))
+    if residual:
+        if residual_tensor is None: residual_tensor = model
+        if tuple(x.shape) == tuple(residual_tensor.shape):
+            x = _get_concat_layer(residual, ** residual_kwargs)([x, residual_tensor])
+        else:
+            logger.warning("Skip connection failed : shape mismatch ({} vs {})".format(
+                model.shape, x.shape
+            ))
     
     if activation:
         x = _add_layer(x, get_activation(activation, ** activation_kwargs))

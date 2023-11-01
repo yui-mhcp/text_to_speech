@@ -16,11 +16,16 @@ from utils.audio.audio_processing import *
 from utils.audio.audio_augmentation import *
 
 from utils.audio.audio_io import play_audio, display_audio, load_audio, load_mel
-from utils.audio.audio_io import read_audio, tf_read_audio, write_audio
-from utils.audio.audio_io import _supported_audio_formats, resample_file
+from utils.audio.audio_io import read_audio, write_audio, resample_file, resample_audio
+from utils.audio.audio_io import _load_fn, _write_fn
 
 from utils.audio.mkv_utils import process_mkv, parse_subtitles
 
 from utils.audio.stft import *
 
-_audio_formats = tuple(_supported_audio_formats.keys())
+_audio_formats = tuple(set(list(_load_fn.keys()) + list(_write_fn.keys())))
+
+from utils.file_utils import load_data, dump_data
+
+load_data.dispatch(read_audio, tuple(_load_fn.keys()))
+dump_data.dispatch(write_audio, tuple(_write_fn.keys()))

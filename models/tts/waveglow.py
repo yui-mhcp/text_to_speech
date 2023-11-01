@@ -96,20 +96,29 @@ class WaveGlow(BaseModel):
     
     def __str__(self):
         des = super().__str__()
-        des += "Audio rate : {}\n".format(self.audio_rate)
-        des += "Mel channels : {}\n".format(self.n_mel_channels)
+        des += "- Audio rate : {}\n".format(self.audio_rate)
+        des += "- Mel channels : {}\n".format(self.n_mel_channels)
         return des
     
     def call(self, spect, * args, training = False, ** kwargs):
-        return self.infer(spect)
+        return self.infer(spect, ** kwargs)
     
     @timer(name = 'inference WaveGlow')
-    def infer(self, mel, * args, win_len = -1, hop_len = -64, batch = False, ** kwargs):
+    def infer(self, mel, * args, win_len = -1, hop_len = -64, pad_value = None, batch = False, ** kwargs):
         if isinstance(mel, str):    mel = np.load(mel)
         if len(mel.shape) == 2:     mel = tf.expand_dims(mel, axis = 0)
         
         if win_len == -1 or mel.shape[1] <= win_len:
-            return self.vocoder.infer(mel)
+            if win_len != -1 and pad_value is not None:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('Padding mel with shape {} to {} frames'.format(mel.shape, win_len))
+                
+                audio_len = mel.shape[1] * 256
+                return self.vocoder.infer(tf.pad(
+                    mel, [(0, 0), (0, win_len - mel.shape[1]), (0, 0)], constant_values = pad_value
+                ))[:, : audio_len]
+            else:
+                return self.vocoder.infer(mel)
         elif mel.shape[0] > 1:
             logger.info('Batch size is higher than 1 ({}), performing direct inference !'.format(
                 mel.shape
@@ -140,21 +149,15 @@ class WaveGlow(BaseModel):
         audio = []
         for i, part in enumerate(audio_parts):
             start = 0 if i == 0 else overlaps[i - 1] // 2
-            end   = None if i == len(audio_parts) - 1 else overlaps[i] // 2
-            audio.append(part[start : -end if end else None])
+            end   = None if i == len(audio_parts) - 1 else -overlaps[i] // 2
+            audio.append(part[start : end])
 
         return np.concatenate(audio)
     
-    def infer_old(self, spect, * args, ** kwargs):
-        if isinstance(spect, str): spect = np.load(spect)
-        if len(spect.shape) == 2: spect = tf.expand_dims(spect, axis = 0)
-            
-        return self.vocoder.infer(spect, * args, ** kwargs)
-    
-    def compile(self, loss = 'mse', metrics = [], **kwargs):
+    def compile(self, loss = 'mse', metrics = [], ** kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
-    def get_dataset_config(self, **kwargs):
+    def get_dataset_config(self, ** kwargs):
         kwargs['pad_kwargs']    = {
             'padding_values'    : (-11., 0.)
         }
@@ -162,11 +165,13 @@ class WaveGlow(BaseModel):
         
         return super().get_dataset_config(**kwargs)
 
-    def get_config(self, *args, **kwargs):
-        config = super().get_config(*args, **kwargs)
-        config['audio_rate']         = self.audio_rate
-        config['n_mel_channels']     = self.n_mel_channels
-        config['max_input_length']   = self.max_input_length
+    def get_config(self, * args, ** kwargs):
+        config = super().get_config(* args, ** kwargs)
+        config.update({
+            'audio_rate'    : self.audio_rate,
+            'n_mel_channels'    : self.n_mel_channels,
+            'max_input_length'  : self.max_input_length
+        })
         
         return config
 

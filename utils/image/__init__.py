@@ -16,6 +16,13 @@ from utils.image.mask_utils import *
 from utils.image.image_utils import *
 from utils.image.video_utils import *
 from utils.image.image_augmentation import *
+from utils.image.custom_cameras import HTTPScreenMirror
+from utils.image.image_normalization import get_image_normalization_fn
 
 _image_formats  = ('gif', 'png', 'jpeg', 'jpg')
 _video_formats  = ('mp4', 'avi', 'ogg', 'm4a', 'mov')
+
+from utils.file_utils import load_data, dump_data
+
+load_data.dispatch(load_image, _image_formats)
+dump_data.dispatch(save_image, _image_formats)

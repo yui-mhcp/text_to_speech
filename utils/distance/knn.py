@@ -15,6 +15,7 @@ import pandas as pd
 import tensorflow as tf
 
 from utils.embeddings import load_embedding, compute_centroids, embeddings_to_np, get_embeddings_with_ids
+from utils.tensorflow_utils import tf_compile
 from utils.distance.distance_method import tf_distance
 
 class KNN(object):
@@ -218,12 +219,13 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-def knn(query   : tf.Tensor = None,
-        embeddings  : tf.Tensor = None,
-        distance_matrix : tf.Tensor = None,
+@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+def knn(query   : tf.TensorSpec(shape = None, dtype = tf.float32) = None,
+        embeddings  : tf.TensorSpec(shape = (None, None), dtype = tf.float32) = None,
+        distance_matrix : tf.TensorSpec(shape = (None, None), dtype = tf.float32) = None,
         
-        k   : tf.Tensor = 5,
-        ids : tf.Tensor = None,
+        k   : tf.TensorSpec(shape = (), dtype = tf.int32) = 5,
+        ids : tf.TensorSpec(shape = (None, ), dtype = tf.int32) = None,
         distance_metric = None,
         max_matrix_size = -1,
         

@@ -12,4 +12,4 @@
 from utils.image.box_utils.bounding_box import BoundingBox
 from utils.image.box_utils.box_filters import *
 from utils.image.box_utils.box_functions import *
-from utils.image.box_utils.nms import nms, standard_nms, locality_aware_nms
+from utils.image.box_utils.nms_methods import nms, standard_nms, locality_aware_nms

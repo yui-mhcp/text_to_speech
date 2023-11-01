@@ -16,12 +16,14 @@ import logging
 
 from logging.handlers import SMTPHandler
 
-try:
-    from utils.generic_utils import get_object
-except ImportError as e:
-    from loggers.utils import get_object
 from loggers.time_logger import TIME_LEVEL, timer
 from loggers.telegram_handler import TelegramHandler
+
+try:
+    from utils.generic_utils import get_object
+    from utils.wrapper_utils import partial
+except ImportError:
+    from loggers.utils import get_object, partial
 
 logger  = logging.getLogger(__name__)
 
@@ -46,25 +48,45 @@ _default_level  = os.environ.get('LOG_LEVEL', 'info').lower()
 _default_format = _styles.get(_default_style, _default_style)
 
 logging.basicConfig(
-    level = _levels.get(_default_level, _default_level), stream = sys.stdout,
-    format = _default_format, style = '%' if '%' in _default_format else '{'
+    level   = _levels.get(_default_level, _default_level),
+    stream  = sys.stdout,
+    format  = _default_format,
+    style   = '%' if '%' in _default_format else '{'
 )
 
 def add_level(value, name):
-    def _special_log(* args, ** kwargs):
-        return logging.log(value, * args, ** kwargs)
-    
-    def _special_logger_log(self, * args, ** kwargs):
-        return self.log(value, * args, ** kwargs)
-
+    """
+        Adds a new level to the logging module
+        
+        Arguments :
+            - value : the log level value (e.g., logging.DEBUG = 10, logging.INFO = 20, ...)
+            - name  : the level name
+        
+        Example :
+        ```python
+        # add a 'dev' level just above the debug level
+        add_level('dev', 11)
+        # Now it is possible to set the level with the `set_level` method
+        set_level('dev')
+        # log a message with the new `.dev` method
+        logging.dev('This is a test !')
+        # logging.getLogger(__name__).dev('This will also work !')
+        ```
+    """
     global _levels
-    _levels[name.lower()] = value
+
+    name = name.lower()
+    if name in _levels: return
+    _levels[name] = value
 
     logging.addLevelName(value, name.upper())
-    setattr(logging, name.lower(), _special_log)
-    setattr(logging.Logger, name.lower(), _special_logger_log)
+    if not hasattr(logging, name):
+        setattr(logging, name, partial(logging.log, value))
+    if not hasattr(logging.Logger, name):
+        setattr(logging.Logger, name, partial(logging.Logger.log, value))
 
 def set_style(style, logger = None):
+    """ Sets the logging style to `logger` (root logger if None) """
     global _default_style
     _default_style = style
     
@@ -74,6 +96,7 @@ def set_style(style, logger = None):
         handler.setFormatter(formatter)
 
 def set_level(level, logger = None):
+    """ Sets the global logging level to `level` """
     global _levels
     if isinstance(level, str): level = level.lower()
     logging.getLogger(logger).setLevel(_levels.get(level, level))
@@ -87,6 +110,7 @@ def get_formatter(format = _default_style, style = None, datefmt = None, ** kwar
 def add_handler(handler_name, * args, logger = None, level = None,
                 add_formatter = True, ** kwargs):
     global _default_style, _levels
+    
     if logger is None: logger = logging.getLogger()
     elif isinstance(logger, str): logger = logging.getLogger(logger)
     
@@ -94,7 +118,10 @@ def add_handler(handler_name, * args, logger = None, level = None,
     
     fmt = kwargs.pop('format', _default_style)
     
-    handler = get_object(_handlers, handler_name, * args, ** kwargs) if isinstance(handler_name, str) else handler_name
+    handler = get_object(
+        _handlers, handler_name, * args, ** kwargs
+    ) if isinstance(handler_name, str) else handler_name
+    
     if isinstance(handler, str) or handler is None: return
     if level is not None: handler.setLevel(level)
     
@@ -114,7 +141,6 @@ def add_basic_handler(format = 'basic', ** kwargs):
 def add_file_handler(filename = 'logs.log', encoding = 'utf-8', format = 'extended', ** kwargs):
     return add_handler('file', filename = filename, encoding = encoding, format = format, ** kwargs)
 
-
 def try_tts_handler(* args, ** kwargs):
     try:
         from loggers.tts_handler import TTSHandler
@@ -132,3 +158,4 @@ _handlers   = {
 }
 
 add_level(DEV, 'DEV')
+add_level(TIME_LEVEL, 'TIME')

@@ -12,8 +12,6 @@
 import numpy as np
 import tensorflow as tf
 
-from utils.generic_utils import to_json
-
 class BoundingBox:
     def __init__(self, x1, y1, x2 = None, y2 = None, w = None, h = None, 
                  classes = None, conf = 1., score = None, labels = None, angle = 0., ** kwargs):
@@ -69,6 +67,8 @@ class BoundingBox:
         return self.json()
     
     def json(self, labels = None):
+        from utils.generic_utils import to_json
+        
         infos = {
             'xmin' : self.x1,
             'ymin' : self.y1,

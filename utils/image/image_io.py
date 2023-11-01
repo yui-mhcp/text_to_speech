@@ -21,15 +21,13 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from utils import get_timer
 from utils.generic_utils import time_to_string
 from utils.thread_utils import Producer, Consumer
+from utils.tensorflow_utils import convert_to_tensor
 from utils.image.image_utils import resize_image
-try:
-    from loggers import timer
-    logger_available = True
-except ImportError:
-    timer = lambda fn: fn
-    logger_available = False
+
+timer, logger_available = get_timer()
 
 logger  = logging.getLogger(__name__)
 time_logger = logging.getLogger('timer')
@@ -37,27 +35,29 @@ time_logger = logging.getLogger('timer')
 DELAY_MS = 10
 DELAY_SEC   = DELAY_MS / 1000.
 
-_resize_kwargs  = ('target_shape', 'target_max_shape', 'target_multiple_shape')
+_resize_kwargs  = (
+    'target_shape', 'target_max_shape', 'target_min_shape', 'target_multiple_shape'
+)
 
 def display_image(image):
     """
         Displays the image with `IPython.display.Image`
-        You can also use `plot(image)` or `plot_multiple(...)` (to display multiple images)
+        You can also use `utils.plot(image)` or `plot_multiple(...)` to display (multiple) images(s)
     """
     from IPython.display import Image, display
     display(Image(image))
     
 def get_image_size(image):
     """
-        Return image size [height, width] (supporting different formats) 
+        Returns the image size [height, width] (supporting different formats) 
         Arguments :
-            - image : str (filename) or 2, 3 or 4-D np.ndarray / tf.Tensor (raw image)
+            - image : str (filename) or 2, 3 or 4-D `np.ndarray` / `tf.Tensor` (raw image(s))
         Return :
-            - [height, width]   : image's size
+            - [height, width]   : image size
     """
     if isinstance(image, (np.ndarray, tf.Tensor)):
         if not tf.executing_eagerly():
-            return tf.shape(image)[0], tf.shape(image)[1]
+            return tf.shape(image)[-3], tf.shape(image)[-2]
         elif len(image.shape) in (2, 3):
             return image.shape[0], image.shape[1]
         elif len(image.shape) == 4:
@@ -67,8 +67,8 @@ def get_image_size(image):
     elif isinstance(image, str):
         from PIL import Image
         
-        image = Image.open(image)
-        return image.size
+        with Image.open(image) as img:
+            return img.size[::-1]
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
@@ -77,6 +77,7 @@ def load_image(filename,
                
                target_shape = None,
                target_max_shape = None,
+               target_min_shape = None,
                target_multiple_shape    = None,
                preserve_aspect_ratio    = False,
                resize_kwargs    = {},
@@ -114,21 +115,12 @@ def load_image(filename,
     assert mode in (None, 'rgb', 'gray')
     # Get filename / image from dict (if dict)
     if isinstance(filename, (dict, pd.Series)):
-        filename = filename['image'] if 'image' in filename else filename['filename']
+        filename = filename['image' if 'image' in filename else 'filename']
 
     # Convert filename to a Tensor (if necessary)
     # Note : inferring the output type then use `tf.cast` is faster than `tf.convert_to_tensor` and allows some type checking
-    if not isinstance(filename, tf.Tensor):
-        if isinstance(filename, str): conv_dtype = tf.string
-        elif isinstance(filename, np.ndarray):
-            if filename.dtype == np.uint8:                      conv_dtype = tf.uint8
-            elif filename.dtype in (np.float32, np.float64):    conv_dtype = tf.float32
-            elif filename.dtype in (np.int32, np.int64):        conv_dtype = tf.int32
-            else: raise ValueError('Unknown image type : {}'.format(filename.dtype))
-        else: raise ValueError('Unknown image type : {}\n{}'.format(type(filename), filename))
-        
-        filename = tf.cast(filename, conv_dtype)
-
+    filename = convert_to_tensor(filename)
+    
     if filename.dtype == tf.string:
         image = tf.io.read_file(filename)
         image = tf.image.decode_image(image, channels = channels, expand_animations = False)
@@ -150,7 +142,7 @@ def load_image(filename,
     resize_kwargs   = {
         'preserve_aspect_ratio' : preserve_aspect_ratio,
         ** {kw : val for kw, val in zip(
-            _resize_kwargs, (target_shape, target_max_shape, target_multiple_shape)
+            _resize_kwargs, (target_shape, target_max_shape, target_min_shape, target_multiple_shape)
         )},
         ** resize_kwargs
     }
@@ -160,7 +152,7 @@ def load_image(filename,
     return image
 
 def convert_to_uint8(image, ** kwargs):
-    """ Converts `image` to `np.uint8` format (useful for `cv2` calls) """
+    """ Converts `image` to `np.uint8` format (useful for subsequent `cv2` calls) """
     if isinstance(image, np.ndarray) and image.dtype in (np.uint8, np.float32, np.float64):
         if image.dtype != np.uint8: image = (image * 255).astype(np.uint8)
     else:
@@ -192,10 +184,16 @@ def save_image(filename, image, ** kwargs):
 def frame_generator(cam_id,
                     fps         = None,
                     max_time    = 60,
+                    
                     nb_frames   = -1,
-                    skip_frames = -1,
+                    frames_step = 1,
+                    frames_offset   = 0,
+                    
                     add_copy    = False,
                     return_index    = False,
+                    
+                    max_failure = 5,
+                    
                     ** kwargs
                    ):
     """
@@ -220,26 +218,36 @@ def frame_generator(cam_id,
     if isinstance(cam_id, (int, str)):
         camera = cv2.VideoCapture(cam_id, ** kwargs)
     
-    n       = 0
+    failed      = 0
+    idx, seen   = frames_offset, 0
     wait_time   = 1. / fps - DELAY_SEC
     start_time  = time.time()
     start_iter_time = start_time
     
-    while should_continue(start_time, start_iter_time, n):
+    for _ in range(frames_offset): camera.read()
+    while should_continue(start_time, start_iter_time, seen):
         if logger_available: time_logger.start_timer('frame generation')
-        if skip_frames > 0:
-            for _ in range(skip_frames): camera.read()
+        
         ret, frame = camera.read()
+        if not ret:
+            failed += 1
+            if failed == max_failure: break
+        
+        if frames_step > 1 and idx % frames_step != 0:
+            idx += 1
+            continue
+
         if ret:
             frame = frame[..., ::-1]
             if add_copy or return_index:
-                data = {'image' : frame, 'frame_index' : n}
+                data = {'image' : frame, 'frame_index' : idx}
                 if add_copy: data['image_copy'] = frame.copy()
                 yield data
             else:
                 yield frame
         
-        n += 1
+        idx += 1
+        seen += 1
         wait = wait_time - (time.time() - start_iter_time)
         if fps > 0 and wait > 0: time.sleep(wait)
         start_iter_time = time.time()
@@ -247,13 +255,14 @@ def frame_generator(cam_id,
 
     if isinstance(cam_id, (int, str)): camera.release()
     
-    return n
+    return seen
 
 @timer
 def stream_camera(cam_id    = 0,
                   max_time  = 60,
                   nb_frames = -1,
-                  skip_frames   = -1,
+                  frames_step   = 1,
+                  frames_offset = 0,
                   
                   fps   = -1,
                   show_fps  = None,
@@ -262,6 +271,7 @@ def stream_camera(cam_id    = 0,
                   
                   add_copy  = False,
                   add_index = False,
+                  buffer_size   = 5,
                   transform_fn  = None,
                   transformer_prod  = None,
                   
@@ -336,7 +346,7 @@ def stream_camera(cam_id    = 0,
         """ Runs the audio once the first frame has been displayed """
         if first:
             from utils.audio import audio_io
-            audio_io.play_audio(cam_id, block = False)
+            audio_io.play_audio(cam_id, blocking = False)
         return None, (False, )
     
     # variable initialization
@@ -379,11 +389,11 @@ def stream_camera(cam_id    = 0,
     #####################
     
     prod = Producer(frame_generator(
-        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, skip_frames = skip_frames
+        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, frames_step = frames_step, frames_offset = frames_offset
     ), run_main_thread = max_workers < 0, stop_listeners = cap.release)
     
     transformer = prod.add_consumer(
-        transform_fn, link_stop = True, max_workers = max_workers, ** kwargs
+        transform_fn, link_stop = True, max_workers = max_workers, buffer_size = buffer_size, ** kwargs
     ) if transform_fn is not None else prod
     
     if transformer_prod is None: transformer_prod = transformer

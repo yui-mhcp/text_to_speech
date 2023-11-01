@@ -29,7 +29,8 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
-TIME_LEVEL  = 15
+TIME_LEVEL      = 15
+TIME_LOGGER_NAME    = 'timer'
 
 _str_indent     = '  '
 
@@ -187,18 +188,17 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
         logger.start_timer(name)
         try:
             result = fn(* args, ** kwargs)
-        except Exception as e:
-            raise e
         finally:
             logger.stop_timer(name)
 
-        if log_if_root and not logger.timer.running: logger.log_time(name)
-        elif force_logging: logger.log_time(timer)
+            if log_if_root and not logger.timer.running: logger.log_time(name)
+            elif force_logging: logger.log_time(timer)
         return result
     
     return fn_with_timer
 
 def start_timer(self, name, * args, ** kwargs):
+    """ Starts a new timer with the given `name`. Do not forget to call `stop_timer(name)` ! """
     if not executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
     
@@ -206,6 +206,7 @@ def start_timer(self, name, * args, ** kwargs):
     self.timer.start_timer(name)
     
 def stop_timer(self, name, * args, ** kwargs):
+    """ Stops the running timer with the given `name` """
     if not executing_eagerly(): return
     if not self.isEnabledFor(TIME_LEVEL): return
     
@@ -218,10 +219,14 @@ def log_time(self, names = None, * args, ** kwargs):
     des = self.timer.__str__(names) #if not isinstance(names, Timer) else str(names)
     self.log(TIME_LEVEL, des, * args, ** kwargs)
 
-
-logging.addLevelName(TIME_LEVEL, 'TIME')
+time_logger = logging.getLogger(TIME_LOGGER_NAME)
 
 logging.Logger.start_timer  = start_timer
 logging.Logger.stop_timer   = stop_timer
 logging.Logger.log_time     = log_time
+
+logging.start_timer  = time_logger.start_timer
+logging.stop_timer   = time_logger.stop_timer
+logging.log_time     = time_logger.log_time
+
 

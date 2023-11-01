@@ -12,15 +12,16 @@
 
 import tensorflow as tf
 
+from utils.tensorflow_utils import tf_compile
 from utils.distance.k_means import _kmeans
 from utils.distance.distance_method import tf_distance
 from utils.distance.clustering import clustering_wrapper
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def _spectral_clustering(points : tf.Tensor,
-                         k      : tf.Tensor,
+@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+def _spectral_clustering(points : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+                         k      : tf.TensorSpec(shape = (), dtype = tf.int32),
                          
-                         sigma  : tf.Tensor = 0.1,
+                         sigma  : tf.TensorSpec(shape = (), dtype = tf.float32) = 0.1,
                          distance_metric = 'euclidian',
                          ** kwargs
                         ):

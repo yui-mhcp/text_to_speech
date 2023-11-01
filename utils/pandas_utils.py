@@ -31,21 +31,25 @@ def set_display_options(columns = 25, rows = 25, width = 125, colwidth = 50):
 
 def filter_df(data, on_unique = [], ** kwargs):
     """
-        Filter a pd.DataFrame
+        Filters a `pd.DataFrame`
+        
         Arguments : 
             - data      : dataframe to filter
             - on_unique : column or list of columns on which to apply criterion on uniques values (see notes for details)
-            - kwargs    : key-value pairs of {column_id : criterion}
+            - kwargs    : key-value pairs of `{column_id : criterion}`
                 where criterion can be : 
-                - callable (a function) : take as argument the column and return a boolean based on values (exemple : lambda x: x < 5)
-                - list / tuple  : list of possible values (mask = dataset[column].isin(value))
-                - else  : value (mask = dataset[column] == value)
+                - callable (a function) : take as argument the column and return a boolean based on values
+                    --> `mask = data[column].apply(fn)`
+                - list / tuple  : list of possible values
+                    --> `mask = data[column].isin(value)`
+                - else  : expected value
+                    --> `mask = data[column] == value`
         Return :
-            - filtered_data : filtered dataset
+            - filtered_data : filtered dataframe
         
-        Note : if on_unique is used and value is a callable, it is applied on the result of `data[column].value_counts()` that gives a pd.Series where index are the unique values and values are their respective occurences (sorted in decreasing order). 
+        Note : if `on_unique` is used and value is a callable, it is applied on the result of `data[column].value_counts()` that gives a pd.Series, where index are the unique values and the values are their respective occurences (sorted in decreasing order). 
         The function must return boolean values (useful to get only ids with a minimal / maximal number of occurences)
-        You can also pass a string (min / max / mean) or an int which represents the index you want to keep (min = index -1, max = index 1, mean = len() // 2)
+        You can also pass a string (min / max / mean) or an int which represents the index you want to keep (min = index -1, max = index 0, mean = len(...) // 2)
     """
     if not isinstance(on_unique, (list, tuple)): on_unique = [on_unique]
     
@@ -56,9 +60,9 @@ def filter_df(data, on_unique = [], ** kwargs):
             assert callable(value) or isinstance(value, (str, int))
             uniques = data[column].value_counts()
             if isinstance(value, str):
-                if value == 'min': uniques = [uniques.index[-1]]
-                elif value == 'max': uniques = [uniques.index[0]]
-                elif value == 'mean': uniques = [uniques.index[len(uniques) // 2]]
+                if value == 'min':      uniques = [uniques.index[-1]]
+                elif value == 'max':    uniques = [uniques.index[0]]
+                elif value == 'mean':   uniques = [uniques.index[len(uniques) // 2]]
             elif isinstance(value, int):
                 uniques = [uniques.index[value]]
             else:
@@ -66,58 +70,35 @@ def filter_df(data, on_unique = [], ** kwargs):
                 uniques = uniques[value(uniques)].index
             
             mask = data[column].isin(uniques)
-        elif callable(value): mask = data[column].apply(value)
-        elif isinstance(value, (list, tuple)): mask = data[column].isin(value)
-        else: mask = data[column] == value
+        elif callable(value):
+            mask = data[column].apply(value)
+        elif isinstance(value, (list, tuple)):
+            mask = data[column].isin(value)
+        else:
+            mask = data[column] == value
         
         data = data[mask]
     return data
 
-def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** kwargs):
-    if not isinstance(group_by, (list, tuple)): group_by = [group_by]
-    if not isinstance(columns, (list, tuple)): columns = [columns]
-    if len(columns) == 0: columns = [c for c in data.columns if c not in group_by]
-    if len(kwargs) == 0: kwargs = _base_aggregation
-    
-    for k, v in kwargs.items():
-        if isinstance(v, int): kwargs[k] = lambda x: x.values[v]
-        elif isinstance(v, str): kwargs[k] = _base_aggregation[v]
-    
-    name_format = '{name}_{c}' if len(columns) > 1 else '{name}'
-    
-    data = filter_df(data, ** filters)
-    
-    result = []
-    for group_values, grouped_data in data.groupby(group_by):
-        if not isinstance (group_values, (list, tuple)): group_values = [group_values]
-        
-        grouped_values = {n : v for n, v in zip(group_by, group_values)}
-        for c in columns:
-            grouped_values.update({
-                name_format.format(name = name, c = c) : fn(grouped_data[c])
-                for name, fn in kwargs.items()
-            })
-        result.append(grouped_values)
-    
-    result = pd.DataFrame(result)
-    
-    if merge:
-        result = pd.merge(data, result, on = group_by)
-    
-    return result
-
-def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_state = None, drop = True):
+def sample_df(data,
+              on    = 'id',
+              n     = 10,
+              n_sample      = 10,
+              min_sample    = None,
+              random_state  = None,
+              drop = True
+             ):
     """
-        Sample dataframe by taking `n_sample` for `n` different values of `on`
+        Sample dataframe by taking `n_sample` for `n` different values of column `on`
         Default values means : 'taking 10 samples for 10 different ids'
         
         Arguments :
-            - data  : pd.DataFrame to sample
+            - data  : `pd.DataFrame` to sample
             - on    : the `data`'s column to identify groups
             - n     : the number of groups to sample
             - n_sample  : the number of samples for each group (if <= 0, max samples per group)
             - min_sample    : the minimal number of samples for a group to be selected.
-                Note that if less groups than `n` groups have at least `min_sample`, some groups can have less than `min_sample` in the final result.
+                Note that if less than `n` groups have at least `min_sample`, some groups can have less than `min_sample` in the final result.
             - random_state  : state used in the sampling of group's ids and samples (for reproducibility)
             - drop          : cf `drop` argument in `reset_index`, if `False`, tries to ad an `index` column
         Returns :
@@ -152,6 +133,67 @@ def sample_df(data, on = 'id', n = 10, n_sample = 10, min_sample = None, random_
         ))
     
     return data.loc[indexes].reset_index(drop = drop)
+
+def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** kwargs):
+    """
+        Computes some aggregation functions (e.g., `np.sum`, `np.mean`, ...) on `data`
+        
+        Arguments :
+            - data  : the original `pd.DataFrame`
+            - group_by  : the columns to group for the aggregation
+            - columns   : the columns on which to apply the aggregation functions
+            - filters   : mapping `{column : filter}` to apply (see `filter_df`)
+            - kwargs    : mapping `{aggregation_name : aggregation_fn}`, the aggregation to perform
+        Return :
+            - aggregated_data   : `pd.DataFrame` with columns `group_by + list(kwargs.keys())`
+        
+        Example usage :
+        ```python
+        dataset = get_dataset('common_voice') # contains columns ['id', 'filename', 'time']
+        aggregated = aggregate_df(
+            dataset,                # audio dataset
+            group_by    = 'id',     # groups by the 'id' column
+            columns     = 'time',   # computes the functions on the 'time' column
+            total   = np.sum,       # computes the total time for each 'id'
+            mean    = np.mean       # computes the average time for each 'id'
+        )
+        print(aggregated.columns)   # ['id', 'total', 'mean']
+        ```
+        
+        Note : if no `kwargs` is provided, the default computation is `count, min, mean, max, total`
+    """
+    if not isinstance(group_by, (list, tuple)): group_by = [group_by]
+    if not isinstance(columns, (list, tuple)): columns = [columns]
+    if len(columns) == 0: columns = [c for c in data.columns if c not in group_by]
+    if len(kwargs) == 0: kwargs = _base_aggregation
+    
+    for k, v in kwargs.items():
+        if isinstance(v, int): kwargs[k] = lambda x: x.values[v]
+        elif isinstance(v, str): kwargs[k] = _base_aggregation[v]
+    
+    name_format = '{name}_{c}' if len(columns) > 1 else '{name}'
+    
+    data = filter_df(data, ** filters)
+    
+    result = []
+    for group_values, grouped_data in data.groupby(group_by):
+        if not isinstance (group_values, (list, tuple)): group_values = [group_values]
+        
+        grouped_values = {n : v for n, v in zip(group_by, group_values)}
+        for c in columns:
+            grouped_values.update({
+                name_format.format(name = name, c = c) : fn(grouped_data[c])
+                for name, fn in kwargs.items()
+            })
+        result.append(grouped_values)
+    
+    result = pd.DataFrame(result)
+    
+    if merge:
+        result = pd.merge(data, result, on = group_by)
+    
+    return result
+
 
 def compare_df(df1, df2):
     """

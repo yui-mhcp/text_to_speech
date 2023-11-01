@@ -24,6 +24,7 @@ from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.model_selection import train_test_split as sklearn_train_test_split
 
 from loggers import DEV
+from utils.embeddings import load_embedding
 from utils.generic_utils import time_to_string
 from utils.pandas_utils import filter_df
 
@@ -471,6 +472,7 @@ def prepare_dataset(data,
                     batch_size             = 1,
                     shuffle_size           = -1,
                      
+                    augment_original_fn    = None,
                     encode_fn              = None,
                     filter_fn              = None,
                     augment_fn             = None,
@@ -539,6 +541,11 @@ def prepare_dataset(data,
     
     logger.log(DEV, "Original dataset : {}".format(dataset))
     
+    if augment_original_fn is not None:
+        cache = False
+        dataset = dataset.map(augment_original_fn, num_parallel_calls = num_parallel_calls)
+        logger.log(DEV, "- Dataset after original data augmentation : {}".format(dataset))
+
     if encode_fn is not None:
         dataset = dataset.map(encode_fn, num_parallel_calls = num_parallel_calls)
         logger.log(DEV, "- Dataset after encoding : {}".format(dataset))

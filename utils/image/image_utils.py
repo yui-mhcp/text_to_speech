@@ -15,17 +15,24 @@ import numpy as np
 import tensorflow as tf
 
 from matplotlib import colors
-from keras.layers.preprocessing.image_preprocessing import transform, get_rotation_matrix
+try:
+    from keras.layers.preprocessing.image_preprocessing import transform, get_rotation_matrix
+except:
+    from keras.src.layers.preprocessing.image_preprocessing import transform, get_rotation_matrix
+
+from utils.tensorflow_utils import tf_compile, execute_eagerly
 
 BASE_COLORS = list(colors.BASE_COLORS.keys())
 
-def _color_to_rgb(color):
+@execute_eagerly(signature = tf.TensorSpec(shape = (3, ), dtype = tf.uint8), numpy = True)
+def color_to_rgb(color):
     """
         Returns a RGB np.ndarray color as uint8 values. `color` can be of different types :
             - str (or bytes)  : the color's name (as supported by `matplotlib.colors.to_rgb`)
             - int / float     : the color's value (used as Red, Green and Blue value)
             - 3-tuple / array : the RGB values (either float or int)
     """
+    if isinstance(color, tf.Tensor): color = color.numpy()
     if isinstance(color, bytes): color = color.decode()
     if colors.is_color_like(color):
         color = colors.to_rgb(color)
@@ -38,18 +45,15 @@ def rgb2gray(rgb):
     return np.dot(rgb[...:3], [0.2989, 0.5870, 0.1140])
 
 def normalize_color(color, image = None):
-    color = _color_to_rgb(color)
+    color = color_to_rgb(color)
     if image is not None and image.dtype in (np.float32, tf.float32):
         return tuple(float(ci) / 255. for ci in color)
     return tuple(int(ci) for ci in color)
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
 def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
     """ Converts `color` to a 3-items `tf.Tensor` with the same dtype as `image` (if provided, default to `uint8`) """
-    color = tf.numpy_function(
-        _color_to_rgb, [color], Tout = tf.uint8
-    )
-    color.set_shape([3])
+    color = color_to_rgb(color)
     
     if image is not None: color = tf.image.convert_image_dtype(color, image.dtype)
     
@@ -57,6 +61,7 @@ def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
 
 def resize_image(image,
                  target_shape   = None,
+                 target_min_shape   = None,
                  target_max_shape   = None,
                  target_multiple_shape  = None,
                  
@@ -73,6 +78,7 @@ def resize_image(image,
         Arguments :
             - image : 3-D or 4-D Tensor, the image(s) to resize
             - target_shape  : tuple (h, w), the fixed expected output shape
+            - target_min_shape  : tuple (h, w), the minimum dimension for the output shape
             - target_max_shape  : tuple (h, w), the maximal dimension for the output shape
             - target_multiple_shape : the output shape should be a multiple of this argument
             
@@ -94,8 +100,13 @@ def resize_image(image,
     elif tf.executing_eagerly() and any(s == 0 for s in image.shape):       return image
     
     target_shape = get_resized_shape(
-        image, target_shape, max_shape = target_max_shape, multiples = target_multiple_shape,
-        preserve_aspect_ratio = preserve_aspect_ratio, ** kwargs
+        image,
+        shape   = target_shape,
+        min_shape   = target_min_shape,
+        max_shape   = target_max_shape,
+        multiples   = target_multiple_shape,
+        preserve_aspect_ratio   = preserve_aspect_ratio,
+        ** kwargs
     )
 
     if (
@@ -126,9 +137,10 @@ def resize_image(image,
 
 def pad_image(image,
               target_shape  = None,
+              target_min_shape  = None,
               target_multiple_shape = None,
               
-              pad_mode  = 'even',
+              pad_mode  = 'after',
               pad_value = 0.,
               
               ** kwargs
@@ -139,6 +151,7 @@ def pad_image(image,
         Arguments :
             - image : 3D or 4D `tf.Tensor`, the image(s) to pad
             - target_shape  : fixed expected output shape
+            - target_min_shape  : tuple (h, w), the minimum dimension for the output shape
             - target_multiple_shape : the output shape should be a multiple of this argument
             
             - pad_mode  : where to add padding (one of `after`, `before`, `even`)
@@ -156,7 +169,12 @@ def pad_image(image,
         /!\ WARNING /!\ If any of `target_shape` or `tf.shape(image)` is 0, the function directly returns the image without resizing !
     """
     target_shape = get_resized_shape(
-        image, target_shape, multiples = target_multiple_shape, prefer_crop = False, ** kwargs
+        image, 
+        target_shape,
+        min_shape   = target_min_shape,
+        multiples   = target_multiple_shape,
+        prefer_crop = False,
+        ** kwargs
     )
     if tf.reduce_any(target_shape <= 0) or tf.reduce_any(tf.shape(image) <= 0): return image
     
@@ -230,10 +248,22 @@ def get_resized_shape(image,
             shape   = tf.cast(tf.cast(img_shape, ratio.dtype) * ratio, shape.dtype)
 
     if max_shape is not None:
-        shape = tf.minimum(shape, tf.cast(max_shape, shape.dtype)[:2])
+        img_shape   = tf.shape(image)[-3 : -1]
+        max_shape   = tf.cast(max_shape, shape.dtype)[:2]
+        if not preserve_aspect_ratio:
+            shape   = tf.where(max_shape != -1, tf.minimum(shape, max_shape), shape)
+        elif tf.reduce_any(tf.math.logical_and(max_shape != -1, img_shape > max_shape)):
+            ratio   = tf.reduce_min(tf.where(max_shape == -1, img_shape, max_shape) / img_shape)
+            shape   = tf.cast(tf.cast(img_shape, ratio.dtype) * ratio, shape.dtype)
     
     if min_shape is not None:
-        shape = tf.maximum(shape, tf.cast(min_shape, shape.dtype)[:2])
+        img_shape   = tf.shape(image)[-3 : -1]
+        min_shape   = tf.cast(min_shape, shape.dtype)[:2]
+        if not preserve_aspect_ratio:
+            shape   = tf.where(min_shape != -1, tf.maximum(shape, min_shape), shape)
+        elif tf.reduce_any(tf.math.logical_and(min_shape != -1, img_shape < min_shape)):
+            ratio   = tf.reduce_max(min_shape / img_shape)
+            shape   = tf.cast(tf.cast(img_shape, ratio.dtype) * ratio, shape.dtype)
     
     if multiples is not None:
         multiples   = tf.cast(multiples, shape.dtype)
@@ -241,8 +271,6 @@ def get_resized_shape(image,
             shape   = shape // multiples * multiples
         else:
             shape   = tf.where(shape % multiples != 0, (shape // multiples + 1) * multiples, shape)
-
-        shape   = shape // multiples * multiples
     
     return shape
 

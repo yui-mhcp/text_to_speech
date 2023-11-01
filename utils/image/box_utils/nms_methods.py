@@ -15,29 +15,17 @@ import tensorflow as tf
 
 from functools import wraps
 
-from utils.image.box_utils import BoxFormat, convert_box_format, bbox_iou
+from utils.wrapper_utils import dispatch_wrapper, add_doc
+from utils.image.box_utils import BoxFormat, box_converter_wrapper, bbox_iou
 
 _nms_methods    = {}
 
-def nms_method_wrapper(fn = None, names = None, box_format = BoxFormat.Y0X0Y1X1):
-    def wrapper(fn):
-        @wraps(fn)
-        def inner(boxes, * args, ** kwargs):
-            boxes = convert_box_format(
-                boxes, box_format, as_list = False, extended = False, ** kwargs
-            )
-            kwargs.pop('box_mode', None)
-            return fn(boxes, * args, ** kwargs)
-        
-        aliases = names if names else [fn.__name__]
-        if not isinstance(aliases, (list, tuple)): aliases = [aliases]
-        for n in aliases: _nms_methods[n] = inner
-
-        return inner
-    
-    return wrapper if fn is None else wrapper(fn)
-
-def nms(boxes, scores = None, nms_threshold = 0.25, method = 'nms', ** kwargs):
+@dispatch_wrapper(_nms_methods, 'method', default = 'nms')
+def nms(boxes, scores = None, method = 'nms', ** kwargs):
+    """
+        Computes Non-Maximal Suppression (NMS) on `boxes` based on `method`
+        The returned selected boxes are in `BoxFormat.Y0X0Y1X1` format !
+    """
     if not callable(method) and method not in _nms_methods:
         raise ValueError("Unknown NMS method !\n  Accepted : {}\n  Got : {}".format(
             tuple(_nms_methods.keys()), method
@@ -47,10 +35,11 @@ def nms(boxes, scores = None, nms_threshold = 0.25, method = 'nms', ** kwargs):
     
     fn = method if callable(method) else _nms_methods[method]
     return fn(
-        boxes, scores = scores, nms_threshold = nms_threshold, ** kwargs
+        boxes, scores = scores, ** kwargs
     )
 
-@nms_method_wrapper(names = ('nms', 'standard', 'standard_nms'), box_format = BoxFormat.Y0X0Y1X1)
+@nms.dispatch(('nms', 'standard', 'standard_nms'))
+@box_converter_wrapper(BoxFormat.CORNERS2, as_list = False, extended = False)
 def standard_nms(boxes, scores, nms_threshold = 0.25, ** kwargs):
     """ Utility function interfacing to `tf.image.non_max_suppression` """
     indices = tf.image.non_max_suppression(
@@ -58,14 +47,33 @@ def standard_nms(boxes, scores, nms_threshold = 0.25, ** kwargs):
     )
     return tf.gather(boxes, indices), tf.gather(scores, indices)
 
-@nms_method_wrapper(names = ('lanms', 'locality_aware_nms'), box_format = BoxFormat.CORNERS2)
+@nms.dispatch(('lanms', 'locality_aware_nms'))
+@box_converter_wrapper(BoxFormat.CORNERS2, as_list = False, extended = False)
 def locality_aware_nms(boxes,
                        scores,
-                       nms_threshold     = 0.25,
+                       nms_threshold     = 0.2,
                        merge_threshold   = 0.01,
                        merge_method      = 'weighted',
                        ** kwargs
                       ):
+    """
+        Computes a `Locality Aware NMS` by merging boxes with an IoU higher than `merge_threshold`
+        
+        Arguments :
+            - boxes     : 2-D `tf.Tensor` with shape `(n_boxes, 4)`, the boxes
+            - scores    : 1-D `tf.Tensor` with shape `(n_boxes, )`, the scores of the boxes
+            - nms_threshold : the threshold for the standard NMS applied after merging
+            - merge_threshold   : the IoU threshold used to merge overlapping boxes
+            - merge_method      : the merging method
+                - union     : computes the union of all boxes to merge
+                - weighted  : computes a weighted average of the boxes to merge (weighted by `scores`)
+                - average   : computes an average of the boxes to merge (equivalent to `weighted` if all scores are equals)
+        Return : (selected_boxes, selected_scores)
+            - selected_boxes    : the (subset) of `boxes` selected by the standard NMS after merge
+            - selected_scores   : the (subset) of `scores` associated to `selected_boxes`
+    """
+    assert merge_method in ('union', 'weighted', 'average')
+    
     if merge_threshold == -1.: merge_threshold = nms_threshold
     
     ious = bbox_iou(
@@ -225,27 +233,6 @@ def locality_aware_nms_v3(boxes,
             ) / tf.expand_dims(denom, axis = -1)
     
     return boxes, scores
-
-#@nms_method_wrapper(names = ('numba_nms', ), box_format = BoxFormat.CORNERS)
-def numba_nms(boxes, scores, nms_threshold = 0.25, ** kwargs):
-    result = np.empty((len(boxes), 4), dtype = boxes.dtype)
-    result_scores   = np.empty((len(boxes), ), dtype = scores.dtype)
-    
-    indices = np.argsort(scores)[::-1]
-    boxes, scores = boxes[indices], scores[indices]
-    for i in range(len(boxes)):
-        result[i], result_scores[i] = boxes[0], scores[0]
-
-        ious = bbox_iou(
-            boxes[0], boxes, box_mode = BoxFormat.CORNERS2, as_matrix = False
-        )
-
-        mask    = ious < nms_threshold
-        boxes   = boxes[mask]
-        scores  = scores[mask]
-        if boxes.shape[0] == 0: break
-    
-    return result[: i + 1], result_scores[: i + 1]
 
 def numpy_nms(boxes, scores = None, labels = None, nms_threshold = 0.25):
     if scores is not None:

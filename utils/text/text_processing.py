@@ -23,6 +23,17 @@ def get_pairs(text, n = 2):
     """ Creates a n-gram """
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
+def build_masking_filter(indices):
+    indices = tf.reshape(tf.cast(indices, tf.int32), [-1])
+    return tf.function(
+        lambda logits, tokens, t: remove_batch_tokens(logits, indices),
+        input_signature = [
+            tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+            tf.TensorSpec(shape = (None, None), dtype = tf.int32),
+            tf.TensorSpec(shape = (), dtype = tf.int32)
+        ]
+    )
+
 @tf.function(input_signature = [
     tf.TensorSpec(shape = (None, None), dtype = tf.float32),
     tf.TensorSpec(shape = (None, 2),    dtype = tf.int32),

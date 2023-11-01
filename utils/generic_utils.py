@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -13,193 +12,154 @@
 import os
 import enum
 import json
-import queue
 import timeit
 import inspect
 import logging
 import datetime
 import argparse
-import multiprocessing
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
 logger = logging.getLogger(__name__)
 
-_limited_memory = False
-
-def _is_filename(data):
-    if not isinstance(data, str): return False
-    return (
-        len(data) < 512 and len(data) > 1 and any(c.isalnum() for c in data) and os.path.exists(data)
-    )
-    
 def time_to_string(seconds):
-    """ return a string representation of a time (given in seconds) """
-    if seconds < 0.0001: return '{} \u03BCs'.format(int(seconds * 1000000))
-    if seconds < 1.: return '{} ms'.format(int(seconds * 1000))
+    """ Returns a string representation of a time (given in seconds) """
+    if seconds < 0.001: return '{} \u03BCs'.format(int(seconds * 1000000))
+    if seconds < 1.:    return '{} ms'.format(int(seconds * 1000))
     h = int(seconds // 3600)
-    h = "" if h == 0 else "{}h ".format(h)
     m = int((seconds % 3600) // 60)
-    m = "" if m == 0 else "{}min ".format(m)
     s = ((seconds % 3600) % 60)
-    s = "{:.3f} sec".format(s) if m == "" and h == "" else "{}sec".format(int(s))
-    return "{}{}{}".format(h, m, s)        
+    
+    return '{}{}{}'.format(
+        '' if h == 0 else '{}h '.format(h),
+        '' if m == 0 else '{}min '.format(m),
+        '{:.3f} sec'.format(s) if m + h == 0 else '{}sec'.format(int(s))
+    )
 
 def convert_to_str(x):
-    """ Convert different string formats (bytes, tf.Tensor, ...) to a `str` object """
-    if isinstance(x, str): return x
-    elif isinstance(x, tf.Tensor) and x.dtype != tf.string: return x
-    elif isinstance(x, np.ndarray) and x.dtype in (np.int32, np.float32, np.int64, np.float64): return x
-    if hasattr(x, 'numpy'): x = x.numpy()
+    """ Convert different string formats (bytes, tf.Tensor, ...) to regular `str` object """
+    if isinstance(x, str) or x is None: return x
+    elif isinstance(x, tf.Tensor):
+        if x.dtype != tf.string: return x
+        x = x.numpy()
+    elif isinstance(x, np.ndarray) and np.issubdtype(x.dtype, np.number): return x
     
-    if isinstance(x, np.ndarray) and x.ndim == 0: x = str(x)
+    if isinstance(x, np.ndarray) and x.ndim == 0: x = x.item()
     if isinstance(x, bytes): x = x.decode('utf-8')
     
-    if isinstance(x, (list, tuple, np.ndarray)):
+    if isinstance(x, (list, tuple, set, np.ndarray)):
         return [convert_to_str(xi) for xi in x]
     elif isinstance(x, dict):
         return {convert_to_str(k) : convert_to_str(v) for k, v in x.items()}
     
     return x
 
-def create_iterator(generator, ** kwargs):
-    if isinstance(generator, pd.DataFrame):
-        def _df_iterator():
-            for idx, row in generator.iterrows():
-                yield row
-        return _df_iterator()
-    elif isinstance(generator, (queue.Queue, multiprocessing.queues.Queue)):
-        def _queue_iterator():
-            try:
-                while True:
-                    item = generator.get(** kwargs)
-                    if item is not None:
-                        yield item
-            except queue.Empty:
-                pass
-        
-        return _queue_iterator()
-    elif callable(generator):
-        return generator(** kwargs)
-    return generator
-
-def split_gpus(n, memory = 2048):
-    gpus = tf.config.list_physical_devices('GPU')
-    try:
-        for gpu in gpus:
-            tf.config.set_logical_device_configuration(
-                gpu, [
-                    tf.config.LogicalDeviceConfiguration(memory_limit = memory) for _ in range(n)
-                ]
-            )
-    except RuntimeError as e:
-        print(e)
+def to_json(data):
+    """ Converts a given data to json-serializable (if possible) """
+    if data is None: return data
+    if isinstance(data, enum.Enum): data = data.value
+    if isinstance(data, (tf.Tensor, tf.Variable)):  data = data.numpy()
+    if isinstance(data, bytes): data = data.decode('utf-8')
     
-    logger.info("# physical GPU : {}\n# logical GPU : {}".format(
-        len(tf.config.list_physical_devices('GPU')),
-        len(tf.config.list_logical_devices('GPU'))
-    ))
+    if isinstance(data, bool): return data
+    elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%d %H:%M:%S")
+    elif isinstance(data, (float, np.floating)): return float(data)
+    elif isinstance(data, (int, np.integer)):    return int(data)
+    elif isinstance(data, (list, tuple, set, np.ndarray)):
+        return [to_json(d) for d in data]
+    elif isinstance(data, dict):
+        return {to_json(k) : to_json(v) for k, v in data.items()}
+    elif isinstance(data, str):
+        from utils.file_utils import is_path, path_to_unix
+        return data if not is_path(data) else path_to_unix(data)
+    elif hasattr(data, 'get_config'):
+        return to_json(data.get_config())
+    else:
+        logger.warning("Unknown json data ({}) : {}".format(type(data), data))
+        return str(data)
 
-def limit_gpu_memory(limit = 2048):
-    """ Limit gpu memory for tensorflow """
-    global _limited_memory
-    if _limited_memory: return
-    
-    gpus = tf.config.experimental.list_physical_devices('GPU')
+def var_from_str(v):
+    """ Try to get the value interpreted as json-notation """
+    if not isinstance(v, str): return v
     try:
-        for gpu in gpus:
-            tf.config.experimental.set_virtual_device_configuration(
-                gpu, 
-                [tf.config.experimental.VirtualDeviceConfiguration(memory_limit = 2048)]
-            )
-        _limited_memory = True
+        return json.loads(v)
     except:
-        logger.error("Error while limiting tensorflow GPU memory")
+        return v
 
-def show_memory(gpu = 'GPU:0', message = ''):
-    mem_usage = tf.config.experimental.get_memory_info(gpu)
-    print('{}{}'.format(message if not message else message + '\t: ', {
-        k : '{:.3f} Gb'.format(v / 1024 ** 3) for k, v in mem_usage.items()
-    }))
-    tf.config.experimental.reset_memory_stats(gpu)
-    return mem_usage
+def to_lower_keys(data):
+    """ Returns the same dict with lowercased keys"""
+    return {k.lower() : v for k, v in data.items()}
 
-def infer_downsampling_factor(model):
-    from tensorflow.keras.layers import (
-        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
-        AveragePooling1D, AveragePooling2D, AveragePooling3D
-    )
-    _downsampling_types = [
-        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
-        AveragePooling1D, AveragePooling2D, AveragePooling3D
-    ]
-    try:
-        from custom_layers import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D
-        _downsampling_types.extend([MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D])
-    except Exception as e:
-        pass
+def get_args(fn):
+    """ Returns a `list` of the positional arguments (even if they have default values) """
+    return inspect.getfullargspec(fn).args
+
+def get_kwargs(fn):
+    """ Returns a `dict` containing the kwargs of `fn` """
+    sign = inspect.getfullargspec(fn)
     
-    def _get_factor(model):
-        factor = 1
-        for l in model.layers:
-            if type(l) in _downsampling_types:
-                factor = factor * np.array(l.strides)
-            elif hasattr(l, 'layers'):
-                factor = factor * _get_factor(l)
-        
-        return factor
-    return _get_factor(model)
-
-def infer_upsampling_factor(model):
-    from tensorflow.keras.layers import (
-        UpSampling1D, UpSampling2D, UpSampling3D,
-        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
-    )
-    _downsampling_types = [
-        UpSampling1D, UpSampling2D, UpSampling3D,
-        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
-    ]
-    try:
-        from custom_architectures.unet_arch import UpSampling2DV1
-        _downsampling_types.append(UpSampling2DV1)
-    except Exception as e:
-        pass
+    kwargs = {}
+    if sign.defaults:
+        kwargs.update({
+            k : v for k, v in zip(sign.args[- len(sign.defaults) :], sign.defaults)
+        })
     
-    def _get_factor(model):
-        factor = 1
-        for l in model.layers:
-            if type(l) in _downsampling_types:
-                if hasattr(l, 'strides'):
-                    strides = l.strides
-                elif hasattr(l, 'size'):
-                    strides = l.size
-                elif hasattr(l, 'scale_factor'):
-                    strides = l.scale_factor
-                factor = factor * np.array(strides)
-            elif hasattr(l, 'layers'):
-                factor = factor * _get_factor(l)
-        
-        return factor
-    return _get_factor(model)
+    if sign.kwonlydefaults:
+        kwargs.update(sign.kwonlydefaults)
+    
+    return kwargs
 
-def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = False):
-    if isinstance(f, dict):
-        return {name : benchmark(f_i, inputs, number, force_gpu_sync, display_memory) for name, f_i in f.items()}
-    times = []
-    if display_memory: show_memory(message = 'Before')
-    for inp in inputs:
-        if not isinstance(inp, tuple): inp = (inp, )
-        def _g():
-            if force_gpu_sync: one = tf.ones(())
-            f(* inp)
-            if force_gpu_sync: one = one.numpy()
+def signature_to_str(fn):
+    return '{}{}'.format(fn.__name__, str(inspect.signature(fn)))
+
+def print_objects(objects, print_name = 'objects', _logger = logger):
+    """ Displays the list of available objects (i.e. simply prints `objects.keys()` :D ) """
+    _logger.info("Available {} : {}".format(print_name, sorted(list(objects.keys()))))
+
+def get_object(objects, obj, * args, print_name = 'object', err = False, types = None, ** kwargs):
+    """
+        Get corresponding object based on a name (`obj`) and dict of object names with associated class / function to call (`objects`)
         
-        _g() # warmup 
-        t = timeit.timeit(_g, number = number)
-        times.append(t * 1000. / number)
-    if display_memory: show_memory(message = 'After')
-    return times
+        Arguments : 
+            - objects   : mapping (`dict`) of names with their associated class / function
+            - obj       : the object to build (either a list, str or instance of `types`)
+            - args / kwargs : the args and kwargs to pass to the object / function
+            - print_name    : name for printing if object is not found
+            - err   : whether to raise error if object is not available
+            - types : expected return type
+        Return : 
+            - (list of) instance(s) or function results
+    """
+    if types is not None and isinstance(obj, types): return obj
+    elif obj is None:
+        return [get_object(
+            objects, n, * args, print_name = print_name, err = err, types = types, ** kw
+        ) for n, kw in kwargs.items()]
+    
+    elif isinstance(obj, (list, tuple)):
+        return [get_object(
+            objects, n, * args, print_name = print_name, err = err, types = types, ** kwargs
+        ) for n in obj]
+    
+    elif isinstance(obj, dict):
+        if 'class_name' in obj:
+            return get_object(
+                objects, obj['class_name'], * args, print_name = print_name, err = err, types = types, ** obj.get('config', {})
+            )
+        return [get_object(
+            objects, n, * args, print_name = print_name,  err = err, types = types, ** kwargs
+        ) for n, args in obj.items()]
+    
+    elif isinstance(obj, str) and obj.lower() in to_lower_keys(objects):
+        return to_lower_keys(objects)[obj.lower()](* args, ** kwargs)
+    elif err:
+        raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(
+            print_name, tuple(objects.keys()), obj
+        ))
+    else:
+        logger.warning("{} : `{}` is not available !".format(print_name, obj))
+        return obj
 
 def get_enum_item(value, enum, upper_names = True):
     if isinstance(value, enum): return value
@@ -210,98 +170,83 @@ def get_enum_item(value, enum, upper_names = True):
         return getattr(enum, value)
     return enum(value)
     
-def get_object(available_objects, obj_name, * args,
-               print_name = 'object', err = False, 
-               allowed_type = None, ** kwargs):
+def should_predict(predicted,
+                   data,
+                   data_key = 'filename',
+                   overwrite    = False,
+                   timestamp    = -1,
+                   required_keys    = []
+                  ):
     """
-        Get corresponding object based on a name and dict of object names with associated class / function to call
-        Arguments : 
-            - available_objects : dict of objects names with their associated class / function
-            - obj_name      : the objectto construct (either a list, str or instance of 'allowed_type')
-            - args / kwargs : the args and kwargs to pass to the constructor
-            - print_name    : name for printing if object was not found
-            - err   : whether to raise error if object is not available or not
-            - allowed_type  : expected return type
-        Return : 
-            - instance (or list of instance) of the object created
+        Returns whether `data` has already been predicted or not
+        
+        Arguments :
+            - predicted : mapping (`dict`) of filename to a `dict` of information (the result)
+            - data  : the data to predict
+            - data_key  : the key to use if `data` is a `dict` / `pd.Series`
+            - overwrite : whether to overwrite if `data` is already in `predicted`
+            - timestamp : if provided, only overwrites if `predicted[data]['timestamp'] < timestamp`
+            - required_keys : the keys that must be in `predicted[data]`
+        Return :
+            - should_predict    : whether the data should be predicted or not
+        
+        /!\ The keys in `predicted` should be in Unix style (i.e. with '/' instead of '\')
     """
-    if allowed_type is not None and isinstance(obj_name, allowed_type):
-        return obj_name
-    elif obj_name is None:
-        return [get_object(
-            available_objects, n, *args, print_name = print_name, 
-            err = err, allowed_type = allowed_type, ** kw
-        ) for n, kw in kwargs.items()]
+    if isinstance(data, (dict, pd.Series)) and data_key in data: data = data[data_key]
+    if not isinstance(data, str): return True
     
-    elif isinstance(obj_name, (list, tuple)):
-        return [get_object(
-            available_objects, n, *args, print_name = print_name, 
-            err = err, allowed_type = allowed_type, ** kwargs
-        ) for n in obj_name]
+    from utils.file_utils import path_to_unix
     
-    elif isinstance(obj_name, dict):
-        return [get_object(
-            available_objects, n, *args, print_name = print_name, 
-            err = err, allowed_type = allowed_type, ** kwargs
-        ) for n, args in obj_name.items()]
-    
-    elif isinstance(obj_name, str) and obj_name.lower() in to_lower_keys(available_objects):
-        return to_lower_keys(available_objects)[obj_name.lower()](*args, **kwargs)
-    else:
-        if err:
-            raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(
-                print_name, tuple(available_objects.keys()), obj_name
-            ))
-        else:
-            logger.warning("{} : '{}' is not available !".format(print_name, obj_name))
-        return obj_name
+    data = path_to_unix(data)
+    if data in predicted and all(k in predicted[data] for k in required_keys):
+        if not overwrite or (timestamp != -1 and timestamp <= predicted[data].get('timestamp', -1)):
+            return False
+    return True
 
-def print_objects(objects, print_name = 'objects'):
-    print("Available {} : {}".format(print_name, sorted(list(objects.keys()))))
+def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = False):
+    """
+        Computes the average time to compute the result of `f` on multiple `inputs`
+        
+        Arguments :
+            - f : the function to call
+            - inputs    : list of inputs for `f`
+            - number    : the number of times to apply `f` on each input
+            - force_gpu_sync    : whether to sync gpu (useful for graph-mode calls)
+            - display_memory    : whether to display the tensorflow memory stats
+        Return :
+            - times : list of average execution time for the different inputs
+    """
+    if isinstance(f, dict):
+        return {
+            name : benchmark(f_i, inputs, number, force_gpu_sync, display_memory)
+            for name, f_i in f.items()
+        }
     
-def to_lower_keys(dico):
-    return {k.lower() : v for k, v in dico.items()}
+    times = []
+    for i, inp in enumerate(inputs):
+        if display_memory: show_memory(message = 'Before round #{}'.format(i + 1))
 
-def to_json(data):
-    """ Convert a given data to json-serializable (if possible) """
-    if isinstance(data, enum.Enum): data = data.value
-    if isinstance(data, (tf.Tensor, tf.Variable)):  data = data.numpy()
-    if isinstance(data, bytes): data = data.decode('utf-8')
-    if isinstance(data, bool): return data
-    elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%m %H:%M:%S")
-    elif isinstance(data, (float, np.floating)): return float(data)
-    elif isinstance(data, (int, np.integer)): return int(data)
-    elif isinstance(data, (tuple, list, np.ndarray)):
-        return [to_json(d) for d in data]
-    elif isinstance(data, dict):
-        return {to_json(k) : to_json(v) for k, v in data.items()}
-    elif isinstance(data, str) and _is_filename(data):
-        return data.replace(os.path.sep, '/')
-    elif hasattr(data, 'get_config'):
-        return to_json(data.get_config())
-    elif data is None or isinstance(data, str):
-        return data
-    else:
-        logger.warning("Unknown json data (type : {}) : {}".format(
-            type(data), data
-        ))
-        return str(data)
-
-def var_from_str(v):
-    """ Try to get the value interpreted as json-notation """
-    if not isinstance(v, str): return v
-    try:
-        v = json.loads(v)
-    except:
-        pass
-    return v
+        if not isinstance(inp, tuple): inp = (inp, )
+        def _g():
+            if force_gpu_sync: one = tf.ones(())
+            f(* inp)
+            if force_gpu_sync: one = one.numpy()
+        
+        _g() # warmup 
+        t = timeit.timeit(_g, number = number)
+        times.append(t * 1000. / number)
+        
+        if display_memory: show_memory(message = 'After round #{}'.format(i + 1))
+        
+    return times
 
     
-
 def get_metric_names(obj, default_if_not_list = None):
+    """ Returns the associated name for `obj` (e.g., `metric_names`, `loss_names`, `name`, ...) """
     if isinstance(obj, dict):
         default_if_not_list = list(obj.keys())
         obj = list(obj.values())
+    
     if isinstance(obj, (list, tuple)):
         if not isinstance(default_if_not_list, (list, tuple)):
             default_if_not_list = [default_if_not_list] * len(obj)
@@ -322,47 +267,8 @@ def get_metric_names(obj, default_if_not_list = None):
         return obj.__class__.__name__
     else:
         raise ValueError("Cannot extract name from {} !".format(obj))
-    
-def flatten(struct):
-    """ Flatten nested python lists """
-    return tf.nest.flatten(struct)
 
-def unstack_and_flatten(struct):
-    """
-        Unstack nested 1D tensor and flatten all as a single list of scalar
-        Useful to map nested metrics to their names
-    """
-    if isinstance(struct, tf.Tensor):
-        return tf.unstack(tf.reshape(struct, [-1]))
-    return tf.nest.flatten(
-        tf.nest.map_structure(lambda t: tf.unstack(t) if tf.rank(t) > 0 else t, struct)
-    )
-
-def map_output_names(values, names):
-    mapping = {}
-    idx = 0
-    for i, v in enumerate(values):
-        if isinstance(v, tf.Tensor):
-            if len(tf.shape(v)) == 0:
-                v = {names[idx] : v}
-            else:
-                v = tf.reshape(v, [-1])
-                v = {n : vi for n, vi in zip(names[idx : idx + len(v)], tf.unstack(v))}
-        idx += len(v)
-        mapping.update(v)
-
-    return mapping
-
-def get_kwargs(fn):
-    sign = inspect.getfullargspec(fn)
-    kwargs = {}
-    if sign.defaults:
-        kwargs.update({
-            k : v for k, v in zip(sign.args[- len(sign.defaults) :], sign.defaults)
-        })
-    if sign.kwonlydefaults:
-        kwargs.update(kwonlydefaults)
-    return kwargs
+flatten = tf.nest.flatten
 
 def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
     """

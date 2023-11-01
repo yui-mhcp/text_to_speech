@@ -22,13 +22,16 @@ import matplotlib.pyplot as plt
 
 from functools import wraps
 
-from loggers import timer
+from utils import get_timer
+from utils.wrapper_utils import partial, insert_signature
 from utils.generic_utils import get_enum_item
 from utils.plot_utils import plot, plot_multiple
 from utils.image.mask_utils import apply_mask
 from utils.image.image_utils import normalize_color
 from utils.image.image_io import load_image, save_image, get_image_size
 from utils.image.box_utils.bounding_box import BoundingBox
+
+timer, _  = get_timer()
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,10 @@ def box_converter_wrapper(box_format,
                           extended  = None,
                           normalize = NORMALIZE_NONE
                          ):
+    """
+        This wrapper automatically converts the 1st argument (expected to be `boxes`) to the corresponding `box_format`
+        It is a convenient wrapper to avoid calling `convert_box_format` as 1st lines of every function ;)
+    """
     def wrapper(fn):
         @wraps(fn)
         def inner(boxes, * args, ** kwargs):
@@ -98,22 +105,24 @@ def _get_box_pos_length(box_mode):
 
 def _is_int(x):
     if isinstance(x, tf.Tensor):    return x.dtype == tf.int32
-    elif isinstance(x, np.ndarray): return x.dtype == np.int32
+    elif isinstance(x, np.ndarray): return np.issubdtype(x.dtype, np.integer)
     return isinstance(x, int)
 
 def _is_float(x):
     if isinstance(x, tf.Tensor):    return x.dtype == tf.float32
-    elif isinstance(x, np.ndarray): return x.dtype == np.float32
+    elif isinstance(x, np.ndarray): return np.issubdtype(x.dtype, np.floating)
     return isinstance(x, float)
 
 def _to_int(x):
     if isinstance(x, tf.Tensor):    return tf.cast(x, tf.int32)
     elif isinstance(x, np.ndarray): return x.astype(np.int32)
+    elif isinstance(x, list):       return [_to_int(xi) for xi in x]
     return int(x)
 
 def _to_float(x):
     if isinstance(x, tf.Tensor):    return tf.cast(x, tf.float32)
     elif isinstance(x, np.ndarray): return x.astype(np.float32)
+    elif isinstance(x, list):       return [_to_float(xi) for xi in x]
     return float(x)
 
 def _to_np(boxes):
@@ -155,6 +164,18 @@ def convert_box_format(box,
             - labels    : list of labels to use if `label` is an `int`
         Return :
             - converted_box : the converted bounding box to `output_format` with possibly additional information (if `extended == True`)
+        
+        List of supported format (`BoxFormat` enum) :
+            - UNCHANGED   : returns same format as the input
+            - DEFAULT     : default to `xYWH`
+            - XYWH / X0Y0WH : `[x, y, w, h]` where `(x, y)` are the coordinates of the top-left corner
+            - X0Y0X1Y1 / CORNERS  : `[x_min, y_min, x_max, y_max]` coordinates
+            - DICT        : `dict` with keys `{xmin, xmax, ymin, ymax, width, height}`
+            - POLY        : 2-D array of shape `(4, 2)`, the `(x, y)` coordinates of the 4 points
+            - POLY_FLAT   : `[x0, y0, x1, y1, x2, y2, x3, y3]`, the `(x, y)` coordinates of the 4 points represented as a 1-D array
+            - Y0X0Y1X1 / CORNERS2   : `[y_min, x_min, y_max, x_max]` coordinates
+            - OBJECT      : `BoundingBox` object
+
     """
     if as_list is None: as_list = extended
     
@@ -180,6 +201,7 @@ def convert_box_format(box,
                 box_mode    = box_mode,
                 as_list     = as_list,
                 extended    = extended,
+                image       = image,
                 image_h     = image_h,
                 image_w     = image_w,
                 dezoom_factor   = dezoom_factor,
@@ -249,7 +271,7 @@ def convert_box_format(box,
     
     if dezoom_factor != 1.:
         x_min, y_min, w, h = dezoom_box(
-            x_min, y_min, w, h, dezoom_factor, image_h = image_h, image_w = image_w
+            x_min, y_min, w, h, dezoom_factor, image_h = image_h, image_w = image_w, image = image
         )
     
     x_min, y_min, w, h = normalize_box(
@@ -301,25 +323,24 @@ def convert_box_format(box,
         result, axis = -1 if output_format != BoxFormat.POLY else -2
     )
 
-def poly_to_box(poly, output_format = BoxFormat.CORNERS, as_list = True, ** kwargs):
-    return convert_box_format(
-        poly, output_format = output_format, box_mode = BoxFormat.POLY, as_list = as_list, ** kwargs
-    )
 
-def get_box_pos(box, as_list = True, with_label = False, ** kwargs):
-    return convert_box_format(
-        box, BoxFormat.XYWH, as_list = as_list, extended = with_label, ** kwargs
-    )
-
-def get_box_infos(box, ** kwargs):
-    return convert_box_format(box, BoxFormat.DICT, ** kwargs)
+poly_to_box = partial(
+    convert_box_format, output_format = BoxFormat.CORNERS, box_mode = BoxFormat.POLY, as_list = True
+)
+get_box_pos = partial(
+    convert_box_format, output_format = BoxFormat.XYWH, as_list = True, extended = False
+)
+get_box_infos = partial(
+    convert_box_format, output_format = BoxFormat.DICT
+)
 
 def get_box_area(box, ** kwargs):
-    _, _, w, h = get_box_pos(box, with_label = False, ** kwargs)
+    """ Returns the area of box(es) """
+    _, _, w, h = get_box_pos(box, ** kwargs)
     return w * h
 
-
 def get_box_additional_info(box, box_mode, index, key, default_value):
+    """ Utility function that returns the expected `key` info from `box` """
     if isinstance(box, dict):           return box.get(key, default_value)
     elif isinstance(box, BoundingBox):  return getattr(box, key)
     elif box_mode == BoxFormat.POLY:    return default_value
@@ -327,9 +348,10 @@ def get_box_additional_info(box, box_mode, index, key, default_value):
         return box[- index] if len(box) >= _get_box_pos_length(box_mode) + index else default_value
     else:
         return box[..., - index] if box.shape[-1] >= _get_box_pos_length(box_mode) + index else default_value
-    
-def get_box_score(box, box_mode = BoxFormat.XYWH):
-    return get_box_additional_info(box, box_mode, index = 1, key = 'score', default_value = 1.)
+
+get_box_score   = partial(
+    get_box_additional_info, box_mode = BoxFormat.XYWH, index = 1, key = 'score', default_value = 1.
+)
 
 def get_box_label(box, box_mode = BoxFormat.XYWH, labels = None):
     label = get_box_additional_info(box, box_mode, index = 2, key = 'label', default_value = None)
@@ -341,6 +363,7 @@ def get_box_angle(box, box_mode = BoxFormat.XYWH):
 
 
 def _is_box_list(box):
+    """ Returns whether `box` is a list of boxes or a single box, depending on its format """
     if isinstance(box, BoundingBox): return False
     elif isinstance(box, dict):
         return True if hasattr(box['width'], 'shape') and len(box['width'].shape) == 1 else False
@@ -359,6 +382,7 @@ def _is_box_list(box):
         raise ValueError("Unknown box type ({}) : {}".format(type(box), box))
 
 def _is_01_box(* coords):
+    """ Returns whether a list of given coordinates can be interpreted as a normalized box or not """
     def _check_01(c):
         if isinstance(c, dict): return all(_check_01(v) for v in c.values())
         elif isinstance(c, list): return all(_check_01(ci) for ci in c)
@@ -371,11 +395,12 @@ def _is_01_box(* coords):
     return all(_check_01(c) for c in coords)
 
 def _should_normalize(box, normalize_mode):
+    """ Returns whether `box` should be normalized to `normalize_mode` or not """
     if normalize_mode == NORMALIZE_NONE: return False
     is_01 = _is_01_box(box)
     return (is_01 and normalize_mode == NORMALIZE_WH) or (not is_01 and normalize_mode == NORMALIZE_01)
 
-def dezoom_box(x, y, w, h, factor, angle = 0., image_h = None, image_w = None):
+def dezoom_box(x, y, w, h, factor, angle = 0., image = None, image_h = None, image_w = None):
     if factor == 1.: return (x, y, w, h)
     if angle != 0.: raise NotImplementedError('Rotated box is not supported yet !')
     
@@ -387,6 +412,7 @@ def dezoom_box(x, y, w, h, factor, angle = 0., image_h = None, image_w = None):
         min_fn, max_fn = min, max
     
     is_01 = _is_01_box(x, y, w, h)
+    if image is not None: image_h, image_w = get_image_size(image)
     if not is_01:
         assert image_h and image_w, "You must provide image dimensions to avoid overruns"
         MAX_Y, MAX_X    = image_h, image_w
@@ -398,9 +424,16 @@ def dezoom_box(x, y, w, h, factor, angle = 0., image_h = None, image_w = None):
     new_x   = max_fn(0., x - ((new_w - w) / 2.))
     new_y   = max_fn(0., y - ((new_h - h) / 2.))
     
-    return [new_x, new_y, min_fn(new_w, MAX_X - new_x), min_fn(new_h, MAX_Y - new_y)]
+    new_box = [new_x, new_y, min_fn(new_w, MAX_X - new_x), min_fn(new_h, MAX_Y - new_y)]
+    return new_box if is_01 else _to_int(new_box)
 
 def normalize_box(x, y, w, h, normalize_mode, image = None, image_h = None, image_w = None):
+    """
+        Normalizes the `[x, y, w, h]` coordinates to `normalize_mode`
+            - NORMALIZE_NONE    : no normalization
+            - NORMALIZE_01      : normalizes to the `[0, 1]` range (i.e. returns `float`)
+            - NORMALIZE_WH      : normalizes to the dimension of the images (i.e. returns `int`)
+    """
     if normalize_mode == NORMALIZE_NONE:
         return [x, y, w, h]
 
@@ -417,6 +450,9 @@ def normalize_box(x, y, w, h, normalize_mode, image = None, image_h = None, imag
     if is_01:
         MAX_Y, MAX_X    = 1., 1.
     else:
+        if image_h is None or image_w is None:
+            assert image is not None
+            image_h, image_w = get_image_size(image)
         x, y, w, h      = [_to_int(coord) for coord in (x, y, w, h)]
         MAX_Y, MAX_X    = image_h, image_w
     
@@ -440,8 +476,40 @@ def normalize_box(x, y, w, h, normalize_mode, image = None, image_h = None, imag
         x / image_w, y / image_h, w / image_w, h / image_h
     ]
 
-def sort_boxes(boxes, scores = None, method = 'top', return_indices = False, ** kwargs):
-    """ `boxes` is expected to be a tf.Tensor of shape [None, 4], [ymin, xmin, ymax, xmax] """
+def sort_boxes(boxes,
+               scores = None,
+               method = 'top',
+               
+               threshold    = 0.5,
+               columns      = 10,
+               
+               return_indices = False,
+               ** kwargs
+              ):
+    """
+        Sorts the `boxes` based on `method` sorting criterion
+        
+        Arguments :
+            - boxes : the boxes to sort (any format supported by `convert_box_format`)
+            - scores    : the boxes scores (only used if `method == 'scores'`)
+            - method    : the sorting criterion
+                - x / y     : sorts based on the `x` or `y` coordinate of the top-left corner
+                - corner    : sorts based on `x + y` coordinate
+                - top       : sorts from top to bottom by computing "rows" with tolerance (i.e. 2 boxes may be on the same "line" but not exactly on the same pixel line)
+                - left      : sorts from left to right by splitting the image in "columns"
+                - score     : sorts in decreasing order of scores (`scores` must be provided)
+            
+            - threshold : the tolerance threshold for the "top" sorting method
+            - columns   : the number of columns for the "left" sorting method
+            
+            - return_indices    : whether to return the sorted boxes or the sorted indices
+            - kwargs    : ignored
+        Return :
+            If `return_indices == True`:
+                - sorted_indices    : list of sorted indices
+            Else :
+                - sorted_boxes  : same box format as `boxes` sorted
+    """
     if len(boxes) == 0:
         if return_indices: return []
         return boxes if scores is None else (boxes, scores)
@@ -452,16 +520,36 @@ def sort_boxes(boxes, scores = None, method = 'top', return_indices = False, ** 
 
     if isinstance(x, tf.Tensor):
         min_fn, max_fn, sort_fn, round_fn = tf.reduce_min, tf.reduce_max, tf.argsort, tf.math.round
-        gather_fn = tf.gather
+        abs_fn, gather_fn, mask_fn = tf.abs, tf.gather, tf.where
     else:
+        def mask_fn(mask, orig, new):
+            orig[mask] = new
+            return orig
+        
         min_fn, max_fn, sort_fn, round_fn = np.min, np.max, np.argsort, np.round
-        gather_fn = lambda x, idx: x[idx]
+        abs_fn, gather_fn = np.abs, lambda x, idx: x[idx]
     
     gather = lambda x, idx: {k : gather_fn(v, idx) for k, v in x.items()} if isinstance(x, dict) else gather_fn(x, idx)
     
     if method == 'corner':  indices = sort_fn(x + y)
-    elif method == 'top':   indices = sort_fn(round_fn((y + h / 2.) * 50) + x)
-    elif method == 'left':  indices = sort_fn(round_fn(x * 10) + y)
+    elif method == 'y':     indices = sort_fn(y)
+    elif method == 'x':     indices = sort_fn(x)
+    elif method == 'top':
+        y_center    = y + h / 2.
+        same_rows   = abs_fn(y_center[None, :] - y_center[:, None]) <= h[:, None] * threshold / 2.
+        
+        indices = []
+        to_set  = np.full((len(x), ), True)
+        for idx in sort_fn(y + h / 2.):
+            if not to_set[idx]: continue
+            
+            row_indices = np.where(
+                np.logical_and(same_rows[idx], to_set)
+            )[0]
+            indices.extend(row_indices[sort_fn(x[row_indices])])
+            to_set[row_indices] = False
+        
+    elif method == 'left':  indices = sort_fn(round_fn(x * columns) + y)
     elif method == 'score': indices = sort_fn(scores)[::-1]
     elif method == 'area':  indices = sort_fn(w * h)[::-1]
     
@@ -470,14 +558,31 @@ def sort_boxes(boxes, scores = None, method = 'top', return_indices = False, ** 
     if scores is None: return gather(boxes, indices)
     return gather(boxes, indices), gather_fn(scores, indices)
 
-    
+def rearrange_rows(rows, align_left = True, align_right = True):
+    """
+        Sorts the `rows` from top to bottom
+        
+        Arguments :
+            - rows  : 2D `np.ndarray` with shape `[n_rows, 4]` in the `X0Y0X1Y1` format
+            - align_left    : whether to set the left border equals for all rows
+            - align_right   : whether to set the right border equals to all (except last) rows
+        Return :
+            - sorted_rows   : `np.ndarra` with same shape and type as `rows`
+    """
+    if len(rows) <= 1: return rows
+    rows = sort_boxes(rows, method = 'y', box_mode = BoxFormat.CORNERS)
+    if align_left:  rows[:, 0] = np.min(rows[:, 0])
+    if align_right: rows[: -1, 2] = np.max(rows[:, 2])
+    return rows
+
 def compute_union(boxes):
-    """ Return a single box that corresponds to the union of all boxes (in CORNERS format) """
+    """
+        Returns a single box (1D `np.ndarray`) corresponding to the union of `boxes` (in `X0Y0X1Y1` format)
+    """
     return np.concatenate([
         np.min(boxes[:, :2], axis = 0), np.max(boxes[:, 2:], axis = 0)
     ], axis = -1)
 
-@timer
 def _group_boxes(boxes, mask, indices = None, as_list = False):
     """
         Combine boxes according to the combination mask
@@ -529,17 +634,24 @@ def _group_boxes(boxes, mask, indices = None, as_list = False):
 
 @timer
 @box_converter_wrapper(BoxFormat.CORNERS, as_list = False, force_np = True, normalize = NORMALIZE_01)
-def combine_boxes_horizontal(boxes, threshold = 0.014, indices = None, ** kwargs):
+def combine_boxes_horizontal(boxes,
+                             indices    = None,
+                             x_threshold    = 0.025,
+                             h_threshold    = 0.025,
+                             overlap_threshold  = 0.65,
+                             ** kwargs
+                            ):
     """
         Combines a list of boxes according to the following criteria :
-            1.1 The distance between the right-corner and the left-corner of the next one is smaller than a threshold
+            1.1 The distance between the right-corner and the left-corner of the next one is smaller than `x_threshold`
             1.2 The two boxes overlap in the x-axis
-            2. The difference between the highest height and the overlap (in y-axis) is higher than the threshold
+            2.1 The y-overlap is higher than `overlap_threshold`% of the maximal height
+            2.2 The maximal height minus the y-overlap is smaller than `h_threshold`
         
-        Note : boxes are normalized to the [0, 1] range so the threshold should be a percentage of the image dimension
+        Note : boxes are normalized to the [0, 1] range. The threshold should be a percentage of the image dimension (except `overlap_threshold` which is a percentage of the maximal height)
         
         Note 2 : for efficiency, boxes are sorted according to the 'top' method (see `sort_boxes` for more details), and are only compared with the next one given the sorted indices.
-        It is therefore possible that some fusion are not performed due to a wrong sorting order
+        It is therefore possible that some (expected) fusions are not performed due to a wrong order
     """
     if indices is None: indices = list(range(len(boxes)))
     
@@ -548,7 +660,6 @@ def combine_boxes_horizontal(boxes, threshold = 0.014, indices = None, ** kwargs
     sorted_indexes = sort_boxes(
         boxes, method = 'top', box_mode = BoxFormat.CORNERS, return_indices = True
     )
-    
     boxes   = boxes[sorted_indexes]
     indices = [indices[idx] for idx in sorted_indexes]
     
@@ -562,25 +673,32 @@ def combine_boxes_horizontal(boxes, threshold = 0.014, indices = None, ** kwargs
     overlap_y   = np.maximum(0., (
         np.minimum(boxes[:-1, 3], boxes[1:, 3]) - np.maximum(boxes[:-1, 1], boxes[1:, 1])
     ))
+    max_h   = np.maximum(h[:-1], h[1:])
 
     should_combine_horizontal = np.logical_and(
-        np.logical_or(diff_border <= threshold, overlap_x),
-        np.logical_and(overlap_y > 0., np.maximum(h[:-1], h[1:]) - overlap_y <= threshold)
+        np.logical_or(diff_border <= x_threshold, overlap_x),
+        np.logical_or(overlap_y / max_h >= overlap_threshold, max_h - overlap_y <= h_threshold)
     )
     
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug('Horizontal fusion : {}\n- Border dist : {}\n- Overlap (x) {}\n- max(h) - overlap (y) {}'.format(
+        logger.debug('Horizontal fusion : {}\n- Border dist : {}\n- Overlap (x) {}\n- overlap_y / max(h) : {}\nmax(h) - overlap (y) {}'.format(
             should_combine_horizontal,
             np.around(diff_border, decimals = 3),
             overlap_x,
-            np.around(np.maximum(h[:-1], h[1:]) - overlap_y, decimals = 3)
+            np.around(overlap_y / max_h, decimals = 3),
+            np.around(max_h - overlap_y, decimals = 3)
         ))
     
     return _group_boxes(boxes, should_combine_horizontal, indices = indices)
 
 @timer
 @box_converter_wrapper(BoxFormat.CORNERS, as_list = False, force_np = True, normalize = NORMALIZE_01)
-def combine_boxes_vertical(boxes, threshold = 0.014, indices = None, ** kwargs):
+def combine_boxes_vertical(boxes,
+                           indices  = None,
+                           y_threshold  = 0.015,
+                           h_threshold  = 0.02,
+                           ** kwargs
+                          ):
     """
         Combines a list of boxes according to the following criteria :
             1.1 The distance between the right-corner and the left-corner of the next one is smaller than a threshold
@@ -604,11 +722,14 @@ def combine_boxes_vertical(boxes, threshold = 0.014, indices = None, ** kwargs):
     diff_border = np.abs(boxes[:-1, 3] - boxes[1:, 1])
     h_diff      = np.maximum(h[:-1], h[1:]) - np.minimum(h[:-1], h[1:]) 
     overlap_x   = np.minimum(boxes[:-1, 2], boxes[1:, 2]) - np.maximum(boxes[:-1, 0], boxes[1:, 0])
-    overlap_y   = np.minimum(boxes[:-1, 3], boxes[1:, 3]) - np.maximum(boxes[:-1, 1], boxes[1:, 1])
+    overlap_y   = np.logical_and(
+        boxes[:-1, 3] < boxes[1:, 3],
+        np.minimum(boxes[:-1, 3], boxes[1:, 3]) - np.maximum(boxes[:-1, 1], boxes[1:, 1]) > 0.
+    )
     
     should_combine_vertical = np.logical_and(
-        np.logical_or(diff_border <= threshold, overlap_y > 0.),
-        np.logical_and(overlap_x > 0., h_diff <= threshold)
+        np.logical_or(diff_border <= y_threshold, overlap_y),
+        np.logical_and(overlap_x > 0., h_diff <= h_threshold)
     )
 
     if logger.isEnabledFor(logging.DEBUG):
@@ -624,7 +745,7 @@ def combine_boxes_vertical(boxes, threshold = 0.014, indices = None, ** kwargs):
     return _group_boxes(boxes, should_combine_vertical, indices)
 
 @timer
-def combine_overlapping_boxes(boxes, indices, rows, threshold = 0.333, ** kwargs):
+def combine_overlapping_boxes(boxes, indices, rows, iou_threshold = 0.333, ** kwargs):
     def _update_box(main_idx, sub_idx, skip_indexes, boxes, indices, rows):
         main_rows, sub_rows = rows[main_idx], rows[sub_idx]
         
@@ -641,7 +762,7 @@ def combine_overlapping_boxes(boxes, indices, rows, threshold = 0.333, ** kwargs
                 main_idx, main_rows.shape, sub_idx, sub_rows.shape, np.around(y_diff, decimals = 3)
             ))
         
-        if np.any(np.all(y_diff > threshold, axis = -1)):
+        if np.any(np.all(y_diff > iou_threshold, axis = -1)):
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('Skip fusion as distances are too large')
             return boxes, indices, rows
@@ -661,6 +782,9 @@ def combine_overlapping_boxes(boxes, indices, rows, threshold = 0.333, ** kwargs
         boxes[main_idx] = compute_union(main_rows)
         main_rows[:, 0] = boxes[main_idx, 0]
         
+        skip_indexes.update({
+            k : v if v != sub_idx else main_idx for k, v in skip_indexes.items()
+        })
         skip_indexes[sub_idx] = main_idx
         return boxes, indices, rows
     
@@ -674,7 +798,7 @@ def combine_overlapping_boxes(boxes, indices, rows, threshold = 0.333, ** kwargs
     indices = [indices[idx] for idx in sorted_indexes]
 
     intersect   = bbox_intersect(boxes, as_matrix = True, use_graph = False, ** kwargs)
-    mask    = intersect >= threshold
+    mask    = intersect >= iou_threshold
     mask[np.eye(len(mask), dtype = bool)] = False
     main_indexes, sub_indexes = np.where(mask)
     
@@ -688,52 +812,49 @@ def combine_overlapping_boxes(boxes, indices, rows, threshold = 0.333, ** kwargs
     for main_idx, sub_idx in zip(main_indexes, sub_indexes):
         if main_idx in skip_indexes:
             logger.warning('Main index {} (row shape {}) was already fusionned with another index : {} (rows shape {})'.format(main_idx, rows[main_idx].shape, skip_indexes[main_idx], rows[skip_indexes[main_idx]].shape))
-            continue
+            if skip_indexes[main_idx] in skip_indexes:
+                continue
+            
+            main_idx = skip_indexes[main_idx]
         
         boxes, indices, rows = _update_box(main_idx, sub_idx, skip_indexes, boxes, indices, rows)
     
     boxes   = boxes[[idx for idx in range(len(boxes)) if idx not in skip_indexes]]
     indices = [indices[idx] for idx in range(len(indices)) if idx not in skip_indexes]
     rows    = [
-        sort_boxes(rows[idx], method = 'top', box_mode = BoxFormat.CORNERS) if len(rows[idx]) > 1 else rows[idx]
-        for idx in range(len(rows)) if idx not in skip_indexes
+        rearrange_rows(rows_i) for i, rows_i in enumerate(rows) if i not in skip_indexes
     ]
     
     return boxes, indices, rows
 
 @timer
 @box_converter_wrapper(BoxFormat.CORNERS, as_list = False, force_np = True, normalize = NORMALIZE_01)
-def combine_boxes(boxes,
-                  threshold     = 0.0125,
-                  threshold_h   = None,
-                  threshold_v   = None,
-                  threshold_iou = 0.333,
-                  
-                  indices = None,
-
-                  ** kwargs
-                 ):
-    if threshold_h is None:     threshold_h = threshold
-    if threshold_v is None:     threshold_v = threshold
-    if threshold_iou is None:   threshold_iou = threshold
-
+@insert_signature(combine_boxes_horizontal, combine_boxes_vertical, combine_overlapping_boxes)
+def combine_boxes(boxes, indices = None, ** kwargs):
+    """
+        Combines `boxes` (list of e.g., single-word boxes) by creating horizontal then vertical combinations.
+        This enables, as an example, to combine the individual words detected by `EAST` to sentences (horizontal lines), then paragraphs (vertically grouping lines)
+        
+        This method calls sequentially
+            1) {combine_boxes_horizontal}
+            2) {combine_boxes_vertical}
+            3) {combine_overlapping_boxes}`
+    """
     combined_boxes, combined_indices_h, _ = combine_boxes_horizontal(
-        boxes, threshold = threshold_h, indices = indices, box_mode = BoxFormat.CORNERS, ** kwargs
+        boxes, indices = indices, box_mode = BoxFormat.CORNERS, ** kwargs
     )
     combined_boxes, combined_indices_v, rows = combine_boxes_vertical(
-        combined_boxes, threshold = threshold_v, indices = combined_indices_h,
-        box_mode = BoxFormat.CORNERS, ** kwargs
+        combined_boxes, indices = combined_indices_h, box_mode = BoxFormat.CORNERS, ** kwargs
     )
 
     combined_boxes, combined_indices, rows = combine_overlapping_boxes(
-        combined_boxes, combined_indices_v, rows, box_mode = BoxFormat.CORNERS,
-        threshold = threshold_iou, ** kwargs
+        combined_boxes, combined_indices_v, rows, box_mode = BoxFormat.CORNERS, ** kwargs
     )
     
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            'Combined indices (horizontal) : {}\nCombined indices (vertical) : {}\nFinal combination : {}'.format(combined_indices_h, combined_indices_v, combined_indices)
-        )
+        logger.debug('Combined indices :\n  Horizontal : {}\n  Vertical : {}\n  Final : {}'.format(
+            combined_indices_h, combined_indices_v, combined_indices
+        ))
     
     return combined_boxes, combined_indices, rows
 
@@ -772,7 +893,7 @@ def bbox_iou(box1, box2 = None, as_matrix = False, use_graph = None, metric = 'i
         box1, box2, method = metric, force_distance = False, as_matrix = as_matrix, ** kwargs
     )
 
-bbox_intersect = functools.partial(bbox_iou, metric = 'intersect')
+bbox_intersect = partial(bbox_iou, metric = 'intersect')
 
 def crop_box(filename, box, show = False, extended = True, ** kwargs):
     """
@@ -899,7 +1020,7 @@ def draw_boxes(filename,
     boxes     = _to_np(boxes)
     positions = get_box_pos(
         boxes, image_h = image_h, image_w = image_w, normalize_mode = NORMALIZE_WH,
-        with_label = with_label, ** kwargs
+        extended = with_label, ** kwargs
     )
     if not _is_box_list(boxes): positions = [[p] for p in positions]
     
@@ -920,7 +1041,7 @@ def draw_boxes(filename,
                 text    = '{} ({}%)'.format(label, int(prct)) if label else '{}%'.format(prct)
                 image   = cv2.putText(
                     image, text, (x, y - 13), cv2.FONT_HERSHEY_SIMPLEX, 1e-3 * image_h, c, 3
-            )
+                )
         
         if shape == Shape.RECTANGLE:
             image = cv2.rectangle(image, (x, y), (x + w, y + h), c, thickness)
@@ -960,6 +1081,16 @@ def mask_boxes(filename, boxes, shape = Shape.RECTANGLE, dezoom_factor = 1., ** 
     return apply_mask(image, mask, ** kwargs)
 
 def show_boxes(filename, boxes, labels = None, dezoom_factor = 1., box_mode = BoxFormat.DEFAULT, ** kwargs):
+    """
+        Displays a (list of) `boxes` with `utils.plot_multiple`
+        
+        Arguments :
+            - filename  : the image (raw or filename)
+            - boxes     : the boxes coordinates
+            - labels    : the labels for each box
+            - dezoom_factor / box_mode  : forwarded to `convert_box_format`
+            - kwargs    : forwarded to `plot_multiple`
+    """
     image = load_image(filename) if isinstance(filename, str) else filename
     if hasattr(image, 'numpy'): image = image.numpy()
     image_h, image_w = get_image_size(image)
@@ -999,16 +1130,15 @@ def save_boxes(filename, boxes, labels, append = True, ** kwargs):
     
     image_w, image_h = get_image_size(filename)
 
-    description = '{}\n{}\n'.format(filename, len(boxes))
+    text = '{}\n{}\n'.format(filename, len(boxes))
     for box in boxes:
         x, y, w, h, label, score = get_box_pos(
-            box, image_h = image_h, image_w = image_w, with_label = True, labels = labels,
+            box, image_h = image_h, image_w = image_w, extended = True, labels = labels,
             normalize_mode = NORMALIZE_WH, ** kwargs
         )
         
-        
-        description += "{} {} {} {} {}\n".format(x, y, w, h, label)
+        text += "{} {} {} {} {}\n".format(x, y, w, h, label)
 
-    with open(filename, open_mode) as fichier:
-        fichier.write(description)
+    with open(filename, open_mode) as file:
+        file.write(text)
 

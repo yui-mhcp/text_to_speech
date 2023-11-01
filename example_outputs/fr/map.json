@@ -1,13 +1,14 @@
 {
     "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !": {
         "text": "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !",
+        "cleaned": "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !",
         "parts": [
             "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
         ],
-        "timestamp": 1690618488.8814902,
+        "timestamp": 1698584040.1002152,
         "mel": "example_outputs/fr/mels/mel_0.npy",
         "audio": "example_outputs/fr/audios/audio_0.mp3",
-        "time": 4.237641723356009
+        "time": 4.702040816326531
     },
     "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
         "text": "\nBonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes \nd'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !\n",

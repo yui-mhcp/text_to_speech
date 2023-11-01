@@ -20,11 +20,11 @@ import pandas as pd
 import tensorflow as tf
 
 from utils import dump_json, load_json, flatten, get_enum_item, convert_to_str, download_file
+from utils.tensorflow_utils import execute_eagerly
 from utils.text import cleaners as cleaners_module
 from utils.text.bpe import bytes_to_unicode, bpe
 from utils.text.ctc_decoder import ctc_decode
 from utils.text.text_processing import split_sentence, split_and_join
-from utils.distance.distance_method import distance
 
 logger  = logging.getLogger(__name__)
 
@@ -142,22 +142,6 @@ class TextEncoderLevel(enum.IntEnum):
     BPE     = 1
     WORD    = 2
 
-def get_cleaners_fn(cleaners):
-    if not isinstance(cleaners, (list, tuple)): cleaners = [cleaners]
-    cleaners_fn    = []
-    for name in cleaners:
-        kwargs = None
-        if isinstance(name, dict): 
-            name, kwargs = name['name'], {k : v for k, v in name.items() if k != 'name'}
-        cleaner = getattr(cleaners_module, name)
-        if not cleaner:
-            raise ValueError("Cleaner inconnu : {}".format(name))
-        elif not callable(cleaner):
-            raise ValueError("Cleaner non callable : {}".format(name))
-        cleaners_fn.append(cleaner if not kwargs else (cleaner, kwargs))
-    
-    return cleaners_fn
-
 class TextEncoder(object):
     def __init__(self,
                  vocab,
@@ -178,6 +162,7 @@ class TextEncoder(object):
                  mask_token     = None,
                  sos_token      = '[SOS]',  # Start Of Sequence
                  eos_token      = '[EOS]',  # End Of Sequence
+                 
                  sub_word_prefix    = '',   # Add for inner sub-word part
                  use_sos_and_eos    = False,
                  add_special_tokens_at_end  = True,
@@ -185,20 +170,34 @@ class TextEncoder(object):
                  name           = 'Text encoder'
                 ):
         """
-            Constructor for the TextEncoder class
-            Arguments : 
-                - vocab     : list of tokens (either words or characters). 
+            Constructor for the `TextEncoder` class
+            
+            Arguments :
+                - vocab     : list of tokens (words, sub-words or characters)
                 - level     : tokenization level (char, token, word)
-                - vocab_size    : special vocab_size (by default len(vocab)). 
-                - cleaners      : cleaners to use for text-cleaning. 
-                    - list  : list of names or callable
-                    - dict  : keys are the clean_ername and values are dict of keywords to pass when calling the cleaner function
-                - ukn_token     : specific token to put when the word is unknown
-                - use_eos_and_eos   : whether to add <sos> / <eos> at the beginning / end of the sentence
+                - vocab_size    : special vocab_size (by default len(vocab))
+                
+                - lstrip / rstrip   : whether to strip left / right the text
+                - cleaners      : cleaners to use for text-cleaning (see `cleaners.get_cleaners_fn`)
+                - split_pattern : regex pattern used to split the text
+                - bpe_pairs     : list containing the byte-pair encoding (BPE) pairs
+                - byte_encoder  : mapping (`dict`) for byte-encoding
+                - bpe_end_of_word   : special character to add at the end of words
+                
+                - pad_token     : token to add for padding (also called `blank_token`)
+                - ukn_token     : token to use for unknown (out-of vocabulary) tokens
+                - sep_token     : special token to separate different parts
+                - mask_token    : special token to mask some tokens (e.g., data augmentation or MLM)
+                - {sos / eos}_token : start / end of sequence tokens
+                
+                - sub_word_prefix   : prefix to add at the start of sub-words (used in BERT)
+                - use_sos_and_eos   : whether to add SOS and EOS at the encoded text extrema
+                - add_special_tokens_at_end : whether to add special tokens at the end of the vocabulary (or at the beginning)
+                
                 - name      : special name for this encoder
         """
         level = get_enum_item(level, TextEncoderLevel)
-        if level != TextEncoderLevel.CHAR and 'detach_punctuation' not in cleaners:
+        if level != TextEncoderLevel.CHAR and 'detach_punctuation' not in cleaners and split_pattern is None:
             logger.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
         
         self.name       = name
@@ -210,8 +209,12 @@ class TextEncoder(object):
         self.cleaners   = cleaners
         self.split_pattern  = split_pattern
         self.bpe_pairs      = bpe_pairs if bpe_pairs is None else [tuple(pair) for pair in bpe_pairs]
-        self.byte_encoder   = byte_encoder if byte_encoder is None else {int(k) : v for k, v in byte_encoder.items()}
-        self.byte_encoder_inv   = None if byte_encoder is None else {v : k for k, v in self.byte_encoder.items()}
+        self.byte_encoder   = byte_encoder if byte_encoder is None else {
+            int(k) : v for k, v in byte_encoder.items()
+        }
+        self.byte_encoder_inv   = None if byte_encoder is None else {
+            v : k for k, v in self.byte_encoder.items()
+        }
         self.bpe_end_of_word    = bpe_end_of_word
         
         self.pad_token  = pad_token
@@ -229,14 +232,24 @@ class TextEncoder(object):
         if bpe_pairs is not None and not isinstance(bpe_pairs, dict):
             bpe_pairs   = {tuple(pair) : i for i, pair in enumerate(bpe_pairs)}
         self.bpe_ranks  = bpe_pairs
-        self.cleaners_fn    = get_cleaners_fn(cleaners)
+        self.cleaners_fn    = cleaners_module.get_cleaners_fn(cleaners)
         
-        self._special_tokens    = [token for token in self.tokens.values()]
+        self._special_tokens    = list(self.tokens.values())
         self._bpe_cache     = {}
         self._symbol_to_id  = {}
         self._id_to_symbol  = {}
         self.__build_indexes(vocab_size, add_special_tokens_at_end)
         self._cleaned_tokens    = {self.clean_text(token) : token for token in self._special_tokens}
+        
+        self.__wrap_functions()
+    
+    def __wrap_functions(self):
+        self.encode = execute_eagerly(
+            self.encode,
+            signature   = tf.TensorSpec(shape = (None, ), dtype = tf.int32),
+            default_key = 'text',
+            numpy   = True
+        )
         
     def __build_indexes(self, vocab_size = None, add_special_tokens_at_end = True):
         def _add_symbols(symbols):
@@ -351,8 +364,8 @@ class TextEncoder(object):
                 return res[0] if len(res) == 1 else res
             return self._symbol_to_id[idx]
     
-    def __contains__(self, label):
-        return label in self._symbol_to_id
+    def __contains__(self, token):
+        return token in self._symbol_to_id
     
     def is_start_of_word(self, token, previous = None):
         if self.level == TextEncoderLevel.WORD: return True
@@ -368,15 +381,7 @@ class TextEncoder(object):
         if not isinstance(tokens, dict):
             tokens = {self.clean_text(token, ** kwargs) : token for token in tokens}
         
-        text = text.strip()
-        for cleaner in self.cleaners_fn:
-            cleaner_config = {}
-            if isinstance(cleaner, tuple): cleaner, cleaner_config = cleaner
-            
-            text = cleaner(text, ** {** cleaner_config, ** kwargs})
-        
-        for cleaned, token in tokens.items():
-            text = text.replace(cleaned, token)
+        text = cleaners_module.clean_text(text, self.cleaners_fn, tokens = tokens, ** kwargs)
 
         if self.level == TextEncoderLevel.CHAR and self.ukn_token_idx == -1 and not self.use_sos_and_eos:
             text = ''.join([c for c in text if c in self])
@@ -385,9 +390,11 @@ class TextEncoder(object):
         return text
     
     def split_text(self, text, tokens = None, strip = True):
+        """ Splits `text` into a list of tokens """
         if tokens is None:
             if self.splitter is not None:
-                if strip: text = cleaners_module.strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
+                if strip:
+                    text = cleaners_module.strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
                 return list(re.findall(self.splitter, text))
             return text.split() if self.word_split else list(text)
         
@@ -401,6 +408,7 @@ class TextEncoder(object):
         splitted = []
         for part in parts:
             splitted.extend(self.split_text(part, strip = strip) if part not in tokens else [part])
+        
         return splitted
     
     def _char_tokenize(self, token):
@@ -465,10 +473,15 @@ class TextEncoder(object):
     def tokenize(self, text, cleaned = False, ** kwargs):
         if not cleaned:
             text = self.clean_text(text, self._cleaned_tokens, ** kwargs)
-        logger.debug('Cleaned text : {}'.format(text))
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('Cleaned text : {}'.format(text))
 
         splitted = self.split_text(text, self._special_tokens, strip = not cleaned)
         
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('Splitted text : {}'.format(splitted))
+
         tokens = []
         for part in splitted:
             tok = part if part in self._special_tokens else self._tokenize(part)
@@ -497,8 +510,10 @@ class TextEncoder(object):
             return [self.encode(
                 row, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for _, row in text.iterrows()]
+        
         if isinstance(text, (dict, pd.Series)): text = text['text']
         text = convert_to_str(text)
+        
         if isinstance(text, (list, tuple)):
             return [self.encode(
                 t, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
@@ -524,12 +539,17 @@ class TextEncoder(object):
                 ('list', 'np', 'tf'), return_type
             ))
 
-    def decode(self, sequence, skip_padding = True, attach_punctuation = True,
-               remove_tokens = False):
+    def decode(self,
+               sequence,
+               skip_padding = True,
+               remove_tokens    = False,
+               attach_punctuation   = True
+              ):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
-        if hasattr(sequence, 'numpy'): sequence = sequence.numpy()
+        if hasattr(sequence, 'tokens'): sequence = sequence.tokens
+        if hasattr(sequence, 'numpy'):  sequence = sequence.numpy()
         if hasattr(sequence, 'shape'):
-            if sequence.dtype in (np.float32, np.float64):
+            if np.issubdtype(sequence.dtype, np.floating):
                 sequence = np.argmax(sequence, axis = -1) if sequence.shape[0] > 0 else sequence
             if len(sequence.shape) > 1:
                 return [self.decode(
@@ -782,20 +802,20 @@ class TextEncoder(object):
 
     def distance(self, hypothesis, truth, method = 'edit', ** kwargs):
         """ Compute the levenschtein distance between hypothesis and truth """
+        from utils.distance import distance
+        
         if isinstance(hypothesis, str) and not isinstance(truth, str):
             hypothesis = self.encode(hypothesis)
         if isinstance(truth, str) and not isinstance(hypothesis, str):
             truth = self.encode(truth)
         
-        kwargs.setdefault('insertion_cost', {})
-        kwargs.setdefault('deletion_cost', {})
-        
-        kwargs['insertion_cost'].setdefault(self.blank_token, 0)
-        kwargs['deletion_cost'].setdefault(self.blank_token, 0)
+        kwargs.setdefault('insertion_cost', {}).setdefault(self.blank_token, 0)
+        kwargs.setdefault('deletion_cost', {}).setdefault(self.blank_token, 0)
         
         return distance(hypothesis, truth, method = method, ** kwargs)
     
     def save_to_file(self, filename):
+        """ Saves `self.config` to `filename` (`json` format) """
         dump_json(filename, self.get_config(), indent = 4)
 
         return filename
@@ -820,6 +840,7 @@ class TextEncoder(object):
             'sos_token' : self.sos_token,
             'eos_token' : self.eos_token,
             'mask_token'    : self.mask_token,
+            
             'sub_word_prefix'   : self.sub_word_prefix,
             'use_sos_and_eos'   : self.use_sos_and_eos,
             'add_special_tokens_at_end' : self.add_special_tokens_at_end
@@ -993,7 +1014,7 @@ class TextEncoder(object):
         """ In theory it should work but it has not been tested yet :3 """
         seen_vocab = {}
         
-        cleaners_fn    = get_cleaners_fn(cleaners)
+        cleaners_fn    = get_cleaners_fn.get_cleaners_fn(cleaners)
         for text in tqdm(texts):
             for cleaners_fn in cleaners_fn:
                 text = cleaner(text)

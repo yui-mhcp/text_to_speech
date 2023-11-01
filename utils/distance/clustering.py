@@ -16,19 +16,40 @@ import tensorflow as tf
 from functools import wraps
 
 from utils.embeddings import compute_centroids
+from utils.wrapper_utils import dispatch_wrapper, add_doc
 from utils.distance.distance_method import tf_distance
 
+_clustering_methods = {}
+
+@dispatch_wrapper(_clustering_methods, 'method', default = 'kmeans')
 def find_clusters(* args, method = 'kmeans', ** kwargs):
+    """ Computes the centroid with the clustering `method` """
     if method not in _clustering_methods:
         raise ValueError('Unknown clustering method !\n  Supported : {}\n  Got : {}'.format(
             tuple(_clustering_methods.keys()), method
         ))
+    
     return _clustering_methods[method](* args, ** kwargs)
 
 def clustering_wrapper(clustering_fn):
     @wraps(clustering_fn)
+    @add_doc(clustering_fn, on_top = False)
     def wrapper(points, k, distance_metric = 'euclidian', normalize = False, ** kwargs):
+        """
+            Arguments :
+                - points    : `tf.Tensor` with shape `(n_embeddings, embedding_dim)`
+                - k     : the number of centroids to compute
+                    - int   : exact number of centroids
+                    - list / range  : computes the assignment for each `k`, then returns the result for the `k` selected by `kneed.KNeeLocator`
+                - distance_metric   : the distance / similarity metric to use to compute distance
+                - normalize : whether to normalize the scores or not
+                - kwargs    : forwarded to the original clustering function
+            Return : `(centroids, assignment)`
+                - centroids     : `tf.Tensor` with shape `(k, embedding_dim)`
+                - assignment    : `tf.Tensor` with shape `(n_embedding, )`, the id for each point
+        """
         points = tf.cast(points, tf.float32)
+        
         if isinstance(k, (list, tuple, range)):
             from kneed import KneeLocator
 
@@ -72,11 +93,19 @@ def clustering_wrapper(clustering_fn):
 
             return scores[best_k]['centroids'], scores[best_k]['assignment']
         
-        return clustering_fn(points, k, distance_metric = distance_metric, ** kwargs)
-    
-    global _clustering_methods
+        clusters = clustering_fn(
+            points, k, distance_metric = distance_metric, normalize = normalize, ** kwargs
+        )
+        if isinstance(clusters, tuple):
+            centroids, assignment = clusters
+        else:
+            centroids, assignment = compute_centroids(points, clusters)[1], clusters
+        
+        return centroids, assignment
 
-    _clustering_methods[clustering_fn.__name__.lstrip('_')] = wrapper
+    
+    find_clusters.dispatch(wrapper, clustering_fn.__name__.lstrip('_'))
+
     return wrapper
 
 def evaluate_clustering(y_true, y_pred):
@@ -150,4 +179,3 @@ def compute_score(points    : tf.Tensor,
         ))
     return tf.reduce_sum(dist * mask)
 
-_clustering_methods = {}

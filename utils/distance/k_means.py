@@ -13,21 +13,34 @@
 import tensorflow as tf
 
 from utils.embeddings import compute_centroids
+from utils.tensorflow_utils import tf_compile
 from utils.distance.distance_method import tf_distance
 from utils.distance.clustering import clustering_wrapper, get_assignment, compute_score
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def _kmeans(points  : tf.Tensor,
-            k       : tf.Tensor,
+@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+def _kmeans(points  : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
+            k       : tf.TensorSpec(shape = (), dtype = tf.int32),
 
-            n_init       = 5,
-            max_iter    : tf.Tensor = 100,
-            threshold   : tf.Tensor = 1e-6,
+            n_init  : tf.TensorSpec(shape = (), dtype = tf.int32) = 5,
+            max_iter    : tf.TensorSpec(shape = (), dtype = tf.int32) = 100,
+            threshold   : tf.TensorSpec(shape = (), dtype = tf.float32) = 1e-6,
             init_method = 'kmeans_pp',
             distance_metric = 'euclidian',
             normalize       = False,
             random_state    = None
            ):
+    """
+        Computes the centroids following the KMeans procedure
+        
+        Special arguments :
+            - n_init    : the number of times to perform random initialization (only the best result is returned)
+            - max_iter  : the maximal number of KMeans iteration
+            - threshold : a stop criterion, the minimal difference between 2 iterations
+            - init_method   : the initialization method for initial centroids
+                - normal    : computes the centroids based on a normal distribution
+                - random    : randomly selects `k` points
+                - kmeans_pp : uses the `KMeans++` selection procedure (see `help(kmeans_pp_init)`)
+    """
     if n_init > 1:
         best_centroids  = tf.zeros((k, tf.shape(points)[1]), tf.float32)
         best_assignment = tf.range(tf.shape(points)[0])
@@ -110,6 +123,13 @@ def kmeans_pp_init(points   : tf.Tensor,
                    distance_metric  = 'euclidian',
                    random_state     = None
                   ):
+    """
+        Initializes the centroids with the `KMeans++` procedure :
+            1) Selects a random point as first centroid
+            2) Computes the distance between each point and each selected centroid
+            3) Adds as new centroid, the point with the highest distance from each centroid
+            4) Returns at step 2, until `k` centroids have been selected
+    """
     n   = tf.shape(points)[0]
     idx = tf.random.uniform((), minval = 0, maxval = n, dtype = tf.int32)
     

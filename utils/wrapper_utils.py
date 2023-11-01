@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -10,71 +9,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import inspect
+import functools
 
-logger = logging.getLogger(__name__)
+from utils.generic_utils import get_args, signature_to_str
 
-def time_to_string(seconds):
-    """ Returns a string representation of a time (given in seconds) """
-    if seconds < 0.001: return '{} \u03BCs'.format(int(seconds * 1000000))
-    if seconds < 1.:    return '{} ms'.format(int(seconds * 1000))
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = ((seconds % 3600) % 60)
-    
-    return '{}{}{}'.format(
-        '' if h == 0 else '{}h '.format(h),
-        '' if m == 0 else '{}min '.format(m),
-        '{:.3f} sec'.format(s) if m + h == 0 else '{}sec'.format(int(s))
-    )
-
-def get_object(objects, obj, * args, print_name = 'object', err = False, types = None, ** kwargs):
-    """
-        Get corresponding object based on a name (`obj`) and dict of object names with associated class / function to call (`objects`)
+def dispatch_wrapper(methods, name, default = None):
+    def wrapper(fn):
+        def dispatch(dispatch_fn = None, keys = None):
+            if dispatch_fn is not None and callable(dispatch_fn):
+                if keys is None: keys = dispatch_fn.__name__.split('_')[-1]
+                if not isinstance(keys, (list, tuple)): keys = [keys]
+                methods.update({k : dispatch_fn for k in keys})
+                
+                add_dispatch_doc(
+                    fn = fn, dispatch_fn = dispatch_fn, keys = keys, name = name, default = default
+                )
+                return dispatch_fn
+            
+            keys = dispatch_fn
+            return lambda dispatch_fn: fn.dispatch(dispatch_fn, keys)
         
-        Arguments : 
-            - objects   : mapping (`dict`) of names with their associated class / function
-            - obj       : the object to build (either a list, str or instance of `types`)
-            - args / kwargs : the args and kwargs to pass to the object / function
-            - print_name    : name for printing if object is not found
-            - err   : whether to raise error if object is not available
-            - types : expected return type
-        Return : 
-            - (list of) instance(s) or function results
-    """
-    if types is not None and isinstance(obj, types): return obj
-    elif obj is None:
-        return [get_object(
-            objects, n, * args, print_name = print_name, err = err, types = types, ** kw
-        ) for n, kw in kwargs.items()]
+        fn.dispatch = dispatch
+        fn.methods  = methods
+        
+        for method_name, method_fn in methods.items():
+            fn.dispatch(method_fn, method_name)
+        
+        return fn
     
-    elif isinstance(obj, (list, tuple)):
-        return [get_object(
-            objects, n, * args, print_name = print_name, err = err, types = types, ** kwargs
-        ) for n in obj]
-    
-    elif isinstance(obj, dict):
-        if 'class_name' in obj:
-            return get_object(
-                objects, obj['class_name'], * args, print_name = print_name, err = err, types = types, ** obj.get('config', {})
-            )
-        return [get_object(
-            objects, n, * args, print_name = print_name,  err = err, types = types, ** kwargs
-        ) for n, args in obj.items()]
-    
-    elif isinstance(obj, str) and obj.lower() in to_lower_keys(objects):
-        return to_lower_keys(objects)[obj.lower()](* args, ** kwargs)
-    elif err:
-        raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(
-            print_name, tuple(objects.keys()), obj
-        ))
-    else:
-        logger.warning("{} : `{}` is not available !".format(print_name, obj))
-        return obj
+    return wrapper
 
-def to_lower_keys(dico):
-    return {k.lower() : v for k, v in dico.items()}
+def add_dispatch_doc(fn, dispatch_fn, name, keys, show_doc = False, default = None):
+    if not keys: return
+    display = keys[0] if len(keys) == 1 else tuple(keys)
+    
+    fn.__doc__ = '{}{}{}: {}\n    {}{}{}'.format(
+        '{}\n\n'.format(fn.__doc__) if fn.__doc__ is not None else '',
+        name,
+        ' (default) ' if default and default in keys else ' ',
+        display,
+        dispatch_fn.__name__,
+        inspect.signature(dispatch_fn),
+        '\n{}'.format(dispatch_fn.__doc__) if show_doc and dispatch_fn.__doc__ else ''
+    )
 
 def partial(fn = None, * partial_args, _force = False, ** partial_config):
     """
@@ -132,9 +110,46 @@ def partial(fn = None, * partial_args, _force = False, ** partial_config):
             '\n{}'.format(inner.__doc__) if inner.__doc__ else ''
         ).capitalize()
         
-        fn_arg_names    = inspect.getfullargspec(fn).args
+        inner.func  = fn
+        inner.args  = partial_args
+        inner.kwargs    = partial_config
+        
+        fn_arg_names    = get_args(fn)
         add_self_first  = fn_arg_names and fn_arg_names[0] == 'self'
         
         return inner
     
     return wrapper if fn is None else wrapper(fn)
+
+def add_doc(original, wrapper = None, on_top = True):
+    if wrapper is None: return lambda fn: add_doc(original, fn, on_top)
+    if wrapper.__doc__ is None: return wrapper
+    
+    if not original.__doc__:
+        original.__doc__ = wrapper.__doc__
+    elif on_top:
+        original.__doc__ = '{}\n\n{}'.format(wrapper.__doc__, original.__doc__)
+    else:
+        original.__doc__ = '{}\n\n{}'.format(original.__doc__, wrapper.__doc__)
+    
+    return wrapper
+
+def insert_signature(* args, ** kwargs):
+    """ Equivalent to `format_doc` but it allows positional arguments (must have a `__name__`) """
+    kwargs.update({
+        arg.__name__ : signature_to_str(arg) for arg in args
+    })
+    return format_doc(** kwargs)
+
+def format_doc(fn = None, ** kwargs):
+    """ Formats the `fn.__doc__` with the given `kwargs` (keys must be in `fn.__doc__` between {}) """
+    def wrapper(fn):
+        if fn.__doc__: fn.__doc__ = fn.__doc__.format(** {
+            k : v if not callable(v) else signature_to_str(v) for k, v in kwargs.items()
+        })
+        return fn
+    return wrapper if fn is None else wrapper(fn)
+
+def fake_wrapper(* args, ** kwargs):
+    if len(args) == 1 and callable(args[0]): return args[0]
+    return lambda fn: fn

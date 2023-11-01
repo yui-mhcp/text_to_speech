@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -12,11 +11,13 @@
 
 """ Inspired from https://github.com/keithito/tacotron """
 
+import os
 import re
 import unicodedata
 
 from unidecode import unidecode
 
+from utils.wrapper_utils import partial
 from utils.text.numbers import normalize_numbers
 
 _special_symbols    = {
@@ -41,28 +42,7 @@ _accents    = "âéèêîç"
 
 
 # List of (regular expression, replacement) pairs for abbreviations:
-_english_abreviations = [(re.compile(r'\b{}\.'.format(x[0]), re.IGNORECASE), x[1])
-    for x in [
-        ('mrs', 'misess'),
-        ('mr', 'mister'),
-        ('dr', 'doctor'),
-        ('st', 'saint'),
-        ('co', 'company'),
-        ('jr', 'junior'),
-        ('maj', 'major'),
-        ('gen', 'general'),
-        ('drs', 'doctors'),
-        ('rev', 'reverend'),
-        ('lt', 'lieutenant'),
-        ('hon', 'honorable'),
-        ('sgt', 'sergeant'),
-        ('capt', 'captain'),
-        ('esq', 'esquire'),
-        ('ltd', 'limited'),
-        ('col', 'colonel'),
-        ('ft', 'fort'),
-    ]
-]
+_abreviations   = {}
 
 _letter_pronounciation  = {
     'a' : {'fr' : 'ha', 'en' : 'ae'},
@@ -93,6 +73,61 @@ _letter_pronounciation  = {
     'z' : {'fr' : 'zed', 'en' : 'ze'},
 }
 
+def get_cleaners_fn(cleaners):
+    """
+        Returns a `list` of `callable`, the functions associated to the given `cleaners`
+        
+        Arguments :
+            - cleaners  : a list of cleaner
+                - str   : cleaner name
+                - dict  : cleaner config with a `name` for the name of the cleaner
+                - tuple : `(name, kwargs)`
+                - callable  : cleaning function
+            Return :
+                - cleaners_fn   : `list` of `callable`
+    """
+    if not isinstance(cleaners, (list, tuple)): cleaners = [cleaners]
+    cleaners_fn    = []
+    for name in cleaners:
+        kwargs = None
+        if isinstance(name, tuple):
+            name, kwargs = name
+        elif isinstance(name, dict):
+            name, kwargs = name['name'], {k : v for k, v in name.items() if k != 'name'}
+        
+        cleaner = globals().get(name, None)
+        
+        if cleaner is None:
+            raise ValueError("Unknown cleaner : {}".format(name))
+        elif not callable(cleaner):
+            raise ValueError("Cleaner must be callable : {}".format(name))
+        
+        cleaners_fn.append(cleaner if not kwargs else partial(cleaner, ** kwargs))
+    
+    return cleaners_fn
+
+def clean_text(text, cleaners, tokens = {}, ** kwargs):
+    """ Cleans `text` with the list of `cleaners` (see `get_cleaners_fn`) """
+    text = text.strip()
+    for cleaner in cleaners:
+        text = cleaner(text, ** kwargs)
+    
+    for cleaned, token in tokens.items():
+        text = text.replace(cleaned, token)
+    
+    return text
+
+def get_abreviations(lang):
+    if lang not in _abreviations:
+        from utils.file_utils import load_json
+        
+        filename = os.path.join(
+            __package__.replace('.', '/'), 'abreviations', lang + '.json'
+        )
+
+        _abreviations[lang] = load_json(filename, default = {})
+    return _abreviations[lang]
+
 def strip(text, lstrip = True, rstrip = True, ** kwargs):
     if lstrip and rstrip: return text.strip()
     elif lstrip: return text.lstrip()
@@ -106,23 +141,46 @@ def rstrip(text, ** kwargs):
     return text.rstrip()
 
 def replace_patterns(text, patterns, ** kwargs):
-    """ `pattern` is a dict associating the word to replace (key) and its replacement (value) """
-    regex = re.compile(r'(\b|\s)({})(\b|\s)'.format('|'.join(
-        [re.escape(pat) for pat in patterns.keys()]
-    )))
-    return re.sub(regex, lambda w: ' {} '.format(patterns[w.group(0).strip()]), text)
+    """ Replaces a `dict` of `{pattern : replacement}` """
+    for pattern, repl in patterns:
+        text = re.sub(pattern, repl, text)
+    return text
 
-def expand_abbreviations(text, abreviations = _english_abreviations, ** kwargs):
-    return replace_patterns(text, abreviations, ** kwargs)
+def replace_words(text, words, pattern_format = r'\b({})\b', flags = re.IGNORECASE, ** kwargs):
+    """ `pattern` is a dict associating the word to replace (key) and its replacement (value) """
+    if not words: return text
+    
+    _min_patterns   = {k.lower() : v for k, v in words.items()}
+    regex = re.compile(pattern_format.format('|'.join([
+        re.escape(pat) for pat in words.keys()
+    ])), flags)
+    return re.sub(regex, lambda w: _min_patterns[w.group(0).lower()], text)
+
+def expand_abreviations(text, abreviations = None, lang = None, ** kwargs):
+    assert abreviations is not None or lang is not None
+    
+    if abreviations is None: abreviations = get_abreviations(lang)
+    if not abreviations: return text
+    
+    return replace_words(
+        text, abreviations, pattern_format = r'\b({})\.\b'
+    )
 
 def expand_special_symbols(text, lang = None, symbols = None, ** kwargs):
     assert lang is not None or symbols is not None
+    
     if symbols is None: symbols = {k : v[lang] for k, v in _special_symbols.items() if lang in v}
-    return replace_patterns(text, symbols, ** kwargs)
+    if not symbols: return text
+    
+    return replace_words(text, symbols, ** kwargs)
 
 def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
     return ' '.join([extensions.get(c.lower(), {}).get(lang, c) for c in text])
+
+def expand_acronym(text, lang, ** kwargs):
+    """ Expand all words composed of uppercases """
+    return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
 
 def detach_punctuation(text, punctuation = _punctuation, ** kwargs):
     for punct in punctuation:
@@ -135,6 +193,7 @@ def remove_punctuation(text, punctuation = _punctuation, ** kwargs):
 def remove_tokens(text, tokens = None, ** kwargs):
     """ Replace all tokens in `tokens` (an iterable) by ' ' (space) """
     if not tokens: return text
+    
     regex = re.compile(r'\b({})\b'.format('|'.join(tokens)))
     return re.sub(regex, ' ', text)
 
@@ -144,10 +203,6 @@ def attach_punctuation(text, ** kwargs):
     for punct in _right_punctuation:
         text = text.replace(' {}'.format(punct), punct)
     return text
-
-def expand_acronym(text, lang, ** kwargs):
-    """ Expand all words composed of uppercases """
-    return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
 
 def expand_numbers(text, lang = 'en', ** kwargs):
     return normalize_numbers(text, lang = lang, ** kwargs)
@@ -205,10 +260,11 @@ def complete_cleaners(text,
                       lang,
                       to_lowercase  = True,
                       to_expand     = True,
+                      to_expand_abrev   = True,
                       to_expand_symbols = True,
                       to_expand_acronyms    = False,
-                      abbreviations = None,
                       replacements  = None,
+                      patterns  = None,
                       ** kwargs
                      ):
     """
@@ -224,18 +280,16 @@ def complete_cleaners(text,
     if lang == 'fr':        text = fr_convert_to_ascii(text, ** kwargs)
     else:                   text = convert_to_ascii(text, ** kwargs)
     
-    if abbreviations:       text = expand_abbreviations(text, ** kwargs)
-    if to_expand_acronyms:  text = expand_acronym(text, lang = lang, ** kwargs)
+    if patterns:            text = replace_patterns(text, patterns, ** kwargs)
+    if replacements:        text = replace_words(text, replacements, ** kwargs)
     if to_lowercase:        text = lowercase(text, ** kwargs)
     if to_expand:
+        if to_expand_abrev:     text = expand_abreviations(text, lang = lang, ** kwargs)
         text = expand_numbers(text, lang = lang, expand_symbols = to_expand_symbols, ** kwargs)
-        if to_expand_symbols:
-            text = expand_special_symbols(text, lang = lang, ** kwargs)
+        if to_expand_symbols:   text = expand_special_symbols(text, lang = lang, ** kwargs)
+    
     text = collapse_whitespace(text, ** kwargs)
     return text
 
-def english_cleaners(text, ** kwargs):
-    return complete_cleaners(text, lang = 'en', ** kwargs)
-
-def french_cleaners(text, ** kwargs):
-    return complete_cleaners(text, lang = 'fr', ** kwargs)
+english_cleaners = partial(complete_cleaners, lang = 'en')
+french_cleaners  = partial(complete_cleaners, lang = 'fr')

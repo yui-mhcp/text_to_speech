@@ -22,7 +22,8 @@ from collections import deque
 from threading import Thread, Lock, RLock
 from dataclasses import dataclass, field
 
-from utils.generic_utils import get_enum_item, create_iterator
+from utils.stream_utils import create_iterator
+from utils.generic_utils import get_enum_item
 
 logger = logging.getLogger(__name__)
 _group_mutex    = Lock()
@@ -303,10 +304,16 @@ class Producer(Thread):
         with self.mutex_infos:
             self._stopped = True
     
-    def join(self, * args, recursive = False, ** kwargs):
+    def join(self, * args, recursive = False, wakeup_timeout = 0.2, ** kwargs):
         logger.debug('[JOIN {}] Waiting...'.format(self.name))
         if not self.run_main_thread:
-            super().join(* args, ** kwargs)
+            try:
+                while super().is_alive():
+                    super().join(timeout = kwargs.get('timeout', wakeup_timeout))
+                    if 'timeout' in kwargs: break
+            except KeyboardInterrupt:
+                logger.info('Thread stopped while being joined !')
+                self.stop()
         
         if recursive:
             logger.debug('[RECURSIVE JOIN {}] JOIN {} consumers'.format(

@@ -436,12 +436,12 @@ class AudioAnnotation(object):
             audio_i = audio[start : end]
             
             if play_original:
-                display_audio(audio_i, rate = rate, temps = play_time, play = False)
+                display_audio(audio_i, rate = rate, time = play_time, play = False)
                 
             if transform_fn: audio_i = transform_fn(audio_i, rate)
             # Display and print information about current data
             if len(audio_i) > 0:
-                display_audio(audio_i, rate = rate, temps = play_time, play = play)
+                display_audio(audio_i, rate = rate, time = play_time, play = play)
 
                 if display:
                     plot(audio_i, ** kwargs)
@@ -756,14 +756,14 @@ class AudioAnnotation(object):
             if info['id'] == '?' or info['time'] < 0.1: continue
             
             speaker_dir = os.path.join(wav_dir, str(info['id']))
-            if os.path.exists(speaker_dir) and not isinstance(overwrite, bool) and overwrite == info['id'] and info['id'] not in spk_nb:
-                shutil.rmtree(speaker_dir)
-            os.makedirs(speaker_dir, exist_ok = True)
+            if info['id'] not in spk_nb:
+                if os.path.exists(speaker_dir) and overwrite == info['id']:
+                    shutil.rmtree(speaker_dir)
+                os.makedirs(speaker_dir, exist_ok = True)
             
             spk_nb.setdefault(info['id'], 0)
             audio_name = os.path.join(
-                speaker_dir, 
-                'audio_{}.wav'.format(spk_nb[info['id']])
+                speaker_dir, 'audio_{}.wav'.format(spk_nb[info['id']])
             )
             spk_nb[info['id']] += 1
 

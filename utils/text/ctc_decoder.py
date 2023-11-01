@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
@@ -13,14 +12,18 @@
 import numpy as np
 import tensorflow as tf
 
+from utils.wrapper_utils import dispatch_wrapper
 from utils.sequence_utils import pad_batch
 
 _inf = float('inf')
 
+_ctc_decoder_methods    = {}
+
+@dispatch_wrapper(_ctc_decoder_methods, 'method')
 def ctc_decode(sequence, lengths = None, blank_index = 0, method = 'greedy', ** kwargs):
     if method not in _ctc_decoder_methods:
-        raise ValueError("Unknown decoder !\n  Accepted : {}\n  Got : {}".format(
-            tuple(_decoder_method.keys()), method
+        raise ValueError("Unknown CTC method !\n  Accepted : {}\n  Got : {}".format(
+            tuple(_ctc_decoder_methods.keys()), method
         ))
     
     if len(sequence.shape) == 2: sequence = tf.expand_dims(sequence, axis = 0)
@@ -35,6 +38,7 @@ def ctc_decode(sequence, lengths = None, blank_index = 0, method = 'greedy', ** 
         sequence, lengths = lengths, blank_index = blank_index
     )
 
+@ctc_decode.dispatch('greedy')
 @tf.function(input_signature = [
     tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
     tf.TensorSpec(shape = (None, ), dtype = tf.int32),
@@ -47,6 +51,7 @@ def ctc_greedy_decoder(sequence, lengths, blank_index):
     tokens = tf.sparse.to_dense(tokens[0])
     return tokens, scores[:, 0] / tf.cast(lengths, scores.dtype)
 
+@ctc_decode.dispatch(('beam', 'beam_search'))
 @tf.function(input_signature = [
     tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
     tf.TensorSpec(shape = (None, ), dtype = tf.int32),
@@ -110,9 +115,3 @@ def ctc_beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, **
 
     best_beam = sorted(beams.items(), key = lambda b: b[1]['p_tot'], reverse = True)[0]
     return np.array(best_beam[0])
-
-_ctc_decoder_methods = {
-    'greedy'    : ctc_greedy_decoder,
-    'beam'      : tf_ctc_beam_search_decoder,
-    'beam_with_lm'  : ctc_beam_search_decoder
-}

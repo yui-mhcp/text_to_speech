@@ -65,6 +65,7 @@ def image_dataset_wrapper(name, task, ** default_config):
                               accepted_labels   = None,
                               labels_subtitutes = None,
                               
+                              combine_lines = False,
                               min_box_per_image = -1,
                               max_box_per_image = -1,
                               one_line_per_box  = False,
@@ -103,6 +104,9 @@ def image_dataset_wrapper(name, task, ** default_config):
 
                 if any(BOX_KEY in row for row in dataset):
                     for row in dataset: row.setdefault(BOX_KEY, [])
+                    
+                    if combine_lines:
+                        dataset = _combine_text_lines(dataset, ** kwargs)
                     
                     if min_box_per_image > 0 or max_box_per_image > 0:
                         if max_box_per_image <= 0: max_box_per_image = float('inf')
@@ -191,6 +195,37 @@ def _flatten_dataset(dataset, keys):
                 k : v if k not in keys else v[i] for k, v in row.items()
             })
     return flat
+
+def _combine_text_lines(dataset, keep_original = True, ** kwargs):
+    from utils.image import get_image_size
+    from utils.image.box_utils import NORMALIZE_WH, BoxFormat, convert_box_format, combine_boxes_horizontal
+    
+    new_data = [] if not keep_original else dataset
+    for row in dataset:
+        if len(row['label']) == 1:
+            if not keep_original: new_data.append(row)
+            continue
+
+        image_h, image_w = get_image_size(row['filename'])
+        boxes, indices, _ = combine_boxes_horizontal(
+            row[BOX_KEY], image_h = image_h, image_w = image_w, ** kwargs
+        )
+
+        comb_texts = [' '.join([row['label'][idx] for idx in comb_index]) for comb_index in indices]
+        
+        if keep_original:
+            boxes       = boxes[[i for i, idx in enumerate(indices) if len(idx) > 1]]
+            comb_texts  = [comb_texts[i] for i, idx in enumerate(indices) if len(idx) > 1]
+        
+        if len(boxes) == 0: continue
+        
+        boxes   = convert_box_format(
+            boxes, BoxFormat.XYWH, box_mode = BoxFormat.CORNERS,
+            image_h = image_h, image_w = image_w, normalize_mode = NORMALIZE_WH
+        )
+        new_data.append({** row, BOX_KEY : boxes, 'label' : comb_texts})
+    
+    return new_data
 
 def _add_image_size(dataset):
     from utils.image import get_image_size
@@ -847,6 +882,43 @@ def preprocess_synthtext_annots(directory, tqdm = lambda x: x, ** kwargs):
         }
     
     return dataset
+
+@image_dataset_wrapper(
+    name = 'icdar', task = [SCENE_TEXT, OCR], directory = '{}/ICDAR'
+)
+def preprocess_icdar_annots(directory, year = 2019, script = 'latin', tqdm = lambda x: x,
+                            ** kwargs):
+    from utils.image.box_utils import BoxFormat, convert_box_format
+    
+    path    = os.path.join(directory, str(year), 'gt', '*.txt')
+
+    metadata    = {}
+    for filename in tqdm(glob.glob(path)):
+        with open(filename, 'r', encoding = 'utf-8') as file:
+            lines = file.read().split('\n')
+
+        infos = {BOX_KEY : [], 'label' : []}
+        for line in lines:
+            if not line: continue
+            parts = line.split(',')
+            if script and parts[-2].lower() not in script: continue
+            if parts[-1] == '###': continue
+            
+            box = [int(v) for v in parts[:8]]
+            infos[BOX_KEY].append(np.reshape(box, [4, 2]))
+            infos['label'].append(parts[-1])
+            infos['script'] = parts[-2].lower()
+        
+        if not infos[BOX_KEY]: continue
+        
+        infos[BOX_KEY] = convert_box_format(
+            np.array(infos[BOX_KEY]), BoxFormat.XYWH, box_mode = BoxFormat.POLY
+        )
+        img_filename = glob.glob(filename.replace('gt', 'images').replace('.txt', '.*'))[0]
+        metadata[img_filename] = infos
+    
+    return metadata
+
 
 add_dataset(
     'anime_faces', processing_fn = 'image_directory', task = GAN, directory = '{}/anime_faces/images'

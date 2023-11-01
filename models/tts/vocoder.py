@@ -12,6 +12,8 @@
 
 from models.interfaces import BaseModel
 
+from utils.stream_utils import text_input_stream
+
 _stream_msg = {
     'fr'    : 'Entrez le texte à lire :',
     'en'    : 'Enter text to read :'
@@ -20,12 +22,6 @@ _end_msg = {
     'fr'    : 'Au revoir, à la prochaine !',
     'en'    : 'Goodbye, see you soon !'
 }
-
-def stream_input(msg, quit = 'q'):
-    txt = input(msg)
-    while txt and txt != quit:
-        yield txt
-        txt = input(msg)
 
 class Vocoder(object):
     def __init__(self):
@@ -89,15 +85,17 @@ class Vocoder(object):
         
         return audio
     
-    def stream(self, stream = None, play = True, save = False, ** kwargs):
+    def stream(self, stream = None, save = False, display = True, play = True, ** kwargs):
         """ Run a streaming TTS procedure where you can enter text and the model reads it ! """
-        if stream is None: stream = stream_input(_stream_msg.get(self.lang, _stream_msg['en']))
+        use_input_stream = stream is None
+        if use_input_stream:
+            stream = text_input_stream(_stream_msg.get(self.lang, _stream_msg['en']))
         
         res = self.synthesizer.stream(
-            stream, vocoder = self.vocoder, play = play, save = save, display = True, ** kwargs
+            stream, vocoder = self.vocoder, play = play, save = save, display = display, ** kwargs
         )
-        if self.lang in _end_msg:
-            self.predict(_end_msg[self.lang], play = play, save = save, display = True, ** kwargs)
+        if use_input_stream and self.lang in _end_msg:
+            self.predict(_end_msg[self.lang], play = play, save = save, display = display, ** kwargs)
         
         return res
 

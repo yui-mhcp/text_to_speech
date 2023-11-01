@@ -14,7 +14,7 @@ import logging
 import numpy as np
 import tensorflow as tf
 
-from utils.image.box_utils.nms import nms
+from utils.image.box_utils.nms_methods import nms
 from utils.image.box_utils.box_functions import BoxFormat, convert_box_format
 
 logger = logging.getLogger(__name__)

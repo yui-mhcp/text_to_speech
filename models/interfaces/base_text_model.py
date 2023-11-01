@@ -360,16 +360,9 @@ class BaseTextModel(BaseModel):
     def decode_text(self, encoded, ** kwargs):
         return self.text_encoder.decode(encoded, ** kwargs)
     
-    def tf_encode_text(self, text, default_key = 'text'):
+    def tf_encode_text(self, text ** kwargs):
         """ Calls `self.encode_text` inside a `tf.numpy_function` (to be enable graph computation) """
-        if isinstance(text, (dict, pd.Series)): text = text[default_key]
-        
-        encoded_text = tf.numpy_function(
-            self.encode_text, [text], Tout = tf.int32
-        )
-        encoded_text.set_shape([None])
-        
-        return encoded_text
+        return self.encode_text(text, ** kwargs)
 
     def tf_format_text(self, text_format, data, keys = ['text'], return_types = False, ** kwargs):
         """

@@ -17,8 +17,11 @@ import unicodedata
 
 from unidecode import unidecode
 
+from utils import get_timer
 from utils.wrapper_utils import partial
 from utils.text.numbers import normalize_numbers
+
+timer, time_logger, _ = get_timer()
 
 _special_symbols    = {
     '='     : {'fr' : 'égal',       'en' : 'equal'},
@@ -140,44 +143,69 @@ def lstrip(text, ** kwargs):
 def rstrip(text, ** kwargs):
     return text.rstrip()
 
+@timer
 def replace_patterns(text, patterns, ** kwargs):
     """ Replaces a `dict` of `{pattern : replacement}` """
-    for pattern, repl in patterns:
+    for pattern, repl in patterns.items():
         text = re.sub(pattern, repl, text)
     return text
 
-def replace_words(text, words, pattern_format = r'\b({})\b', flags = re.IGNORECASE, ** kwargs):
+@timer
+def replace_words(text,
+                  words,
+                  pattern_format = r'\b({})\b',
+                  getter    = None,
+                  flags = re.IGNORECASE,
+                  ** kwargs
+                 ):
     """ `pattern` is a dict associating the word to replace (key) and its replacement (value) """
-    if not words: return text
-    
+    _text_lower = text.lower()
     _min_patterns   = {k.lower() : v for k, v in words.items()}
+    _min_patterns   = {k : v for k, v in _min_patterns.items() if k in _text_lower}
+    if not _min_patterns: return text
+    
     regex = re.compile(pattern_format.format('|'.join([
         re.escape(pat) for pat in words.keys()
     ])), flags)
-    return re.sub(regex, lambda w: _min_patterns[w.group(0).lower()], text)
+    
+    if getter is None: getter = lambda w: _min_patterns[w.group(0).lower()]
+    
+    return re.sub(regex, getter, text)
 
+@timer
 def expand_abreviations(text, abreviations = None, lang = None, ** kwargs):
     assert abreviations is not None or lang is not None
     
     if abreviations is None: abreviations = get_abreviations(lang)
-    if not abreviations: return text
     
     return replace_words(
-        text, abreviations, pattern_format = r'\b({})\.\b'
+        text,
+        abreviations,
+        pattern_format = r'\b({})(\.|\b)',
+        getter  = lambda ab: abreviations[ab.group(0).lower().rstrip('.')]
     )
 
+@timer
 def expand_special_symbols(text, lang = None, symbols = None, ** kwargs):
     assert lang is not None or symbols is not None
     
     if symbols is None: symbols = {k : v[lang] for k, v in _special_symbols.items() if lang in v}
-    if not symbols: return text
     
-    return replace_words(text, symbols, ** kwargs)
+    for symbol, repl in symbols.items():
+        text = text.replace(symbol, ' ' + repl + ' ')
+    
+    return text
+
+def remove_tokens(text, tokens = [], ** kwargs):
+    """ Replace all tokens in `tokens` (an iterable) by ' ' (space) """
+    if not tokens: return text
+    return replace_words(text, {tok : '' for tok in tokens})
 
 def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
     return ' '.join([extensions.get(c.lower(), {}).get(lang, c) for c in text])
 
+@timer
 def expand_acronym(text, lang, ** kwargs):
     """ Expand all words composed of uppercases """
     return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
@@ -189,13 +217,6 @@ def detach_punctuation(text, punctuation = _punctuation, ** kwargs):
 
 def remove_punctuation(text, punctuation = _punctuation, ** kwargs):
     return ''.join(c for c in text if c not in punctuation)
-
-def remove_tokens(text, tokens = None, ** kwargs):
-    """ Replace all tokens in `tokens` (an iterable) by ' ' (space) """
-    if not tokens: return text
-    
-    regex = re.compile(r'\b({})\b'.format('|'.join(tokens)))
-    return re.sub(regex, ' ', text)
 
 def attach_punctuation(text, ** kwargs):
     for punct in _left_punctuation:
@@ -226,13 +247,13 @@ def remove_accents(text, ** kwargs):
 def convert_to_ascii(text, ** kwargs):
     return unidecode(text)
 
-def fr_convert_to_ascii(text, accents_to_keep = _accents, ** kwargs):
+def fr_convert_to_ascii(text, accepted = _accents, ** kwargs):
     """ Convert to ascii (with `unidecode`) while keeping some french accents """
     converted = ''
     idx = 0
     while idx < len(text):
         next_idx = min([
-            text.index(a, idx) if a in text[idx:] else len(text) for a in accents_to_keep
+            text.index(a, idx) if a in text[idx:] else len(text) for a in accepted
         ])
         converted += unidecode(text[idx : next_idx])
         if next_idx < len(text): converted += text[next_idx]
@@ -256,6 +277,7 @@ def transliteration_cleaners(text, ** kwargs):
     text = collapse_whitespace(text, ** kwargs)
     return text
 
+@timer
 def complete_cleaners(text,
                       lang,
                       to_lowercase  = True,

@@ -46,31 +46,28 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
         Return : 
             - padded_batch : np.ndarray of same rank as data
     """
-    if not hasattr(batch[0], 'shape'): return np.array(batch)
+    if len(batch) == 0: return batch
+    if not hasattr(batch[0], 'shape'):
+        if not isinstance(batch[0], list): return np.array(batch)
+        batch = [np.array(b) for b in batch]
     
     if dtype is None:
         b0 = batch[0] if not hasattr(batch[0], 'numpy') else batch[0].numpy()
         dtype = b0.dtype
     
-    max_shape = batch[0].shape
-    for b in batch:
-        max_shape = [max(max_s, s) for max_s, s in zip(max_shape, b.shape)]
+    ndim = len(batch[0].shape)
+    assert all(len(b.shape) == ndim for b in batch)
+    
+    max_shape = np.max(np.array([b.shape for b in batch], dtype = np.int32), axis = 0).tolist()
     if max_length is not None: max_shape[0] = min(max_shape[0], max_length)
-    length = max_shape[0]
-    max_shape = [len(batch)] + max_shape
     
-    padded_batch = np.zeros(max_shape, dtype = dtype) + pad_value
-    
+    padded_batch = np.full([len(batch)] + max_shape, pad_value).astype(dtype)
     for i, b in enumerate(batch):
-        if b.ndim == 1:
-            padded_batch[i, :min(length, len(b))] = b[:length]
-        elif b.ndim == 2:
-            padded_batch[i, :min(length, len(b)), : b.shape[1]] = b[:length]
-        elif b.ndim == 3:
-            padded_batch[i, :min(length, len(b)), : b.shape[1], : b.shape[2]] = b[:length]
-        elif b.ndim == 4:
-            padded_batch[i, :min(length, len(b)), : b.shape[1], : b.shape[2], : b.shape[3]] = b[:length]
-        
+        slices = (i, ) + tuple([
+            slice(0, min(s, max_l)) for s, max_l in zip(b.shape, max_shape)
+        ])
+        padded_batch[slices] = b[slices[1:]]
+    
     return padded_batch
 
 def concat_sequences(seq1, seq2, pad_value):
@@ -98,7 +95,7 @@ def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
     """ Pad `seq[axis]` to the next multiple of `multiple` (if not a multiple of it) """
     if not isinstance(axis, (list, tuple, np.ndarray)):     axis = [axis]
     if not isinstance(multiple, (list, tuple, np.ndarray)): multiple = [multiple]
-    axis = [ax if ax >= 0 else len(data.shape) - ax for ax in axis]
+    axis = [ax if ax >= 0 else len(data.shape) + ax for ax in axis]
     
     shape   = tf.shape(data)
     

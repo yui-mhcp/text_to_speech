@@ -179,6 +179,7 @@ def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = Fal
     assert target.dtype == value.dtype, "Target dtype {} != value dtype {}".format(
         target.dtype, value.dtype
     )
+    if target.size == 0: return
     
     if target.dtype in (bool, object):
         assert np.all(target == value), "Vallue differ for target with dtype {} ({} / {} diff, {:.23f} %)".format(

@@ -18,14 +18,19 @@ logger = logging.getLogger(__name__)
 
 class HTTPScreenMirror:
     """ This class allows to stream based on the `http screen mirror` mobile app """
-    def __init__(self, url):
+    def __init__(self, url, min_time = 1. / 16.):
         self.url    = url
         self.prefix = HTTPScreenMirror.get_prefix(url)
+        self.min_time   = min_time
+        self.last_time  = 0
     
     def __str__(self):
         return 'HTTP Screen Mirror ({})'.format(self.url)
     
     def read(self):
+        wait = self.min_time - (time.time() - self.last_time)
+        if wait > 0: time.sleep(wait)
+        
         try:
             img = requests.get('{}/{}{}.jpg'.format(self.url, self.prefix, int(time.time() * 1000)))
         except requests.ConnectionError as e:
@@ -34,6 +39,8 @@ class HTTPScreenMirror:
         except Exception as e:
             logger.warning('Exception while reading frame : {}'.format(e))
             return False, None
+        finally:
+            self.last_time = time.time()
         
         if not img.content: return False, None
         with tf.device('cpu'):

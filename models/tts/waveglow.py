@@ -20,13 +20,12 @@ import logging
 import numpy as np
 import tensorflow as tf
 
-from loggers import timer
+from loggers import timer, time_logger
 from models.interfaces import BaseModel
 from custom_architectures import get_architecture
 from models.weights_converter import pt_convert_model_weights
 
-logger      = logging.getLogger(__name__)
-time_logger = logging.getLogger('timer')
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 
@@ -67,7 +66,7 @@ class WaveGlow(BaseModel):
         
         if hasattr(self.vocoder, 'dummy_inputs'): self.vocoder(self.vocoder.dummy_inputs)
     
-    def _build_model(self, **kwargs):
+    def _build_model(self, ** kwargs):
         super()._build_model(
             vocoder = {
                 'architecture_name' : kwargs.pop('architecture_name', 'waveglow'),
@@ -104,9 +103,25 @@ class WaveGlow(BaseModel):
         return self.infer(spect, ** kwargs)
     
     @timer(name = 'inference WaveGlow')
-    def infer(self, mel, * args, win_len = -1, hop_len = -64, pad_value = None, batch = False, ** kwargs):
+    def infer(self,
+              mel,
+              * args,
+              win_len   = -1,
+              hop_len   = -64,
+              pad_value = None,
+              batch     = False,
+              max_win_len   = -1,
+              ** kwargs
+             ):
         if isinstance(mel, str):    mel = np.load(mel)
         if len(mel.shape) == 2:     mel = tf.expand_dims(mel, axis = 0)
+        if isinstance(win_len, float):
+            if pad_value is None:
+                win_len = max(1, mel.shape[1] // win_len) * win_len
+            else:
+                win_len = int(math.ceil(mel.shape[1] / win_len) * win_len)
+        
+        if max_win_len > 0 and win_len > max_win_len: win_len = max_win_len
         
         if win_len == -1 or mel.shape[1] <= win_len:
             if win_len != -1 and pad_value is not None:
@@ -142,9 +157,8 @@ class WaveGlow(BaseModel):
         else:
             audio_parts = []
             for p in parts:
-                time_logger.start_timer('single mel inference')
-                audio_parts.append(self.vocoder.infer(p)[0].numpy())
-                time_logger.stop_timer('single mel inference')
+                with time_logger.timer('single mel inference'):
+                    audio_parts.append(self.vocoder.infer(p)[0].numpy())
 
         audio = []
         for i, part in enumerate(audio_parts):

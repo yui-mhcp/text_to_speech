@@ -12,6 +12,7 @@
 
 import os
 import cv2
+import sys
 import glob
 import math
 import time
@@ -27,12 +28,11 @@ from utils.thread_utils import Producer, Consumer
 from utils.tensorflow_utils import convert_to_tensor
 from utils.image.image_utils import resize_image
 
-timer, logger_available = get_timer()
+timer, time_logger, _ = get_timer()
 
 logger  = logging.getLogger(__name__)
-time_logger = logging.getLogger('timer')
 
-DELAY_MS = 10
+DELAY_MS = 8
 DELAY_SEC   = DELAY_MS / 1000.
 
 _resize_kwargs  = (
@@ -180,7 +180,6 @@ def save_image(filename, image, ** kwargs):
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
 
-@timer
 def frame_generator(cam_id,
                     fps         = None,
                     max_time    = 60,
@@ -226,34 +225,29 @@ def frame_generator(cam_id,
     
     for _ in range(frames_offset): camera.read()
     while should_continue(start_time, start_iter_time, seen):
-        if logger_available: time_logger.start_timer('frame generation')
-        
-        ret, frame = camera.read()
-        if not ret:
-            failed += 1
-            if failed == max_failure: break
-        
-        if frames_step > 1 and idx % frames_step != 0:
+        with time_logger.timer('frame generation'):
+            ret, frame = camera.read()
+            if not ret:
+                failed += 1
+                if failed == max_failure: break
+            if frames_step > 1 and idx % frames_step != 0:
+                idx += 1
+                continue
+
+            if ret:
+                frame = frame[..., ::-1]
+                if add_copy or return_index:
+                    data = {'image' : frame, 'frame_index' : idx - 1}
+                    if add_copy: data['image_copy'] = frame.copy()
+                    yield data
+                else:
+                    yield frame
+            
             idx += 1
-            continue
-
-        if ret:
-            frame = frame[..., ::-1]
-            if add_copy or return_index:
-                data = {'image' : frame, 'frame_index' : idx}
-                if add_copy: data['image_copy'] = frame.copy()
-                yield data
-            else:
-                yield frame
-        
-        idx += 1
-        seen += 1
-        wait = wait_time - (time.time() - start_iter_time)
-        if fps > 0 and wait > 0: time.sleep(wait)
-        start_iter_time = time.time()
-        if logger_available: time_logger.stop_timer('frame generation')
-
-    if isinstance(cam_id, (int, str)): camera.release()
+            seen += 1
+            wait = max(1e-2, wait_time - (time.time() - start_iter_time))
+            if fps > 0 and wait > 0: time.sleep(wait)
+            start_iter_time = time.time()
     
     return seen
 
@@ -266,8 +260,7 @@ def stream_camera(cam_id    = 0,
                   
                   fps   = -1,
                   show_fps  = None,
-                  
-                  max_workers   = 0,
+                  multi_threaded    = True,
                   
                   add_copy  = False,
                   add_index = False,
@@ -337,8 +330,8 @@ def stream_camera(cam_id    = 0,
         
         t = time.time()
         delay    = 0 if prev_time == -1 else (t - prev_time)
-        delay_ms = int(delay * 1000)
-        if cv2.waitKey(max(show_wait_time_ms - delay_ms, 1)) & 0xFF == ord('q'):
+        delay_ms = max(show_wait_time_ms - int(delay * 1000), 1) if multi_threaded else 1
+        if cv2.waitKey(delay_ms) & 0xFF == ord('q'):
             raise StopIteration()
         return None, (t, )
     
@@ -389,11 +382,11 @@ def stream_camera(cam_id    = 0,
     #####################
     
     prod = Producer(frame_generator(
-        cap, fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, frames_step = frames_step, frames_offset = frames_offset
-    ), run_main_thread = max_workers < 0, stop_listeners = cap.release)
+        cap, fps = fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, frames_step = frames_step, frames_offset = frames_offset
+    ), run_main_thread = not multi_threaded, stop_listeners = cap.release)
     
     transformer = prod.add_consumer(
-        transform_fn, link_stop = True, max_workers = max_workers, buffer_size = buffer_size, ** kwargs
+        transform_fn, link_stop = True, run_main_thread = not multi_threaded, buffer_size = buffer_size, ** kwargs
     ) if transform_fn is not None else prod
     
     if transformer_prod is None: transformer_prod = transformer
@@ -410,14 +403,14 @@ def stream_camera(cam_id    = 0,
         )
         # Creates the video-writer consumer
         writer_cons     = transformer_prod.add_consumer(
-            write_video_frame, link_stop = True, start = True, max_workers = min(max_workers, 0),
+            write_video_frame, link_stop = True, start = True, run_main_thread = not multi_threaded,
             stop_listeners = video_writer.release
         )
         # Adds a listener to copy the video file's audio to the output file (if expected)
         if copy_audio and isinstance(cam_id, str):
             from utils.image import video_utils
             writer_cons.add_listener(
-                lambda: video_utils.copy_audio(cam_id, output_file), on = 'stop'
+                lambda: video_utils.copy_audio(cam_id, output_file), event = 'stop'
             )
     
     # Adds a consumer to display frames (if expected)
@@ -425,13 +418,13 @@ def stream_camera(cam_id    = 0,
         cons = transformer_prod.add_consumer(
             show_frame,
             start = True, link_stop = True, stateful = True,
-            max_workers     = min(max_workers, 0),
+            run_main_thread = not multi_threaded,
             start_listeners = lambda: cv2.namedWindow(display_name, imshow_flags),
             stop_listeners  = cv2.destroyAllWindows
         )
         if play_audio and output_fps != -1 and isinstance(cam_id, str):
             cons.add_consumer(
-                play_audio_on_first_frame, on = 'item', stateful = True, max_workers = -1
+                play_audio_on_first_frame, stateful = True, run_main_thread = True
             )
     
     

@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import time
 import queue
 import logging
 import threading
@@ -23,15 +24,16 @@ from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
 from utils.audio import audio_processing
-from utils.thread_utils import Consumer
 from utils.generic_utils import convert_to_str
 from utils.wrapper_utils import dispatch_wrapper
 from utils.tensorflow_utils import execute_eagerly
+from utils.thread_utils import StoppedException, Consumer
 
 logger = logging.getLogger(__name__)
 
 MAX_DISPLAY_TIME = 600
 
+_player_lock    = threading.Lock()
 _audio_player   = None
 
 _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
@@ -83,7 +85,9 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
     if isinstance(data, (dict, pd.Series)) and 'mel' in data:
         mel = data['mel']
     elif isinstance(data, (dict, pd.Series)) and stft_fn.dir_name in data:
-        mel = load_mel_npy(data[stft_fn.dir_name], shape = (None, stft_fn.n_mel_channels))
+        mel = load_mel_npy(
+            data[stft_fn.dir_name], shape = tf.TensorShape((None, stft_fn.n_mel_channels))
+        )
     elif isinstance(data, (np.ndarray, tf.Tensor)) and len(data.shape) >= 2:
         mel = data
     else:
@@ -135,23 +139,40 @@ def resample_file(filename, new_rate, filename_out = None, normalize = False, **
     
     return filename_out
 
-def play_audio(audio, rate = None, blocking = True, ** kwargs):
-    def _play(audio, rate, event = None, ** kwargs):
-        sd.play(audio, rate, blocking = True, ** kwargs)
+def get_audio_player(create = False):
+    def _play(audio, rate = None, event = None, ** kwargs):
+        import sounddevice as sd
+        
+        if isinstance(audio, str):
+            rate, audio = read_audio(audio, ** kwargs)
+        
+        sd.play(audio, rate, blocking = True, device = kwargs.get('device', None))
         if event is not None: event.set()
+        time.sleep(0.1)
     
-    import sounddevice as sd
-    
-    global _audio_player
-    if _audio_player is None:
-        _audio_player = Consumer(_play, max_workers = 0).start()
-    
-    if isinstance(audio, str):
-        rate, audio = read_audio(audio, ** kwargs)
-    
-    event = None if not blocking else threading.Event()
-    _audio_player(audio, rate = rate, event = event, device = kwargs.get('device', None))
-    if blocking: event.wait()
+    def _finalize():
+        logger.info('Finalize audio player !')
+        global _audio_player, _player_lock
+        with _player_lock:
+            if _audio_player.stopped: _audio_player = None
+
+    global _audio_player, _player_lock
+    with _player_lock:
+        if create and (_audio_player is None or _audio_player.stopped):
+            _audio_player = Consumer(
+                _play, daemon = True, stop_listeners = _finalize
+            ).start()
+        
+        return _audio_player
+
+def play_audio(audio, rate = None, blocking = True, ** kwargs):
+    event  = None if not blocking else threading.Event()
+    player = get_audio_player(create = True)
+    try:
+        player(audio, rate = rate, event = event, device = kwargs.get('device', None))
+        if blocking: event.wait()
+    except StoppedException:
+        return play_audio(audio, rate, blocking, ** kwargs)
 
 def display_audio(filename, rate = None, play = False, ** kwargs):
     """
@@ -228,12 +249,14 @@ def read_audio(filename,
             read_method = filename.split('.')[-1]
         
         if isinstance(read_method, str):
-            if read_method not in _load_fn:
-                raise ValueError('Unsupported audio extension !\n  Accepted : {}\n  Got : {}'.format(
+            if read_method in _load_fn:
+                read_method = _load_fn[read_method]
+            elif read_method in globals():
+                read_method = globals()[read_method]
+            else:
+                raise ValueError('Unsupported reading method !\n  Accepted : {}\n  Got : {}'.format(
                     tuple(_load_fn.keys()), read_method
                 ))
-
-            read_method = _load_fn[read_method]
 
         rate, audio = read_method(filename, rate = target_rate)
     else:

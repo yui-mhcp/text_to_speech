@@ -16,14 +16,9 @@ import logging
 
 from logging.handlers import SMTPHandler
 
-from loggers.time_logger import TIME_LEVEL, timer
+from loggers.time_logging import TIME_LEVEL, TIME_DEBUG_LEVEL, timer, time_logger
 from loggers.telegram_handler import TelegramHandler
-
-try:
-    from utils.generic_utils import get_object
-    from utils.wrapper_utils import partial
-except ImportError:
-    from loggers.utils import get_object, partial
+from loggers.utils import get_object, partial
 
 logger  = logging.getLogger(__name__)
 
@@ -159,3 +154,4 @@ _handlers   = {
 
 add_level(DEV, 'DEV')
 add_level(TIME_LEVEL, 'TIME')
+add_level(TIME_DEBUG_LEVEL, 'TIME_DEBUG')

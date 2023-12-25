@@ -31,7 +31,7 @@ from utils.image.image_utils import normalize_color
 from utils.image.image_io import load_image, save_image, get_image_size
 from utils.image.box_utils.bounding_box import BoundingBox
 
-timer, _  = get_timer()
+timer, _, _  = get_timer()
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ def _to_np(boxes):
     if hasattr(boxes, 'numpy'):     return boxes.numpy()
     elif isinstance(boxes, dict):   return {k : _to_np(v) for k, v in boxes.items()}
     elif isinstance(boxes, list):   return [_to_np(b) for b in boxes]
-    return boxes
+    return np.array(boxes)
 
 def convert_box_format(box,
                        output_format    = BoxFormat.DEFAULT,
@@ -515,7 +515,7 @@ def sort_boxes(boxes,
         return boxes if scores is None else (boxes, scores)
     
     x, y, w, h = convert_box_format(
-        boxes, BoxFormat.XYWH, as_list = True, extended = False, ** kwargs
+        _to_np(boxes), BoxFormat.XYWH, as_list = True, extended = False, ** kwargs
     )
 
     if isinstance(x, tf.Tensor):
@@ -527,7 +527,8 @@ def sort_boxes(boxes,
             return orig
         
         min_fn, max_fn, sort_fn, round_fn = np.min, np.max, np.argsort, np.round
-        abs_fn, gather_fn = np.abs, lambda x, idx: x[idx]
+        abs_fn = np.abs
+        gather_fn = lambda x, idx: x[idx] if not isinstance(x, list) else [x[i] for i in idx]
     
     gather = lambda x, idx: {k : gather_fn(v, idx) for k, v in x.items()} if isinstance(x, dict) else gather_fn(x, idx)
     
@@ -537,6 +538,7 @@ def sort_boxes(boxes,
     elif method == 'top':
         y_center    = y + h / 2.
         same_rows   = abs_fn(y_center[None, :] - y_center[:, None]) <= h[:, None] * threshold / 2.
+        same_rows   = np.logical_or(same_rows, same_rows.T)
         
         indices = []
         to_set  = np.full((len(x), ), True)
@@ -670,6 +672,7 @@ def combine_boxes_horizontal(boxes,
         np.minimum(boxes[:-1, 2], boxes[1:, 2]) -
         np.maximum(boxes[:-1, 0], boxes[1:, 0])
     ) > 0.
+    diff_border[overlap_x] = 0.
     overlap_y   = np.maximum(0., (
         np.minimum(boxes[:-1, 3], boxes[1:, 3]) - np.maximum(boxes[:-1, 1], boxes[1:, 1])
     ))
@@ -681,12 +684,13 @@ def combine_boxes_horizontal(boxes,
     )
     
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug('Horizontal fusion : {}\n- Border dist : {}\n- Overlap (x) {}\n- overlap_y / max(h) : {}\nmax(h) - overlap (y) {}'.format(
+        logger.debug('Horizontal fusion : {}\n- Border dist : {}\n- Overlap (x) {}\n- overlap_y / max(h) : {}\nmax(h) - overlap (y) {}\nBoxes :\n{}'.format(
             should_combine_horizontal,
             np.around(diff_border, decimals = 3),
             overlap_x,
             np.around(overlap_y / max_h, decimals = 3),
-            np.around(max_h - overlap_y, decimals = 3)
+            np.around(max_h - overlap_y, decimals = 3),
+            np.around(boxes, decimals = 3)
         ))
     
     return _group_boxes(boxes, should_combine_horizontal, indices = indices)
@@ -747,6 +751,7 @@ def combine_boxes_vertical(boxes,
 @timer
 def combine_overlapping_boxes(boxes, indices, rows, iou_threshold = 0.333, ** kwargs):
     def _update_box(main_idx, sub_idx, skip_indexes, boxes, indices, rows):
+        if main_idx == sub_idx: return boxes, indices, rows
         main_rows, sub_rows = rows[main_idx], rows[sub_idx]
         
         if len(main_rows) < len(sub_rows):
@@ -803,19 +808,27 @@ def combine_overlapping_boxes(boxes, indices, rows, iou_threshold = 0.333, ** kw
     main_indexes, sub_indexes = np.where(mask)
     
     if logger.isEnabledFor(logging.DEBUG):
-        logger.debug('Intersect :\n{}\nMerge indexes :\n{}'.format(
-            np.around(intersect, decimals = 2), np.stack([main_indexes, sub_indexes], -1)
+        logger.debug('Boxes :\n{}\nIntersect :\n{}\nMerge indexes :\n{}'.format(
+            np.around(boxes, decimals = 2),
+            np.around(intersect, decimals = 2),
+            np.stack([main_indexes, sub_indexes], -1)
         ))
 
 
     skip_indexes = {}
     for main_idx, sub_idx in zip(main_indexes, sub_indexes):
-        if main_idx in skip_indexes:
-            logger.warning('Main index {} (row shape {}) was already fusionned with another index : {} (rows shape {})'.format(main_idx, rows[main_idx].shape, skip_indexes[main_idx], rows[skip_indexes[main_idx]].shape))
-            if skip_indexes[main_idx] in skip_indexes:
-                continue
+        redirections = set()
+        while main_idx in skip_indexes:
+            if main_idx == sub_idx: break
+            if main_idx in redirections:
+                logger.warning('Main index {} (row shape {}) was already fusionned with another index : {} (rows shape {})'.format(main_idx, rows[main_idx].shape, skip_indexes[main_idx], rows[skip_indexes[main_idx]].shape))
+                break
             
+            redirections.add(main_idx)
             main_idx = skip_indexes[main_idx]
+        
+        if main_idx in skip_indexes:
+            continue
         
         boxes, indices, rows = _update_box(main_idx, sub_idx, skip_indexes, boxes, indices, rows)
     
@@ -824,6 +837,8 @@ def combine_overlapping_boxes(boxes, indices, rows, iou_threshold = 0.333, ** kw
     rows    = [
         rearrange_rows(rows_i) for i, rows_i in enumerate(rows) if i not in skip_indexes
     ]
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug('Merged boxes :\n{}'.format(np.around(boxes, decimals = 2)))
     
     return boxes, indices, rows
 

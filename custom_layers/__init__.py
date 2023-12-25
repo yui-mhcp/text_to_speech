@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -10,11 +9,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import glob
+import importlib
+
+from hparams import HParams
 from custom_layers.custom_activations import *
-from custom_layers.faster_embedding import FasterEmbedding
-from custom_layers.invertible_conv import Invertible1x1Conv
-from custom_layers.location_sensitive_attention import LocationSensitiveAttention
-from custom_layers.multi_head_attention import MultiHeadAttention, HParamsMHA
-from custom_layers.similarity_layer import SimilarityLayer
-from custom_layers.masked_1d import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D, MaskedZeroPadding1D
-from custom_layers.concat_embedding import ConcatEmbedding, ConcatMode
+
+def __load():
+    for module in glob.glob(os.path.join(* __package__.split('.'), '*.py')):
+        if module.endswith(('__init__.py', '_old.py')): continue
+        module = importlib.import_module(module.replace(os.path.sep, '.')[:-3])
+        
+        globals().update({
+            k : v for k, v in vars(module).items()
+            if not k.startswith('_') and isinstance(v, (type, HParams))
+        })
+
+__load()

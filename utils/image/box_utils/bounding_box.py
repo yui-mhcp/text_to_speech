@@ -63,6 +63,9 @@ class BoundingBox:
     def __repr__(self):
         return str(tuple(self.box))
     
+    def __array__(self):
+        return np.array(self.box[:4])
+    
     def get_config(self):
         return self.json()
     

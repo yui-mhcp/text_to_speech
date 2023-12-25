@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from loggers import timer
+from loggers import timer, time_logger
 from datasets import prepare_dataset
 from models.interfaces import BaseModel
 from utils.distance import distance, KNN
@@ -24,7 +24,6 @@ from utils.embeddings import load_embedding, save_embeddings, embeddings_to_np
 from utils import plot_embedding, pad_batch, sample_df, convert_to_str
 
 logger      = logging.getLogger(__name__)
-time_logger = logging.getLogger('timer')
 
 DEPRECATED_CONFIG   = ('threshold', 'embed_distance')
 

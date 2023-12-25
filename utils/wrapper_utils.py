@@ -12,7 +12,18 @@
 import inspect
 import functools
 
-from utils.generic_utils import get_args, signature_to_str
+from utils.generic_utils import get_kwargs, signature_to_str
+
+class ContextManager:
+    def __init__(self, enter = None, exit = None):
+        self.enter  = enter
+        self.exit   = exit
+    
+    def __enter__(self):
+        return self.enter() if self.enter is not None else None
+    
+    def __exit__(self, * args):
+        return self.exit(* args) if self.exit is not None else None
 
 def dispatch_wrapper(methods, name, default = None):
     def wrapper(fn):
@@ -109,16 +120,16 @@ def partial(fn = None, * partial_args, _force = False, ** partial_config):
             '' if not partial_config else 'partial config : {}'.format(partial_config),
             '\n{}'.format(inner.__doc__) if inner.__doc__ else ''
         ).capitalize()
+        inner.__signature__ = update_signature(fn, ** partial_config)
         
         inner.func  = fn
         inner.args  = partial_args
         inner.kwargs    = partial_config
         
-        fn_arg_names    = get_args(fn)
-        add_self_first  = fn_arg_names and fn_arg_names[0] == 'self'
+        fn_arg_names    = list(inspect.signature(fn).parameters.keys())
+        add_self_first  = fn_arg_names and fn_arg_names[0] in ('self', 'cls')
         
         return inner
-    
     return wrapper if fn is None else wrapper(fn)
 
 def add_doc(original, wrapper = None, on_top = True):
@@ -150,6 +161,72 @@ def format_doc(fn = None, ** kwargs):
         return fn
     return wrapper if fn is None else wrapper(fn)
 
+def add_signatures(* nested):
+    def wrapper(fn):
+        sig = fn
+        for nested_fn in nested:
+            sig = update_signature(sig, nested_fn)
+        fn.__signature__ = sig
+        return fn
+    return wrapper
+
+def forward_attribute(attr_name, fn_name, attr_type = None):
+    def interface(self, * args, ** kwargs):
+        """ Return `{fn_name}` from `self.{attr_name}` """
+        attr = getattr(getattr(self, attr_name), fn_name)
+        if inspect.ismethod(attr): return attr(* args, ** kwargs)
+        return attr
+
+    if attr_type is not None:
+        if hasattr(attr_type, fn_name):
+            interface = functools.wraps(getattr(attr_type, fn_name))(interface)
+        if not hasattr(attr_type, fn_name) or isinstance(getattr(attr_type, fn_name), (property, functools.cached_property)):
+            interface.__name__ = fn_name
+            interface = property(interface)
+    else:
+        interface.__name__ = fn_name
+        format_doc(attr_name = attr_name, fn_name = fn_name)(interface)
+    
+    return interface
+
+
+def copy_methods(attr_name, * args, attr_type = None, ** kwargs):
+    fn_names = {
+        ** {name : name for name in args}, ** kwargs
+    }
+    
+    def wrapper(cls):
+        for cls_fn_name, attr_fn_name in fn_names.items():
+            if hasattr(cls, cls_fn_name): continue
+            setattr(cls, cls_fn_name, forward_attribute(attr_name, attr_fn_name, attr_type))
+        return cls
+    
+    return wrapper
+
 def fake_wrapper(* args, ** kwargs):
     if len(args) == 1 and callable(args[0]): return args[0]
     return lambda fn: fn
+
+def update_signature(fn, new_fn = None, ** kwargs):
+    if new_fn is not None: kwargs.update(get_kwargs(new_fn, follow_wrapped = False))
+    if not isinstance(fn, inspect.Signature): sig = inspect.signature(fn)
+    
+    new_params = sig.parameters.copy()
+    for name, param in kwargs.items():
+        if not isinstance(param, inspect.Parameter):
+            param = inspect.Parameter(
+                name = name, default = param, kind = inspect.Parameter.KEYWORD_ONLY
+            )
+        
+        if name in new_params:
+            new_params[name] = new_params[name].replace(default = param.default)
+        elif param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            new_params[name] = param
+    
+    new_params  = list(new_params.values())
+    var_kw      = [p for p in new_params if p.kind is inspect.Parameter.VAR_KEYWORD]
+    if var_kw:
+        new_params.remove(var_kw[0])
+        new_params.append(var_kw[0])
+
+    return inspect.Signature(new_params, return_annotation = sig.return_annotation)

@@ -17,7 +17,8 @@ import tensorflow as tf
 
 from functools import wraps
 
-from utils.generic_utils import get_args, get_kwargs
+from utils.wrapper_utils import update_signature
+from utils.generic_utils import get_args, get_kwargs, convert_to_str
 
 logger  = logging.getLogger(__name__)
 
@@ -39,20 +40,28 @@ def split_gpus(n, memory = 2048):
         len(tf.config.list_physical_devices('GPU')), len(tf.config.list_logical_devices('GPU'))
     ))
 
-def limit_gpu_memory(limit = 2048):
+def limit_gpu_memory(limit = 4096):
     """ Limits the tensorflow visible GPU memory on each available physical device """
     global _limited_memory
-    if _limited_memory: return
+    if _limited_memory or not limit: return
     
     gpus = tf.config.list_physical_devices('GPU')
     try:
         for gpu in gpus:
-            tf.config.set_virtual_device_configuration(gpu, [
-                tf.config.experimental.VirtualDeviceConfiguration(memory_limit = 2048)
+            tf.config.set_logical_device_configuration(gpu, [
+                tf.config.LogicalDeviceConfiguration(memory_limit = limit)
             ])
         _limited_memory = True
-    except:
-        logger.error("Error while limiting tensorflow GPU memory")
+    except Exception as e:
+        logger.error("Error while limiting tensorflow GPU memory : {}".format(e))
+
+def set_memory_growth(memory_growth = True):
+    gpus = tf.config.list_physical_devices('GPU')
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, memory_growth)
+    except Exception as e:
+        logger.error("Error while setting memory growth : {}".format(e))
 
 def show_memory(gpu = 'GPU:0', message = ''):
     """ Displays the memory stats computed by `tensorflow`, then resets the stats """
@@ -91,12 +100,12 @@ def convert_to_tensor(data):
     
     return tf.cast(data, conv_dtype)
 
-def execute_eagerly(fn = None,
-                    Tout = None,
-                    signature = None,
+def execute_eagerly(fn  = None,
+                    Tout    = None,
+                    signature   = None,
                     default_key = None,
-                    numpy = False,
-                    name = None
+                    numpy   = False,
+                    name    = None
                    ):
     """
         This function wraps `fn`, a regular python function, such that it can be used transparently inside a ``tf.function` executing by automatically calling `tf.py_function` or `tf.numpy_function`
@@ -145,7 +154,12 @@ def execute_eagerly(fn = None,
     """
     def wrapper(fn):
         @wraps(fn)
-        def inner(* args, shape = None, key = None, ** kwargs):
+        def inner(* args, shape = Sout, key = default_key, ** kwargs):
+            if not tf.executing_eagerly() and is_class_method:
+                function, args = getattr(args[0], fn.__name__), args[1:]
+            else:
+                function = fn
+            
             if len(args) > 0 and isinstance(args[0], (dict, pd.Series)):
                 if key and key in args[0]:
                     args = (args[0][key], ) + args[1:]
@@ -153,33 +167,46 @@ def execute_eagerly(fn = None,
                     args = (args[0][default_key], ) + args[1:]
 
             if tf.executing_eagerly(): return fn(* args, ** kwargs)
-            
-            if not kwargs:
-                result = python_function(fn, args, Tout = Tout)
-            else:
-                def fn_with_kwargs(* args):
-                    return fn(* args, ** kwargs)
 
-                result = python_function(fn_with_kwargs, args, Tout = Tout)
+            if not kwargs:
+                result = python_function(function, args, Tout = Tout)
+            else:
+                def fn_with_kwargs(n, * args_and_kwargs):
+                    args    = args_and_kwargs[:n]
+                    keys    = convert_to_str(args_and_kwargs[n])
+                    kwargs  = {k : v for k, v in zip(keys, args_and_kwargs[n + 1 :])}
+                    return function(* args, ** kwargs)
+
+                keys    = list(kwargs.keys())
+                vals    = [kwargs[k] for k in keys]
+                args_with_kv = list(args) + [tf.cast(keys, tf.string)] + vals
+                result = python_function(
+                    fn_with_kwargs, [len(args)] + args_with_kv, Tout = Tout
+                )
 
             if shape is not None:
                 result = tf.nest.map_structure(tf.ensure_shape, result, shape)
-            elif shapes is not None:
-                result = tf.nest.map_structure(tf.ensure_shape, result, shapes)
+            elif Sout is not None:
+                result = tf.nest.map_structure(tf.ensure_shape, result, Sout)
 
             return result
         
-        inner.func = fn
-        python_function = tf.py_function if not numpy else tf.numpy_function
+        is_class_method     = 'self' == list(inspect.signature(fn).parameters.keys())[0]
+        inner.__signature__ = update_signature(fn, shape = Sout, key = default_key)
+        python_function     = tf.py_function if not numpy else tf.numpy_function
 
+        inner.signature = signature
+        inner.Tout      = Tout
+        inner.default_key   = default_key
+        
         return inner
     
     assert Tout is not None or signature is not None
     
-    shapes = None
+    Sout = None
     if signature is not None:
-        Tout    = tf.nest.map_structure(lambda t: t.dtype, signature)
-        shapes  = tf.nest.map_structure(lambda t: t.shape, signature)
+        Tout    = tf.nest.map_structure(lambda s: s.dtype, signature)
+        Sout    = tf.nest.map_structure(lambda s: s.shape, signature)
     
     return wrapper if fn is None else wrapper(fn)
 

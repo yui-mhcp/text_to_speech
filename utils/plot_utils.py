@@ -27,7 +27,7 @@ COLOR_KEYS  = ('c', 'facecolors')
 _tick_label_limit = 30
 
 _numeric_type   = (int, float, np.integer, np.floating)
-_data_iterable  = (list, tuple, np.ndarray)
+_data_iterable  = (list, tuple, range, np.ndarray)
 
 _keys_to_propagate  = (
     'x', 'hlines', 'vlines', 'hlines_kwargs', 'vlines_kwargs', 'legend_kwargs',
@@ -103,6 +103,41 @@ def _normalize_colors(colors, cmap = None):
         colors = np.reshape(mapper.to_rgba(np.reshape(colors, [-1])), colors.shape + (4, ))
     
     return colors
+
+def _set_boxplot_colors(im, colors, facecolor, cmap = None):
+    colors = _normalize_colors(colors, cmap = cmap) if isinstance(colors, _data_iterable) else [colors] * len(im['boxes'])
+    if len(colors) < len(im['boxes']):
+        raise RuntimeError('Too many colors to use : {} boxes but only {} colors !'.format(
+            len(im['boxes']), len(colors)
+        ))
+    
+    for i in range(len(im['boxes'])):
+        im['boxes'][i].set_facecolor(colors[i])
+        for k in ('whiskers', 'caps'):
+            im[k][i * 2].set_color(colors[i])
+            im[k][i * 2 + 1].set_color(colors[i])
+        for k in ('boxes', 'fliers'):   im[k][i].set_color(colors[i])
+        for k in ('medians', 'means'):
+            if len(im[k]) > 0: im[k][i].set_color(facecolor)
+    return im
+
+def _set_violinplot_colors(im, colors, facecolor, cmap = None):
+    colors = _normalize_colors(colors, cmap = cmap) if isinstance(colors, _data_iterable) else [colors] * len(im['bodies'])
+    if len(colors) < len(im['bodies']):
+        raise RuntimeError('Too many colors to use : {} boxes but only {} colors !'.format(
+            len(im['bodies']), len(colors)
+        ))
+    
+    for k in ('cmins', 'cmaxes'):
+        im[k].set_color(colors)
+    for k in ('chars', 'cmedians', 'cmeans'):
+        if k in im: im[k].set_color(facecolor)
+    
+    for i in range(len(im['bodies'])):
+        im['bodies'][i].set_facecolor(colors[i])
+        im['bodies'][i].set_color(colors[i])
+        im['bodies'][i].set_alpha(1.)
+    return im
 
 def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = None,
 
@@ -253,6 +288,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
                 im = _plot_data(ax, * datas_label, {'label' : l, ** config_label})
             _maybe_add_legend()
             return im
+        
         elif p_type == 'scatter' and isinstance(plot_config.get('marker', 'o'), _data_iterable):
             markers, markers_config = plot_config.pop('marker'), plot_config.pop('marker_kwargs', {})
             im = None
@@ -263,10 +299,17 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
                 m = config_marker.pop('marker', m)
                 im = _plot(ax, p_type, datas_marker, marker = m, ** config_marker)
             return im
+        
         else:
             if p_type != 'scatter': plot_config.pop('marker', None)
             if plot_config.get('color', None) is None: plot_config.pop('color', None)
-            return _plot(ax, p_type, datas, ** plot_config)
+            im = _plot(ax, p_type, datas, ** plot_config)
+            if p_type == 'boxplot':
+                im = _set_boxplot_colors(im, color, facecolor, cmap = kwargs.get('cmap', None))
+            elif p_type == 'violinplot':
+                im = _set_violinplot_colors(im, color, facecolor, cmap = kwargs.get('cmap', None))
+            
+            return im
 
     # Maybe create the figure and get the axis
     if y is None: x, y = None, x
@@ -294,32 +337,36 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     
     color = kwargs.get('c', color)
     
-    if isinstance(y, (tf.Tensor, np.ndarray)) and len(y.shape) == 3 and not plot_3d:
+    if hasattr(y, 'shape') and len(y.shape) == 3 and not plot_3d:
+        if y.shape[-1] == 1: y = y[:, :, 0]
         plot_type = 'imshow'
     
     if plot_type == 'boxplot':
-        kwargs.pop('label', None)
-        kwargs.update({
-            'patch_artist'  : True,
-            'boxprops'      : {'color' : color, 'facecolor' : color},
-            'capprops'      : {'color' : color},
-            'whiskerprops'  : {'color' : color},
-            'flierprops'    : {'color' : color, 'markeredgecolor' : color},
-            'medianprops'   : {'color' : kwargs.pop('mediancolor', facecolor)}
-        })
         if x is None and isinstance(y, dict):
             kwargs['labels'], x = zip(* y.items())
             y = None
+        kwargs.pop('label', None)
+        kwargs['patch_artist'] = True
+    elif plot_type == 'violinplot':
+        kwargs.setdefault('showmedians', True)
+        kwargs.pop('label', None)
     elif plot_type != 'imshow':
         kwargs['linewidth'] = linewidth
         if 'c' not in kwargs: kwargs['color'] = color
 
-    if plot_type == 'bar' and x is None and isinstance(y, dict):
+    if plot_type in ('bar', 'violinplot') and x is None and isinstance(y, dict):
         xtick_labels, y = list(zip(* y.items()))
-    if plot_type == 'imshow' and hasattr(y, 'shape') and len(y.shape) == 3 and y.shape[-1] == 1:
-        y = y[:, :, 0]
+        if isinstance(y[0], dict):
+            y_dict = {}
+            for yi in y:
+                for ki, vi in yi.items(): y_dict.setdefault(ki, []).append(vi)
+            y = y_dict
+            kwargs.update({'align' : 'edge', 'width' : 0.8 / len(y)})
     if plot_type in ('bar', 'scatter') and x is None:
-        x = np.arange(len(y))
+        x = np.arange(len(y if not isinstance(y, dict) else list(y.values())[0]))
+    
+    if plot_type == 'bar' and xtick_labels is not None and xtick_pos is None:
+        xtick_pos = np.arange(len(xtick_labels)) + 0.5
     
     if x is not None and isinstance(x[0], datetime.datetime):
         formatter = mdates.DateFormatter(date_format)
@@ -330,10 +377,11 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     im = None
     if isinstance(y, dict):
         if len(y) > 0: kwargs.pop('color', None)
-        for label, data in y.items():
-            im = _plot_data(ax, x, data, {'label' : label, ** kwargs})
+        for i, (label, data) in enumerate(y.items()):
+            xi = x
+            if plot_type == 'bar': xi = x + i * kwargs['width'] + 0.1
+            im = _plot_data(ax, xi, data, {'label' : label, ** kwargs})
         
-        _maybe_add_legend()
     else:
         im = _plot_data(ax, x, y, kwargs)
     
@@ -343,8 +391,15 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
             h_colors = hlines_kwargs.pop('colors')
             if not isinstance(hlines, _data_iterable): hlines = [hlines]
             if not isinstance(h_colors, _data_iterable): h_colors = [h_colors]
-            if len(h_colors) < len(hlines): h_colors = h_colors * len(hlines)
-            for line, lc in zip(hlines, h_colors): ax.axhline(line, color = lc, ** hlines_kwargs)
+            
+            if not isinstance(hlines, dict): hlines = {None : hlines}
+
+            for label, lines in hlines.items():
+                for i, line in enumerate(lines):
+                    if label: hines_kwargs['label'] = label if i == 0 else None
+                    ax.axvline(
+                        line, color = h_colors[i if len(h_colors) > 1 else 0], ** hlines_kwargs
+                    )
         else:
             xmin, xmax = xlim
             ax.hlines(hlines, xmin, xmax, ** hlines_kwargs)
@@ -353,13 +408,26 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         vlines_kwargs.setdefault('colors', color)
         if ylim is None:
             v_colors = vlines_kwargs.pop('colors')
-            if not isinstance(vlines, _data_iterable): vlines = [vlines]
+            if not isinstance(vlines, (* _data_iterable, dict)): vlines = [vlines]
             if not isinstance(v_colors, _data_iterable): v_colors = [v_colors]
-            if len(v_colors) < len(vlines): v_colors = v_colors * len(vlines)
-            for line, lc in zip(vlines, v_colors): ax.axvline(line, color = lc, ** vlines_kwargs)
+            
+            if not isinstance(vlines, dict): vlines = {None : vlines}
+
+            for label, lines in vlines.items():
+                for i, line in enumerate(lines):
+                    if label: vlines_kwargs['label'] = label if i == 0 else None
+                    ax.axvline(
+                        line, color = v_colors[i if len(v_colors) > 1 else 0], ** vlines_kwargs
+                    )
         else:
             ymin, ymax = ylim
             ax.vlines(vlines, ymin, ymax, ** vlines_kwargs)
+    
+    if (
+        isinstance(y, dict)
+        or (isinstance(vlines, dict) and any(k for k in vlines))
+        or (isinstance(hlines, dict) and any(k for k in hlines))):
+        _maybe_add_legend()
     
     if with_colorbar and plot_type == 'imshow':
         cb = ax.figure.colorbar(im, orientation = orientation, ax = ax)
@@ -373,12 +441,12 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     if xtick_labels is not None and len(xtick_labels) > 0 and len(xtick_labels) < _tick_label_limit:
         xtick_labels = [str(l) for l in xtick_labels]
         if xtick_pos is None:
-            xtick_pos = np.linspace(0, int(ax.dataLim.x1), len(xtick_labels))
+            xtick_pos = np.linspace(ax.dataLim.x0, int(ax.dataLim.x1), len(xtick_labels))
         ax.set_xticks(xtick_pos, labels = xtick_labels)
         
     if ytick_labels is not None and len(ytick_labels) > 0 and len(ytick_labels) < _tick_label_limit:
         if ytick_pos is None:
-            ytick_pos = np.linspace(0, int(ax.dataLim.y1), len(ytick_labels))
+            ytick_pos = np.linspace(int(ax.dataLim.y0), int(ax.dataLim.y1), len(ytick_labels))
         ax.set_yticks(ytick_pos, labels = ytick_labels)
     
     if xtick_rotation == 0: xtick_rotation = tick_rotation
@@ -787,7 +855,7 @@ def plot_matrix(matrix = None, x = None, x_labels = None, y_labels = None, norm 
                 )
     
     if filename is not None: plt.savefig(filename)
-    if show or filename is None: plt.show()
+    if show: plt.show()
     if close: plt.close()
     else: return ax, im
 

@@ -39,7 +39,7 @@ class SentencePieceTextEncoder(TextEncoder):
         
         super().__init__(vocab = vocab, ** kwargs)
     
-    def split_text(self, text, tokens = None):
+    def split_text(self, text, tokens = None, ** _):
         if tokens is None: return [text]
         return super().split_text(text, tokens = tokens)
 

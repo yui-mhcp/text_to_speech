@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -21,16 +20,13 @@ import tensorflow as tf
 
 from tqdm import tqdm
 
-from loggers import timer
-from models.interfaces import BaseModel
+from loggers import timer, time_logger
 from models.siamese.base_encoder import BaseEncoderModel
-from utils.distance import distance, KNN
-from utils.thread_utils import Pipeline
-from utils.embeddings import _embedding_filename, _default_embedding_ext, load_embedding, save_embeddings, embeddings_to_np
+from utils.distance import KNN, distance
+from utils.embeddings import load_embedding, save_embeddings, embeddings_to_np
 from utils import normalize_filename, plot_embedding, pad_batch, sample_df
 
 logger      = logging.getLogger(__name__)
-time_logger = logging.getLogger('timer')
 
 def l2_normalize(x):
     import tensorflow as tf

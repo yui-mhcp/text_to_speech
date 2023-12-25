@@ -184,7 +184,7 @@ def load_json(filename, default = {}, ** kwargs):
 @load_data.dispatch
 def load_npz(filename, ** kwargs):
     with np.load(filename) as file:
-        data = {k : file[k] for k in file.files}
+        data = {k : file[k] for k in file.files()}
     return data
 
 @load_data.dispatch('pkl')

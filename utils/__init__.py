@@ -27,16 +27,17 @@ from utils.wrapper_utils import *
 
 logger = logging.getLogger(__name__)
 
-_timer, _logger_available = None, None
+_timer, _time_logger, _logger_available = None, logger, None
 
 def get_timer():
-    global _timer, _logger_available
+    global _timer, _time_logger, _logger_available
     if _timer is None:
         try:
-            from loggers import timer
-            _timer, _logger_available = timer, True
+            from loggers import timer, time_logger
+            _timer, _time_logger, _logger_available = timer, time_logger, True
         except ImportError as e:
             logger.warning('The `loggers` module is not available : the time performance tracking are disabled')
+            logging.Logger.timer = lambda * _, ** __: ContextManager()
             _timer, _logger_available = fake_wrapper, False
     
-    return _timer, _logger_available
+    return _timer, _time_logger, _logger_available

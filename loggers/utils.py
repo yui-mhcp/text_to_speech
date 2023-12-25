@@ -12,9 +12,21 @@
 
 import logging
 import inspect
+import functools
 
 logger = logging.getLogger(__name__)
 
+class ContextManager:
+    def __init__(self, enter = None, exit = None):
+        self.enter  = enter
+        self.exit   = exit
+    
+    def __enter__(self):
+        return self.enter() if self.enter is not None else None
+    
+    def __exit__(self, * args):
+        return self.exit(* args) if self.exit is not None else None
+        
 def time_to_string(seconds):
     """ Returns a string representation of a time (given in seconds) """
     if seconds < 0.001: return '{} \u03BCs'.format(int(seconds * 1000000))

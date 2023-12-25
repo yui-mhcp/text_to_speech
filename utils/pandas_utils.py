@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -66,7 +65,6 @@ def filter_df(data, on_unique = [], ** kwargs):
             elif isinstance(value, int):
                 uniques = [uniques.index[value]]
             else:
-                assert callable(value)
                 uniques = uniques[value(uniques)].index
             
             mask = data[column].isin(uniques)

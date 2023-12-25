@@ -191,7 +191,7 @@ def parse_nq_annots(path,
                     tqdm = lambda x: x,
                     ** kwargs
                    ):
-    from utils.text import _wiki_cleaner, parse_html
+    from utils.text.document_parser.html_parser import _wiki_cleaner, parse_html
 
     def file_generator(file):
         for l in file:

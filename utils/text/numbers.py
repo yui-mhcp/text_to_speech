@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -14,12 +13,18 @@
 
 import re
 
-from num2words import num2words
+from functools import cache
+from num2words import num2words as _num2words
+
+from utils import get_timer
+
+timer, time_logger, _ = get_timer()
+timer_fn = lambda name: time_logger.timer(name, debug = True)
 
 _lang = 'en'
 
 _comma_extended     = {
-    'fr' : 'virgule', 'en' : 'comma'
+    'fr' : 'virgule', 'en' : 'punt'
 }
 _math_symbols   = {
     '=' : {'fr' : 'égal',       'en' : 'equal'},
@@ -31,9 +36,10 @@ _math_symbols   = {
 }
 _join_symbols   = '|'.join([re.escape(symbol) for symbol in _math_symbols])
 _time_extended  = {
-    'h'     : {'fr' : 'heures',     'en' : 'hours'},
-    'min'   : {'fr' : 'minutes',    'en' : 'minutes'},
-    'sec'   : {'fr' : 'secondes',   'en' : 'seconds'}
+    'h'     : {'fr' : 'heure',     'en' : 'hour'},
+    'min'   : {'fr' : 'minute',    'en' : 'minute'},
+    'sec'   : {'fr' : 'seconde',   'en' : 'second'},
+    '_sep'  : {'fr' : 'et', 'en' : 'and'}
 }
 
 _ordinal_re = {
@@ -42,10 +48,17 @@ _ordinal_re = {
 
 }
 
-_time_re            = re.compile(r'([0-9]+h|[0-9]+min|[0-9]+sec|[0-9]*:[0-9]{1,2}:[0-9]{1,2})')
+_clock_pattern  = r'\d{1,2}:\d{1,2}:\d{1,2}'
+_sec_pattern    = r'\d+\s*(sec|s)'
+_min_pattern    = r'\d+\s*min(\s*{})?'.format(_sec_pattern)
+_hours_pattern  = r'(\d+\s*h(\s*{})?|{})'.format(_min_pattern, _clock_pattern)
+
+_time_re            = re.compile(
+    r'\b({}|{}|{})\b'.format(_hours_pattern, _min_pattern, _sec_pattern)
+)
 _zero_re            = re.compile(r'^0*')
 _comma_number_re    = re.compile(r'([0-9][0-9\,]+[0-9])')
-_space_number_re    = re.compile(r'([0-9]+ [0-9]{3}!\d)')
+_space_number_re    = re.compile(r'[0-9]+( [0-9]{3,3})+(?!\d)')
 _tiret_number_re    = re.compile(r'([0-9]+-[0-9])')
 _decimal_number_re  = re.compile(r'([0-9]+\.[0-9]+)')
 _pounds_re          = re.compile(r'£([0-9\,]*[0-9]+)')
@@ -54,6 +67,10 @@ _number_re          = re.compile(r'[0-9]+')
 _math_symbol_re     = re.compile(
     r'[0-9]+ *({}) *((\+|\-) *)?(?=[0-9]+)'.format(_join_symbols, _join_symbols)
 )
+
+@cache
+def num2words(* args, ** kwargs):
+    return _num2words(* args, ** kwargs)
 
 def _expand_math_symbols(m, lang = None):
     if lang is None:
@@ -71,18 +88,29 @@ def _expand_time(m, lang = None):
         global _lang
         lang = _lang
 
-    txt = m.group(1)
-    if ':' in txt:
-        txt = txt.split(':')
-        return ' '.join([
-            t + ' ' + _time_extended[pat][lang] for t, pat in zip(txt, ['h', 'min', 'sec'])
-        ])
+    text = m.group(0)
+    if ':' in text:
+        text = ['{} {}{}'.format(
+            t if lang != 'fr' or t != '1' else 'une',
+            _time_extended[t_unit][lang],
+            's' if t > '1' else ''
+        ) for t, t_unit in zip(text.split(':'), ('h', 'min', 'sec'))]
+        
+        if lang in _time_extended['_sep']: text.insert(-1, _time_extended['_sep'][lang])
+        return ' '.join(text)
+
+    for unit in ('h', 'min', 'sec'):
+        text = text.replace(unit, ' {} '.format(_time_extended[unit][lang]))
+
+    text = text.split()
+    for i in range(0, len(text), 2):
+        if text[i] > '1': text[i + 1] += 's'
+        elif lang == 'fr' and text[i] == '1': text[i] = 'une'
+
+    if len(text) > 2 and lang in _time_extended['_sep']:
+        text.insert(-2, _time_extended['_sep'][lang])
     
-    for pat, ext in _time_extended.items():
-        if txt.endswith(pat):
-            return txt.replace(pat, ' {}'.format(ext[lang]))
-    return txt
-    
+    return ' '.join(text)
 
 def _remove_commas(m, lang = None):
     if lang is None:
@@ -97,25 +125,23 @@ def _expand_tiret(m):
     return m.group(1).replace('-', ' - ')
 
 def _remove_space(m):
-    return m.group(1).replace(' ', '')
+    return m.group(0).replace(' ', '')
 
 def _expand_dollars(m):
     match = m.group(1)
     parts = match.split('.')
-    if len(parts) > 2:
-        return match + ' dollars'  # Unexpected format
+    if len(parts) > 2: return match + ' dollars' # unexpected
+
     dollars = int(parts[0]) if parts[0] else 0
-    cents = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    cents   = int(parts[1]) if len(parts) > 1 and parts[1] else 0
     if dollars and cents:
-        dollar_unit = 'dollar' if dollars == 1 else 'dollars'
-        cent_unit = 'cent' if cents == 1 else 'cents'
-        return '%s %s, %s %s' % (dollars, dollar_unit, cents, cent_unit)
+        return '{} dollar{}, {} cent{}'.format(
+            dollars, 's' if dollars != 1 else '', cents, 's' if cents != 1 else ''
+        )
     elif dollars:
-        dollar_unit = 'dollar' if dollars == 1 else 'dollars'
-        return '%s %s' % (dollars, dollar_unit)
+        return '{} dollar{}'.format(dollars, 's' if dollars != 1 else '')
     elif cents:
-        cent_unit = 'cent' if cents == 1 else 'cents'
-        return '%s %s' % (cents, cent_unit)
+        return '{} cent{}'.format(cents, 's' if cents != 1 else '')
     else:
         return 'zero dollars'
 
@@ -129,35 +155,38 @@ def _expand_ordinal(m, lang = None):
     num = _number_re.match(num).group(0)
     return num2words(num, lang = lang, to = 'ordinal')
 
-def _expand_number(m, lang = None, decimal_as_individual = False):
-    def _extend_with_zeros(text):
-        n = len(_zero_re.match(text).group(0))
-        to_text = num2words(text, lang = lang)
-        if n == 0: return to_text
-        elif n < 4: return '{} {}'.format(' '.join([num2words('0', lang = lang)] * n), to_text)
-        return '{} {} {}'.format(
-            num2words(str(n), lang = lang), _math_symbols['*'].get(lang, ''), to_text
-        )
+def _extend_with_zeros(text, lang):
+    n = len(_zero_re.match(text).group(0))
+    to_text = num2words(text, lang = lang)
+    if n == 0: return to_text
+    elif n < 4: return '{} {}'.format(' '.join([num2words('0', lang = lang)] * n), to_text)
+    return '{} {} {}'.format(
+        num2words(str(n), lang = lang), _math_symbols['*'].get(lang, ''), to_text
+    )
 
+def _expand_number(m, lang = None, decimal_as_individual = None):
     if lang is None:
         global _lang
         lang = _lang
 
+    if decimal_as_individual: decimal_as_individual = lang == 'en'
+    
     num = m.group(0)
-    if '.' not in num or decimal_as_individual:
-        words = num2words(num, lang = lang)
-    else:
-        ent, dec = num.split('.')
-
-        if dec.count('0') == len(dec):
+    with timer_fn('num2words'):
+        if '.' not in num or decimal_as_individual:
             words = num2words(num, lang = lang)
         else:
-            words = '{} {} {}'.format(
-                num2words(ent, lang = lang), _comma_extended.get(lang, ''), _extend_with_zeros(dec)
-            )
-    return ' {} '.format(words)
+            ent, dec = num.split('.')
 
+            if dec.count('0') == len(dec):
+                words = num2words(num, lang = lang)
+            else:
+                words = '{} {} {}'.format(
+                    num2words(ent, lang = lang), _comma_extended.get(lang, ''), _extend_with_zeros(dec, lang = lang)
+                )
+    return words
 
+@timer
 def normalize_numbers(text, lang = None, expand_symbols = False, ** kwargs):
     global _lang
     if lang is None:
@@ -167,16 +196,18 @@ def normalize_numbers(text, lang = None, expand_symbols = False, ** kwargs):
     
     if expand_symbols:
         text = re.sub(_math_symbol_re,  _expand_math_symbols, text)
-    text = re.sub(_time_re,         _expand_time, text)
-    text = re.sub(_comma_number_re, _remove_commas, text)
-    text = re.sub(_tiret_number_re, _expand_tiret, text)
-    text = re.sub(_space_number_re, _remove_space, text)
-    text = re.sub(_pounds_re,       r'\1 pounds', text)
-    text = re.sub(_dollars_re,      _expand_dollars, text)
-    text = re.sub(_decimal_number_re,   _expand_number, text)
+    with timer_fn('_time_re'): text = re.sub(_time_re,         _expand_time, text)
+    with timer_fn('_comma_re'): text = re.sub(_comma_number_re, _remove_commas, text)
+    with timer_fn('_tiret_re'): text = re.sub(_tiret_number_re, _expand_tiret, text)
+    with timer_fn('_space_re'): text = re.sub(_space_number_re, _remove_space, text)
+    with timer_fn('_pound_re'): text = re.sub(_pounds_re,       r'\1 pounds', text)
+    with timer_fn('_dollar_re'): text = re.sub(_dollars_re,      _expand_dollars, text)
+    with timer_fn('_decimal_re'): text = re.sub(_decimal_number_re,   _expand_number, text)
     
     if lang in _ordinal_re:
-        text = re.sub(_ordinal_re[lang],    _expand_ordinal, text)
+        with timer_fn('_ordinal_re'):
+            text = re.sub(_ordinal_re[lang],    _expand_ordinal, text)
     
-    text = re.sub(_number_re,       _expand_number, text)
+    with timer_fn('_numbers_re'):
+        text = re.sub(_number_re,       _expand_number, text)
     return text

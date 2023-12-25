@@ -172,6 +172,15 @@ class BaseAudioModel(BaseModel):
             des += "- # mel channels : {}\n".format(self.n_mel_channels)
         return des
     
+    def _get_sample_index(self, time):
+        """
+            Given a `time` (in second), returns its position in sample (audio) or mel frames (if `self.use_mel_fn`)
+        """
+        if time is None: return None
+        if time == 0.:   return 0
+        n_samples   = int(time * self.audio_rate)
+        return n_samples if self.mel_fn is None else self.mel_fn.get_length(n_samples)
+
     def get_audio_input(self, data, ** kwargs):
         """
             Loads the audio with the `utils.audio.load_audio` method

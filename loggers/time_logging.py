@@ -22,14 +22,12 @@ try:
 except ImportError:
     executing_eagerly = lambda: True
 
-try:
-    from utils.generic_utils import time_to_string
-except ImportError as e:
-    from loggers.utils import time_to_string
+from loggers.utils import ContextManager, time_to_string
 
 logger = logging.getLogger(__name__)
 
 TIME_LEVEL      = 15
+TIME_DEBUG_LEVEL    = 13
 TIME_LOGGER_NAME    = 'timer'
 
 _str_indent     = '  '
@@ -155,7 +153,13 @@ class RootTimer:
         return timer
 
     
-def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_logging = False):
+def timer(fn    = None,
+          name  = None,
+          debug = False,
+          logger    = TIME_LOGGER_NAME,
+          log_if_root   = True,
+          force_logging = False
+         ):
     """
         Decorator that will track execution time for the decorated function `fn`
         Arguments :
@@ -165,68 +169,72 @@ def timer(fn = None, name = None, logger = 'timer', log_if_root = True, force_lo
             - log_if_root   : whether to print if it is the root's timer
             - force_logging : logs even if it is not the main timer (not fully supported yet)
     """
-    if fn is None:
-        return lambda fn: timer(
-            fn,
-            name          = name,
-            logger        = logger,
-            log_if_root   = log_if_root,
-            force_logging = force_logging
-        )
+    def wrapper(fn):
+        @wraps(fn)
+        def fn_with_timer(* args, ** kwargs):
+            if not executing_eagerly():
+                return fn(* args, ** kwargs)
+            if not logger.isEnabledFor(level):
+                return fn(* args, ** kwargs)
+
+            logger.start_timer(timer_name, level = level)
+            try:
+                return fn(* args, ** kwargs)
+            finally:
+                logger.stop_timer(timer_name, level = level)
+
+                if (log_if_root and not logger._timer.running) or (force_logging):
+                    logger.log_time(timer_name, level = level)
+        
+        timer_name = name if name else fn.__name__
+        return fn_with_timer
     
+    level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
     if isinstance(logger, str): logger = logging.getLogger(logger)
     elif logger is None:        logger = logging.getLogger()
-    if name is None:            name = fn.__name__
     
-    @wraps(fn)
-    def fn_with_timer(* args, ** kwargs):
-        if not executing_eagerly():
-            return fn(* args, ** kwargs)
-        if not logger.isEnabledFor(TIME_LEVEL):
-            return fn(* args, ** kwargs)
-        
-        logger.start_timer(name)
-        try:
-            result = fn(* args, ** kwargs)
-        finally:
-            logger.stop_timer(name)
+    return wrapper if fn is None else wrapper(fn)
 
-            if log_if_root and not logger.timer.running: logger.log_time(name)
-            elif force_logging: logger.log_time(timer)
-        return result
-    
-    return fn_with_timer
+def with_timer(self, * args, ** kwargs):
+    return ContextManager(
+        enter   = lambda: self.start_timer(* args, ** kwargs),
+        exit    = lambda *_: self.stop_timer(* args, ** kwargs)
+    )
 
-def start_timer(self, name, * args, ** kwargs):
+def start_timer(self, name, * args, level = -1, debug = False, ** kwargs):
     """ Starts a new timer with the given `name`. Do not forget to call `stop_timer(name)` ! """
     if not executing_eagerly(): return
-    if not self.isEnabledFor(TIME_LEVEL): return
+    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
+    if not self.isEnabledFor(level): return
     
-    if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
-    self.timer.start_timer(name)
+    if not hasattr(self, '_timer'): self._timer = RootTimer(self.name)
+    self._timer.start_timer(name)
     
-def stop_timer(self, name, * args, ** kwargs):
+def stop_timer(self, name, * args, level = -1, debug = False, ** kwargs):
     """ Stops the running timer with the given `name` """
     if not executing_eagerly(): return
-    if not self.isEnabledFor(TIME_LEVEL): return
+    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
+    if not self.isEnabledFor(level): return
     
-    if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
-    self.timer.stop_timer(name)
+    if not hasattr(self, '_timer'): self._timer = RootTimer(self.name)
+    self._timer.stop_timer(name)
 
-def log_time(self, names = None, * args, ** kwargs):
-    if not self.isEnabledFor(TIME_LEVEL): return
-    if not hasattr(self, 'timer'): self.timer = RootTimer(self.name)
-    des = self.timer.__str__(names) #if not isinstance(names, Timer) else str(names)
-    self.log(TIME_LEVEL, des, * args, ** kwargs)
-
-time_logger = logging.getLogger(TIME_LOGGER_NAME)
+def log_time(self, names = None, * args, level = -1, debug = False, ** kwargs):
+    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
+    if not self.isEnabledFor(level): return
+    if not hasattr(self, 'timer'): self._timer = RootTimer(self.name)
+    des = self._timer.__str__(names)
+    self.log(level if not debug else TIME_DEBUG_LEVEL, des, * args, ** kwargs)
 
 logging.Logger.start_timer  = start_timer
 logging.Logger.stop_timer   = stop_timer
 logging.Logger.log_time     = log_time
+logging.Logger.timer        = with_timer
+
+time_logger = logging.getLogger(TIME_LOGGER_NAME)
 
 logging.start_timer  = time_logger.start_timer
 logging.stop_timer   = time_logger.stop_timer
 logging.log_time     = time_logger.log_time
-
+logging.timer        = time_logger.timer
 

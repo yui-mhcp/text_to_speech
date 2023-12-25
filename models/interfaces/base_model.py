@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -38,20 +37,17 @@ from models.model_utils import _pretrained_models_folder, is_model_name, get_mod
 logger = logging.getLogger(__name__)
 
 _trackable_objects = (
-    tf.keras.Model, 
-    tf.keras.losses.Loss, 
-    tf.keras.optimizers.Optimizer, 
-    tf.keras.metrics.Metric
+    tf.keras.Model, tf.keras.losses.Loss, tf.keras.optimizers.Optimizer, tf.keras.metrics.Metric
 )
 
 class ModelInstances(type):
     _instances = {}
     _is_restoring   = False
     
-    def __call__(cls, * args, ** kwargs):
+    def __call__(cls, * args, reload = False, ** kwargs):
         nom = kwargs.get('nom', None)
         if nom is None: nom = cls.__name__
-        if nom in cls._instances:
+        if nom in cls._instances and not reload:
             pass
         elif not cls._is_restoring and kwargs.get('restore', True) and is_model_name(nom):
             cls._is_restoring = True
@@ -984,10 +980,11 @@ class BaseModel(metaclass = ModelInstances):
 
         config.setdefault('callbacks', [])
         config['callbacks'].append(self.history)
+        config.pop('dataset_infos')
         
         start = time.time()
         try:
-            if custom_config:                
+            if custom_config:
                 _ = train_model.fit(** config)
             else:
                 _ = train_model.fit(* args, ** config)
@@ -1295,7 +1292,7 @@ class BaseModel(metaclass = ModelInstances):
         if train_step is not None: pass
         elif hasattr(self, 'train_step'): train_step = self.train_step
         else:
-            variables = self.list_trainable_variables
+            variables   = self.list_trainable_variables
             loss_fn     = self.get_loss()
             optimizer   = self.get_optimizer()
             
@@ -1433,6 +1430,8 @@ class BaseModel(metaclass = ModelInstances):
             self.load_checkpoint(directory = directory, checkpoint = checkpoint).assert_consumed()
         except AssertionError as e:
             logger.warning('[WARNING] Some layers have not bene restored from the checkpoint ! Run `model.load_checkpoint().assert_consumed()` to check if it is a critical error or not')
+        except Exception as e:
+            logger.critical('An error occured while restoring checkpoint !\n{}'.format(e))
     
     def load_checkpoint(self, directory = None, checkpoint = None):
         if directory is None and checkpoint is None:
@@ -1562,9 +1561,9 @@ class BaseModel(metaclass = ModelInstances):
         
     def load_model(self, name, filename, compile_infos = None, verbose = True):
         restored_model = None
-        if '.json' in filename:
-            with open(filename, 'r', encoding = 'utf-8') as fichier_config:
-                config = fichier_config.read()
+        if filename.endswith('.json'):
+            with open(filename, 'r', encoding = 'utf-8') as file:
+                config = file.read()
             try:
                 restored_model = model_from_json(config, custom_objects = self.custom_objects)
             except Exception as e:
@@ -1658,14 +1657,14 @@ class BaseModel(metaclass = ModelInstances):
         return instance
 
     @classmethod
-    def restore(cls, nom, ** kwargs):
+    def restore(cls, nom, force = False, ** kwargs):
         """ Returns the model saved in folder `{_pretrained_models_folder}/{nom}` """
         folder = get_model_dir(nom)
         if not os.path.exists(folder): return None
         
         config = load_json(os.path.join(folder, 'config.json'))
         
-        if config['class_name'] != cls.__name__:
+        if config['class_name'] != cls.__name__ and not force:
             raise ValueError("Model {} already exists but is not the expected class !\n  Expected : {}\n  Got : {}".format(nom, config['class_name'], cls.__name__))
         
         return cls(** {** kwargs, ** config['config']})
@@ -1696,7 +1695,7 @@ class BaseModel(metaclass = ModelInstances):
             raise ValueError("Model {} already exist, cannot rename model !".format(new_name))
 
         _rename_in_file(folder)
-        os.rename(folder, os.path.join(get_model_dir(new_name)))
+        os.rename(folder, get_model_dir(new_name))
         
 def _can_restore(restore, config_file):
     if restore is True:           return os.path.exists(config_file)
@@ -1705,18 +1704,14 @@ def _can_restore(restore, config_file):
         return is_model_name(restore) or os.path.exists(os.path.join(restore, 'config.json'))
     return False
 
-def _compile_fn(fn, run_eagerly = False, signature = None, 
-                include_signature = True, ** kwargs):
-    if not run_eagerly:
-        config = {
-            'reduce_retracing' : True, ** kwargs
-        }
-        if include_signature and signature is not None:
-            config['input_signature'] = [signature]
-        
-        fn = def_function.function(fn, ** config)
-    
-    return fn
+def _compile_fn(fn, run_eagerly = False, signature = None, include_signature = True, ** kwargs):
+    if run_eagerly: return fn
+    kwargs.update({
+        'reduce_retracing'  : True,
+        'input_signature'   : [signature] if include_signature and signature is not None else None
+    })
+
+    return tf.function(fn, ** kwargs)
     
 def _reduce_per_replica(values, strategy, reduction = 'mean'):
     def _reduce(v):

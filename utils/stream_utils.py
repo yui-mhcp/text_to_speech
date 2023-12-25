@@ -1,4 +1,4 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -13,6 +13,8 @@ import queue
 import logging
 import multiprocessing
 import pandas as pd
+
+KEEP_ALIVE  = '__keep_alive__'
 
 def create_stream(fn,
                   stream,
@@ -60,6 +62,7 @@ def create_stream(fn,
     
     results = [] if return_results else None
     for data in create_iterator(stream, timeout = timeout):
+        if isinstance(data, str) and data == KEEP_ALIVE: continue
         if dict_as_kwargs and isinstance(data, dict):
             res = fn(** {** kwargs, ** data})
         else:
@@ -98,7 +101,7 @@ def create_iterator(generator, ** kwargs):
                         yield item
             except queue.Empty:
                 pass
-        
+            
         return _queue_iterator()
     elif callable(generator):
         return generator(** kwargs)

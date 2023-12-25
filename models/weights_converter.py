@@ -28,6 +28,12 @@ class PartialInitializer(enum.IntEnum):
     UNIFORM = 4
     UNIFORM_CONDITIONNED    = 5
 
+class PartialSampling(enum.IntEnum):
+    NONE    = 0
+    RANDOM  = 1
+    MAX_STD = 2
+    MAX_MEAN    = 3
+
 logger = logging.getLogger(__name__)
 
 def _split_attn(values, keys = ['query', 'key', 'value']):
@@ -68,8 +74,8 @@ _transformer_patterns = {
 }
 
 _attn_split     = {
-    '(mha$|in_proj)' : lambda key, values: {
-        key.replace('mha', 'mha/{}_layer'.format(qkv)) : v
+    '(mha$|in_proj|query_key_value)' : lambda key, values: {
+        key.replace('mha' if 'mha' in key else 'query_key_value', 'mha/{}_layer'.format(qkv)) : v
         for qkv, v in _split_attn(values, keys = ['query', 'key', 'value']).items()
     },
     'to_keys_values$' : lambda key, values: {
@@ -80,12 +86,14 @@ _attn_split     = {
 
 def _get_layer_name_sep(vars_mapping):
     """ Get the layer's names separator ('.' for pytorch and '/' for tensorflow) """
+    pt, tf = 0, 0
     for name in vars_mapping:
-        if '.' in name and '/' not in name:
-            return '.'
-        if '/' in name and '.' not in name:
-            return '/'
-    raise RuntimeError('Unable to determine separator for layer\'s names :\n{}'.format('\n'.join(vars_mapping.keys())))
+        pt += name.count('.')
+        tf += name.count('/')
+    if tf == pt:
+        raise RuntimeError('Unable to determine separator for layer\'s names :\n{}'.format('\n'.join(vars_mapping.keys())))
+        
+    return '/' if tf > pt else '.'
 
 def _get_root_name(vars_mapping, model = None, sep = None, threshold = 0.9):
     if model is not None and hasattr(model, 'name'): return model.name
@@ -105,20 +113,20 @@ def _get_root_name(vars_mapping, model = None, sep = None, threshold = 0.9):
 def _get_layer_name(name, vars_mapping, skip_root = False, sep = None, root = None,
                     model = None, ** kwargs):
     """ Returns the layer's name based on variable's name `name` """
-    def _is_root(part, root):
+    def _get_root_index(parts, root):
         if not root: root = _get_root_name(vars_mapping, model = model)
-        return part == root
+        return parts.index(root) if root in parts else -1
     
     if not sep: sep = _get_layer_name_sep(vars_mapping)
     name_parts  = name.split(sep)
     
     if len(name_parts) > 1:
-        is_part0_root = _is_root(name_parts[0], root)
-        if len(name_parts) > 2 or not is_part0_root:
+        root_index  = _get_root_index(name_parts, root)
+        if len(name_parts) > 2 or root_index == -1:
             name_parts = name_parts[:-1]
             if len(name_parts) >= 3 and name_parts[-2].startswith(('forward_', 'backward_')):
                 name_parts = name_parts[:-2]
-        if skip_root and is_part0_root: name_parts = name_parts[1:]
+        if skip_root and root_index != -1: name_parts = name_parts[root_index + 1:]
     
     return sep.join(name_parts)
 
@@ -156,7 +164,7 @@ def get_var_mapping(model):
     if hasattr(model, 'variables'):     model = model.variables
     return {v.name : v for v in model} if isinstance(model, list) else model
 
-def get_layers_mapping(model, sep = None, convert_to = None, ** kwargs):
+def get_layers_mapping(model, sep = None, convert_to = None, to_numpy = True, ** kwargs):
     """
         Returns a dict {layer_name : list_of_vars}
         A layer is identified by removing the last part from its name
@@ -178,8 +186,9 @@ def get_layers_mapping(model, sep = None, convert_to = None, ** kwargs):
         for name, var in variables.items():
             key = _get_layer_name(name, variables, sep = sep, model = model, ** kwargs)
 
-            if hasattr(var, 'cpu'): var = var.cpu()
-            layers.setdefault(key, []).append(var.numpy())
+            if hasattr(var, 'cpu'):     var = var.cpu()
+            #if hasattr(var, 'float'):   var = var.float()
+            layers.setdefault(key, []).append(var.numpy() if to_numpy else var)
     elif not sep:
         sep = _get_layer_name_sep(layers)
     
@@ -242,8 +251,14 @@ def find_layers_mapping(tf_model,
     
     shape_fn  = sorted if not partial else len
     
-    tf_layers = get_layers(tf_model).copy()
+    tf_layers = get_layers(tf_model, to_numpy = False)
+    tf_layers = {
+        k : [shape_fn(tuple([s for s in vi.shape if s > 1])) for vi in v]
+        for k, v in tf_layers.items()
+    }
+    logger.debug('# tf layers : {}'.format(len(tf_layers)))
     pt_layers = get_layers(pt_model, convert_to = convert_to, skip_root = skip_root).copy()
+    logger.debug('# pt layers : {}'.format(len(pt_layers)))
 
     if patterns:
         for pat, repl in patterns.items():
@@ -265,9 +280,7 @@ def find_layers_mapping(tf_model,
     }
 
     mapping = {}
-    for l1, l1_weights in tqdm(tf_layers.items()):
-        shape = [shape_fn(np.squeeze(vi).shape) for vi in l1_weights if len(vi.shape)]
-        
+    for l1, shape in tqdm(tf_layers.items()):
         bests, score = [], float('inf')
         if not skip_layers or all(re.search(s, l1) is None for s in skip_layers):
             for l2 in not_mapped:
@@ -382,6 +395,7 @@ def name_based_partial_transfer_learning(target_model,
                                          pretrained_model,
                                          partial_transfer      = True,
                                          partial_initializer   = 'zeros',
+                                         sampling_mode  = None,
                                          tqdm   = lambda x: x,
                                          verbose    = False,
                                          ** kwargs
@@ -435,37 +449,38 @@ def name_based_partial_transfer_learning(target_model,
             v = np.random.uniform(size = target.shape)
         elif partial_initializer == PartialInitializer.UNIFORM_CONDITIONNED:
             v = np.random.uniform(
-                minval = np.min(pretrained_v), maxval = np.abs(pretrained_v), size = target.shape
+                minval = np.min(pretrained_v), maxval = np.max(pretrained_v), size = target.shape
             )
         
-        max_idx = [min(v.shape[i],pretrained_v.shape[i]) for i in range(v.ndim)]
-        if v.ndim == 1:
-            v[: max_idx[0]] = pretrained_v[: max_idx[0]]
-        elif v.ndim == 2:
-            v[: max_idx[0], : max_idx[1]] = pretrained_v[: max_idx[0], : max_idx[1]]
-        elif v.ndim == 3:
-            v[: max_idx[0], : max_idx[1], : max_idx[2]] = pretrained_v[
-                : max_idx[0], : max_idx[1], : max_idx[2]
-            ]
-        elif v.ndim == 4:
-            v[: max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3]] = pretrained_v[
-                : max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3]
-            ]
-        elif v.ndim == 5:
-            v[: max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3], : max_idx[4]] = pretrained_v[
-                : max_idx[0], : max_idx[1], : max_idx[2], : max_idx[3], : max_idx[4]
-            ]
-        else:
-            raise ValueError("Unhandled variable dimension : {}".format(target.shape))
+        if target.shape[0] < pretrained_v.shape[0] and sampling_mode != PartialSampling.NONE:
+            if sampling_mode == PartialSampling.RANDOM:
+                np.random.shuffle(pretrained_v)
+            else:
+                flat = pretrained_v if pretrained_v.ndim == 2 else np.reshape(
+                    pretrained_v, [len(pretrained_v), -1]
+                )
+                if sampling_mode == PartialSampling.MAX_STD:
+                    indexes = np.argsort(np.std(flat, axis = -1))[::-1]
+                elif sampling_mode == PartialSampling.MAX_MEAN:
+                    indexes = np.argsort(np.mean(flat, axis = -1))[::-1]
+                
+                indexes[: target.shape[0]] = np.sort(indexes[: target.shape[0]])
+                pretrained_v = pretrained_v[indexes]
+                
+        slices = tuple([
+            slice(0, min(t_s, p_s)) for t_s, p_s in zip(target.shape, pretrained_v.shape)
+        ])
+        v[slices] = pretrained_v[slices]
         
         return v, {'transform' : 'partial'}
     
-    
-    partial_initializer = get_enum_item(partial_initializer, PartialInitializer)
+    sampling_mode   = get_enum_item(str(sampling_mode), PartialSampling)
+    partial_initializer = get_enum_item(str(partial_initializer), PartialInitializer)
     
     mapping, pretrained_layers = find_layers_mapping(
         target_model, pretrained_model, partial = True, tqdm = tqdm, ** kwargs
     )
+    pretrained_layers   = {k : v for k, v in pretrained_layers.items() if len(v) > 0}
     layer_var_idx = {k : 0 for k in pretrained_layers.keys()}
     
     target_variables = target_model.variables
@@ -499,6 +514,12 @@ def name_based_partial_transfer_learning(target_model,
             continue
         
         map_layer   = map_layer[0]
+        
+        if layer_var_idx[map_layer] >= len(pretrained_layers[map_layer]):
+            logger.warning('Try to get variable {} from layer {} for variable {} !'.format(
+                layer_var_idx[map_layer], map_layer, var_layer
+            ))
+            layer_var_idx[map_layer] -= 1
         
         map_weight  = pretrained_layers[map_layer][layer_var_idx[map_layer]]
         layer_var_idx[map_layer] += 1

@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -12,6 +11,7 @@
 
 import os
 import enum
+import glob
 import json
 import logging
 import regex as re
@@ -19,14 +19,21 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from utils import dump_json, load_json, flatten, get_enum_item, convert_to_str, download_file
+from functools import cached_property
+
+from utils import dump_json, load_json, flatten, pad_batch, get_enum_item, convert_to_str, download_file
 from utils.tensorflow_utils import execute_eagerly
 from utils.text import cleaners as cleaners_module
 from utils.text.bpe import bytes_to_unicode, bpe
 from utils.text.ctc_decoder import ctc_decode
-from utils.text.text_processing import split_sentence, split_and_join
+from utils.text.text_processing import split_sentence, split_and_join, filter_texts
 
 logger  = logging.getLogger(__name__)
+
+text_signature          = tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'text')
+multi_text_signature    = tf.TensorSpec(shape = (None, None), dtype = tf.int32, name = 'text')
+text_length_signature   = tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'length')
+multi_text_length_signature = tf.TensorSpec(shape = (None, None), dtype = tf.int32, name = 'length')
 
 _clip_bpe_url   = 'https://raw.githubusercontent.com/openai/CLIP/master/clip/bpe_simple_vocab_16e6.txt.gz'
 _whisper_url   = 'https://raw.githubusercontent.com/openai/whisper/master/whisper/assets/{}/{}'
@@ -135,7 +142,7 @@ WHISPER_LANGUAGES = {
     "jw": "javanese",
     "su": "sundanese",
 }
-
+        
 class TextEncoderLevel(enum.IntEnum):
     CHAR    = 0
     TOKEN   = 1
@@ -162,6 +169,7 @@ class TextEncoder(object):
                  mask_token     = None,
                  sos_token      = '[SOS]',  # Start Of Sequence
                  eos_token      = '[EOS]',  # End Of Sequence
+                 additional_tokens  = None,
                  
                  sub_word_prefix    = '',   # Add for inner sub-word part
                  use_sos_and_eos    = False,
@@ -197,7 +205,7 @@ class TextEncoder(object):
                 - name      : special name for this encoder
         """
         level = get_enum_item(level, TextEncoderLevel)
-        if level != TextEncoderLevel.CHAR and 'detach_punctuation' not in cleaners and split_pattern is None:
+        if level != TextEncoderLevel.CHAR and 'detach_punctuation' not in cleaners and split_pattern is None and type(self) == TextEncoder:
             logger.warning("When using token / word-level tokenizer, it can be useful to add 'detach_punctuation' in cleaners")
         
         self.name       = name
@@ -227,6 +235,13 @@ class TextEncoder(object):
         self.use_sos_and_eos    = use_sos_and_eos
         self.add_special_tokens_at_end  = add_special_tokens_at_end
 
+        if additional_tokens is None:            additional_tokens = []
+        elif isinstance(additional_tokens, str): additional_tokens = [additional_tokens]
+        if isinstance(additional_tokens, (list, tuple)):
+            additional_tokens = {
+                _create_token_name(tok) : tok for tok in additional_tokens
+            }
+        self.additional_tokens  = additional_tokens
         
         self.splitter   = re.compile(split_pattern) if split_pattern is not None else None
         if bpe_pairs is not None and not isinstance(bpe_pairs, dict):
@@ -241,16 +256,10 @@ class TextEncoder(object):
         self.__build_indexes(vocab_size, add_special_tokens_at_end)
         self._cleaned_tokens    = {self.clean_text(token) : token for token in self._special_tokens}
         
-        self.__wrap_functions()
-    
-    def __wrap_functions(self):
-        self.encode = execute_eagerly(
-            self.encode,
-            signature   = tf.TensorSpec(shape = (None, ), dtype = tf.int32),
-            default_key = 'text',
-            numpy   = True
-        )
-        
+        for name, token in self.additional_tokens.items():
+            setattr(self, name, token)
+            setattr(self, name + '_idx', self[token])
+
     def __build_indexes(self, vocab_size = None, add_special_tokens_at_end = True):
         def _add_symbols(symbols):
             for s in symbols:
@@ -299,22 +308,26 @@ class TextEncoder(object):
     def word_split(self):
         return self.level != TextEncoderLevel.CHAR and self.splitter is None
     
-    @property
+    @cached_property
     def special_tokens(self):
         return set(v for k, v in self.get_config().items() if k.endswith('_token') and v is not None)
     
-    @property
+    @cached_property
     def tokens(self):
-        tokens = {k : v for k, v in self.get_config().items() if k.endswith('_token') and v is not None}
+        tokens = {
+            k : v for k, v in self.get_config().items()
+            if k.endswith('_token') and v is not None
+        }
         tokens.pop('pad_token', None)
         if not self.use_sos_and_eos:
             tokens.pop('sos_token', None)
             tokens.pop('eos_token', None)
+        tokens.update(self.additional_tokens)
         return tokens
     
     @property
     def sos_token_idx(self):
-        return self._symbol_to_id[self.sos_token] if self.use_sos_and_eos else -1
+        return self._symbol_to_id[self.sos_token] if self.sos_token else -1
     
     @property
     def eos_token_idx(self):
@@ -367,14 +380,16 @@ class TextEncoder(object):
     def __contains__(self, token):
         return token in self._symbol_to_id
     
-    def is_start_of_word(self, token, previous = None):
-        if self.level == TextEncoderLevel.WORD: return True
+    def is_end_of_word(self, token, prev_token = None, next_token = None):
+        if self.level == TextEncoderLevel.WORD:
+            return True
         elif self.level == TextEncoderLevel.CHAR:
-            return previous is None or not self[token].isalnum() or not self[previous].isalnum()
-        elif self.sub_word_prefix: return not self[token].startswith(self.sub_word_prefix)
+            return next_token is None or not self[next_token].isalnum()
+        elif self.sub_word_prefix:
+            return not self[next_token].startswith(self.sub_word_prefix)
         else:
             _space = ' ' if self.byte_encoder is None else self.byte_encoder.get(32, ' ')
-            return self[token].startswith(_space)
+            return self[next_token].startswith(_space)
     
     def clean_text(self, text, tokens = {}, ** kwargs):
         """ Apply all cleaners to 'text' """
@@ -492,6 +507,7 @@ class TextEncoder(object):
         
         return tokens
     
+    @execute_eagerly(signature = text_signature, default_key = 'text', numpy = True)
     def encode(self, text, add_sos_and_eos = None, return_type = 'np', ** kwargs):
         """
             Encode text in np.ndarray
@@ -506,12 +522,10 @@ class TextEncoder(object):
             3) Convert all tokens to its corresponding id (with the `self.tokenize` method)
             4) If necessary, add [sos, eos] tokens 
         """
-        if isinstance(text, pd.DataFrame):
-            return [self.encode(
-                row, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
-            ) for _, row in text.iterrows()]
+        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
         
-        if isinstance(text, (dict, pd.Series)): text = text['text']
+        if isinstance(text, pd.DataFrame):          text = text['text'].values
+        elif isinstance(text, (dict, pd.Series)):   text = text['text']
         text = convert_to_str(text)
         
         if isinstance(text, (list, tuple)):
@@ -519,25 +533,21 @@ class TextEncoder(object):
                 t, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
             ) for t in text]
         
-        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
-        
         tokens  = self.tokenize(text, ** kwargs)
 
         tokens = [
             self._symbol_to_id.get(token, self.ukn_token_idx) for token in tokens
         ]
-        tokens = [token for token in tokens if token is not None and token != -1]
+        tokens = [token for token in tokens if token not in (None, -1)]
 
         if add_sos_and_eos:
-            tokens = [self.sos_token_idx] + tokens + [self.eos_token_idx]
+            if self.sos_token: tokens.insert(0, self.sos_token_idx)
+            if self.eos_token: tokens.append(self.eos_token_idx)
         
         if return_type == 'list': return tokens
         elif return_type == 'np': return np.array(tokens, dtype = np.int32)
         elif return_type == 'tf': return tf.cast(tokens, dtype = tf.int32)
-        else:
-            raise ValueError("Unknown return type !\n  Accepted : {}\n  Got : {}".format(
-                ('list', 'np', 'tf'), return_type
-            ))
+        else:   raise ValueError("Unknown `return_type` : {}".format(return_type))
 
     def decode(self,
                sequence,
@@ -615,135 +625,51 @@ class TextEncoder(object):
 
     def invert(self, text, add_sos_and_eos = False, ** kwargs):
         return self.decode(self.encode(text, add_sos_and_eos = add_sos_and_eos, ** kwargs))
-    
-    def split(self, text, max_length, prefix = None, suffix = None, split_mode = 'token',
-              add_sos_and_eos = None, sep_token = None, not_split = None, ** kwargs):
-        """
-            Encode and split `text` such that each splitted part has : 
-                - if `split_on_words` : exactly `max_length` words (no matter the final number of tokens)
-                - else : at most `max_length` tokens (it does not split into a word except if the word is longer than `max_length`)
-            
-            For instance `Hello World !` splitted with char-level and `max_length == 10` :
-            ['Hello ', 'world !'] even if `len('hello') < max_length` to avoid splitting 'world'
-            This can be really useful for `Text-To-Speech` to only have complete word
-        """
-        def _can_split(encoded, idx, encoded_not_split):
-            if idx >= len(encoded): return 0, 0
-            n_prev, n_next = 0, 0
-            for ns in encoded_not_split:
-                if encoded[idx] in ns:
-                    pos = ns.index(encoded[idx])
-                    if encoded[idx - pos : idx + len(ns) - pos] == ns:
-                        n_prev, n_next = max(n_prev, pos), max(n_prev, len(ns) - pos)
-            return n_prev, n_next
-        
-        def _split_encoded(encoded, max_length):
-            _decrease   = True
-            splitted    = []
-            start, end = 0, max_length
-            while start < len(encoded):
-                n_prev, n_next = _can_split(encoded, end, encoded_not_split)
-                if end >= len(encoded) or end <= start or (n_prev == 0 and self.is_start_of_word(encoded[end], previous = encoded[end - 1])):
-                    if end <= start: end = start + max_length
-                    splitted.append(encoded[start : end])
-                    start, end, _decrease = end, end + max(max_length, n_next), True
-                else:
-                    if _decrease:
-                        end -= max(1, n_prev)
-                    else:
-                        end += max(1, n_next)
-            return splitted
-            
-        assert split_mode in ('word', 'token', 'sentence')
 
+    @execute_eagerly(signature = [
+        text_signature, tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'types')
+    ], numpy = True)
+    def join(self,
+             * sentences,
+             sep_token      = None,
+             return_type    = 'np',
+             add_sos_and_eos    = None,
+             ** kwargs
+            ):
+        kwargs.pop('text', None)
         if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
-        if sep_token is None: sep_token = self.sep_token
-        if not_split is None: not_split = []
-        elif not isinstance(not_split, (list, tuple, np.ndarray)): not_split = [not_split]
+        if sep_token is None:       sep_token = self.sep_token
         
-        encoded_not_split = [self.encode(
-            ' {} '.format(ns.strip()), add_sos_and_eos = False, return_type = 'list'
-        ) for ns in not_split]
-
-        sep_token_idx = self[sep_token] if sep_token else -1
-        
-        prefix = self.encode(prefix, add_sos_and_eos = False, return_type = 'list') if prefix is not None else []
-        suffix = self.encode(suffix, add_sos_and_eos = False, return_type = 'list') if suffix is not None else []
-        
-        if len(prefix) > 0 and sep_token_idx != -1 and sep_token_idx != prefix[-1]:
-            prefix.append(sep_token_idx)
-        if len(suffix) > 0 and sep_token_idx != -1 and sep_token_idx != suffix[0]:
-            suffix.insert(0, sep_token_idx)
-        if add_sos_and_eos:
-            prefix, suffix = [self.sos_token_idx] + prefix, suffix + [self.eos_token_idx]
-        
-        if split_mode == 'words':
-            # split such that each sub-part contains `max_length` words (no matter the final number of tokens)
-            text = text.split()
-            splitted = [self.encode(
-                ' '.join(text[i : i + max_length]), add_sos_and_eos = False, return_type = 'list'
-            ) for i in range(0, len(text), max_length)]
-        elif split_mode == 'sentence':
-            max_length = max(1, max_length - len(prefix) - len(suffix))
-
-            text    = self.clean_text(text)
-            sentences   = split_sentence(text)
-            encoded_sentences   = [
-                self.encode(sent, cleaned = True, add_sos_and_eos = False, return_type = 'list')
-                for sent in sentences
-            ]
-            
-            splitted, sents, length = [], [], 0
-            for i, (sent, enc) in enumerate(zip(sentences, encoded_sentences)):
-                if length + len(enc) >= (max_length - len(sents)) and length > 0:
-                    encoded = self.encode(
-                        ' '.join(sents), cleaned = True, add_sos_and_eos = False, return_type = 'list'
-                    ) if length != len(encoded_sentences[i - 1]) else encoded_sentences[i - 1]
-                    if len(encoded) <= max_length: splitted.append(encoded)
-                    else: splitted.extend(_split_encoded(encoded, max_length))
-                    sents, length = [], 0
-                
-                sents.append(sent)
-                length += len(enc)
-            
-            if length > 0:
-                encoded = self.encode(
-                    ' '.join(sents), cleaned = True, add_sos_and_eos = False, return_type = 'list'
-                ) if length != len(encoded_sentences[-1]) else encoded_sentences[-1]
-                if len(encoded) <= max_length: splitted.append(encoded)
-                else: splitted.extend(_split_encoded(encoded, max_length))
-        
-        else: # split_mode = 'token'
-            # split such that each sub-part has at most `max_length` tokens
-            # Note : "at most" because it does not split a word
-            max_length = max(1, max_length - len(prefix) - len(suffix))
-            
-            encoded = self.encode(text, add_sos_and_eos = False, return_type = 'list')
-
-            splitted = _split_encoded(encoded, max_length)
-        
-        splitted = [np.array(prefix + part + suffix, dtype = np.int32) for part in splitted]
-        
-        return splitted
-    
-    def join(self, * sentences, sep_token = None):
-        if sep_token is None: sep_token = self.sep_token
-        
-        encoded = self.encode(sentences, add_sos_and_eos = False, return_type = 'list')
+        encoded_parts = self.encode(
+            sentences, add_sos_and_eos = False, return_type = 'list', ** kwargs
+        )
         
         if sep_token is not None:
             sep_idx = self._symbol_to_id[sep_token]
-            for i in range(0, len(encoded) - 1):
-                encoded[i].append(sep_idx)
+            for part in encoded_parts[:-1]: part.append(sep_idx)
+
+        encoded, ids = [], []
+        for i, part in enumerate(encoded_parts):
+            encoded.extend(part)
+            ids.extend([i] * len(part))
         
-        if self.use_sos_and_eos:
-            encoded[0].insert(0, self.sos_token_idx)
-            encoded[-1].append(self.eos_token_idx)
+        if add_sos_and_eos:
+            if self.sos_token:
+                encoded.insert(0, self.sos_token_idx)
+                ids.insert(0, 0)
+            if self.eos_token:
+                encoded.append(self.eos_token_idx)
+                ids.append(len(encoded_parts) - 1)
         
-        ids = [np.full((len(e),), i) for i, e in enumerate(encoded)]
-        
-        return np.concatenate(encoded).astype(np.int32), np.concatenate(ids).astype(np.int32)
-    
+        if return_type == 'list': return encoded, ids
+        elif return_type == 'np':
+            return np.array(encoded, dtype = np.int32), np.array(ids, dtype = np.int32)
+        elif return_type == 'tf':
+            return tf.cast(encoded, dtype = tf.int32), tf.cast(ids, dtype = tf.int32)
+        else:
+            raise ValueError('Unknown `return_type` : {}'.format(return_type))
+
+    @execute_eagerly(signature = text_signature, numpy = True)
     def format(self, pattern, ** kwargs):
         pattern = convert_to_str(pattern)
         kwargs  = convert_to_str(kwargs)
@@ -754,27 +680,175 @@ class TextEncoder(object):
             pat.format(** kwargs, ** self.tokens) for pat in pattern
         ]
         
-        return self.join(* formatted)
+        return self.join(* formatted, ** kwargs)[0]
     
+    def split_encoded(self,
+                      encoded,
+                      max_length,
+                      split_level       = 'word',
+                      encoded_not_split = [],
+                      ** kwargs
+                     ):
+        if split_level == 'token':  can_split   = lambda * a, ** kw: True
+        elif split_level == 'word': can_split   = self.is_end_of_word
+        
+        start, parts = 0, []
+        while start < len(encoded):
+            end = min(start + max_length, len(encoded)) - 1
+            n_prev, n_post  = _can_split(encoded, end, encoded_not_split)
+
+            end = _get_split_index(
+                encoded, start, end - n_prev, can_split
+            )
+            if end - n_prev < new_end < end + n_post:
+                end = _get_split_index(
+                    encoded, start, end + n_post, can_split, _decrease = False
+                )
+            
+            parts.append(encoded[start : end + 1])
+            start = end
+        
+        return parts
+    
+    @execute_eagerly(signature = [multi_text_signature, text_length_signature], numpy = True)
+    def split(self,
+              text,
+              max_length,
+              prefix    = None,
+              suffix    = None,
+              sep_token = None,
+              return_type   = 'np',
+              split_level   = 'sentence',
+              add_sos_and_eos   = None,
+              tokens_to_not_split   = None,
+              ** kwargs
+             ):
+        """
+            Encodes then splits `text` such that each part has at most `max_length` tokens
+            
+            The `split_level` argument defines the unit to keep intact :
+                - token : simple token-based split
+                - word  : avoid splitting at the middle of a word
+                - sentence  : avoid splitting a sentence (sentences are delimited by basic punctuation matching)
+            
+            /!\ Only the "token" level ensures that each part is shorter than `max_length` ! If there is no possibility to split a part at the expected level, it may become longer than `max_length`
+            
+            Example :
+            ```python
+            text    = "Hello World !"
+            max_length  = 5
+            # In practice, an encoded string is a list of int (the token ids)
+            # In the example, the encoded is simply the list of characters for simplicity of reading
+            encoded = ['H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', ' ', '!']
+            
+            # -> [['H', 'e', 'l', 'l', 'o'], [' ', 'W', 'o', 'r', 'l'], ['d', ' ', '!']]
+            print(split(encoded, split_level = 'token', max_length = max_length))
+            
+            # -> [['H', 'e', 'l', 'l', 'o'], [' ', 'W', 'o', 'r', 'l', 'd'], [' ', '!']]
+            print(split(encoded, split_level = 'word', max_length = max_length))
+
+            # -> [['H', 'e', 'l', 'l', 'o', ' ', 'W', 'o', 'r', 'l', 'd', ' ', '!']]
+            print(split(encoded, split_level = 'word', max_length = max_length))
+            ```
+        """
+        assert split_level in ('token', 'word', 'sentence')
+
+        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
+        if sep_token is None: sep_token = self.sep_token
+        if tokens_to_not_split is None: tokens_to_not_split = []
+        else:
+            tokens_to_not_split = convert_to_str(tokens_to_not_split)
+            if not isinstance(tokens_to_not_split, list): tokens_to_not_split = [tokens_to_not_split]
+        
+        encoded_not_split = [self.encode(
+            ' ' + tok.trip() + ' ', add_sos_and_eos = False, return_type = 'list'
+        ) for tok in tokens_to_not_split]
+
+        sep_token_idx = self[sep_token] if sep_token else -1
+        
+        prefix = self.encode(
+            prefix, add_sos_and_eos = False, return_type = 'list'
+        ) if prefix is not None else []
+        suffix = self.encode(
+            suffix, add_sos_and_eos = False, return_type = 'list'
+        ) if suffix is not None else []
+        
+        if len(prefix) > 0 and sep_token_idx != -1 and sep_token_idx != prefix[-1]:
+            prefix.append(sep_token_idx)
+        if len(suffix) > 0 and sep_token_idx != -1 and sep_token_idx != suffix[0]:
+            suffix.insert(0, sep_token_idx)
+        if add_sos_and_eos:
+            if self.sos_token: prefix.insert(0, self.sos_token_idx)
+            if self.eos_token: suffix.append(self.eos_token_idx)
+        
+        max_length  = max(1, max_length - len(prefix) - len(suffix))
+        
+        if split_level != 'sentence':
+            parts = self.split_encoded(
+                self.encode(text, add_sos_and_eos = False, return_type = 'list', ** kwargs),
+                max_length  = max_length,
+                split_level = split_level,
+                encoded_not_split   = encoded_not_split,
+                ** kwargs
+            )
+        else:
+            text    = self.clean_text(text)
+            sentences   = split_sentence(text)
+            encoded_sentences   = [self.encode(
+                sent, cleaned = True, add_sos_and_eos = False, return_type = 'list', ** kwargs
+            ) for sent in sentences]
+            
+            parts, sents, length = [], [], 0
+            for i, (sent, enc) in enumerate(zip(sentences, encoded_sentences)):
+                if length + len(enc) >= (max_length - len(sents)) and length > 0:
+                    parts.append(self.encode(
+                        ' '.join(sents), cleaned = True, add_sos_and_eos = False,
+                        return_type = 'list', ** kwargs
+                    ) if length != len(encoded_sentences[i - 1]) else encoded_sentences[i - 1])
+                    sents, length = [], 0
+                
+                sents.append(sent)
+                length += len(enc)
+            
+            if length > 0:
+                parts.append(self.encode(
+                    ' '.join(sents), cleaned = True, add_sos_and_eos = False, return_type = 'list'
+                ) if length != len(encoded_sentences[-1]) else encoded_sentences[-1])
+        
+        
+        lengths = [len(part) for part in parts]
+        
+        if return_type == 'list':
+            return parts, lengths
+        elif return_type == 'np':
+            return (
+                pad_batch(parts, self.blank_token_idx, dtype = np.int32),
+                np.array(lengths, dtype = np.int32)
+            )
+        elif return_type == 'tf':
+            return (
+                tf.cast(pad_batch(parts, self.blank_token_idx, dtype = np.int32), tf.int32),
+                tf.cast(lengths, dtype = tf.int32)
+            )
+        else:
+            raise ValueError('Unknown `return_type` : {}'.format(return_type))
+    
+    @execute_eagerly(signature = [multi_text_signature, text_length_signature], numpy = True)
     def split_and_format(self, pattern, split_key, max_length, ** kwargs):
         pattern     = convert_to_str(pattern)
         split_key   = convert_to_str(split_key)
         kwargs      = convert_to_str(kwargs)
 
         if not isinstance(pattern, (list, tuple)): pattern = [pattern]
-        pattern = '{sep_token}'.join(pattern)
+        pattern     = '{sep_token}'.join(pattern)
+        splitted    = pattern.split('{' + split_key + '}')
         
-        assert pattern.count(split_key) <= 1, '`pattern` {} cannot contains multiple times `split_key` ({})'.format(pattern, split_key)
-        
-        splitted = pattern.split(split_key)
-        assert len(splitted) == 2, '{} splitted on {} gives {} parts'.format(
-            pattern, split_key, len(splitted)
+        assert len(splitted) == 2, '`pattern` {} is invalid for `split_key` {} !'.format(
+            pattern, split_key
         )
         
-        prefix, suffix = splitted[0][:-1], splitted[1][1:]
-        
-        prefix  = prefix.format(** kwargs, ** self.tokens)
-        suffix  = suffix.format(** kwargs, ** self.tokens)
+        prefix  = splitted[0].format(** kwargs, ** self.tokens)
+        suffix  = splitted[1].format(** kwargs, ** self.tokens)
         
         return self.split(
             kwargs[split_key], max_length, prefix = prefix, suffix = suffix, ** kwargs
@@ -840,6 +914,7 @@ class TextEncoder(object):
             'sos_token' : self.sos_token,
             'eos_token' : self.eos_token,
             'mask_token'    : self.mask_token,
+            'additional_tokens' : self.additional_tokens,
             
             'sub_word_prefix'   : self.sub_word_prefix,
             'use_sos_and_eos'   : self.use_sos_and_eos,
@@ -867,10 +942,11 @@ class TextEncoder(object):
     @classmethod
     def from_transformers_pretrained(cls, name, ** kwargs):
         def get_vocab_from_encoder(tokenizer):
-            specials = [w for w in tokenizer.all_special_tokens if w not in tokenizer.encoder]
-            return list(sorted(tokenizer.encoder, key = tokenizer.encoder.get)) + specials
+            vocab = tokenizer.encoder if hasattr(tokenizer, 'encoder') else tokenizer.vocab
+            specials = [w for w in tokenizer.all_special_tokens if w not in vocab]
+            return list(sorted(vocab, key = vocab.get)) + specials
         
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer
         
         pretrained = name
         if isinstance(name, str):
@@ -885,10 +961,11 @@ class TextEncoder(object):
             _default_cleaners.insert(0, 'lowercase')
 
         if isinstance(pretrained, BertTokenizer):
+            if 'uncased' in pretrained.name_or_path: _default_cleaners.append('remove_accents')
             kwargs.update({
                 'vocab' : list(sorted(pretrained.vocab.keys(), key = pretrained.vocab.get)),
                 'sub_word_prefix'   : '##',
-                'cleaners'          : _default_cleaners + ['remove_accents', 'detach_punctuation', 'collapse_whitespace'],
+                'cleaners'          : _default_cleaners + ['detach_punctuation', 'collapse_whitespace'],
                 'sos_token'         : pretrained.cls_token,
                 'eos_token'         : pretrained.sep_token
             })
@@ -905,20 +982,29 @@ class TextEncoder(object):
                 'sos_token'         : pretrained.bos_token,
                 'eos_token'         : pretrained.eos_token
             })
-        elif isinstance(pretrained, GPT2TokenizerFast):
+        elif isinstance(pretrained, PreTrainedTokenizerFast):
+            path = glob.glob(os.path.expanduser(
+                '~/.cache/huggingface/hub/models--{}/**/**/tokenizer.json'.format(
+                    pretrained.name_or_path.replace('/', '--')
+                )
+            ))
+            if not path: raise RuntimeError('Unable to find the tokenizer.json file !')
+
+            data    = load_json(path[0])
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
+            vocab = data['model']['vocab']
             kwargs.update({
-                'vocab' : list(sorted(pretrained.encoder.keys(), key = pretrained.encoder.get)),
+                'vocab' : list(sorted(vocab.keys(), key = vocab.get)),
                 'lstrip'    : False,
                 'rstrip'    : True,
                 'split_pattern'     : _gpt_pattern,
                 'cleaners'          : _default_cleaners,
-                'bpe_pairs'         : list(pretrained.bpe_ranks.keys()),
-                'byte_encoder'      : pretrained.byte_encoder,
+                'bpe_pairs'         : [pair.split(' ') for pair in data['model']['merges']],
+                'byte_encoder'      : bytes_to_unicode(),
                 'sos_token'         : pretrained.bos_token,
                 'eos_token'         : pretrained.eos_token
             })
-        elif isinstance(pretrained, BarthezTokenizer):
+        elif isinstance(pretrained, (BarthezTokenizer, T5Tokenizer)):
             from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
             cls = SentencePieceTextEncoder
             kwargs.update({
@@ -934,12 +1020,17 @@ class TextEncoder(object):
         # Common config
         kwargs.update({
             'level'         : TextEncoderLevel.TOKEN,
-            'use_sos_and_eos'   : True,
-            'pad_token'     : pretrained.pad_token if pretrained.pad_token is not None else kwargs['vocab'][0],
+            'use_sos_and_eos'   : kwargs.get('sos_token', None) is not None or kwargs.get('eos_token', None) is not None,
             'sep_token'     : pretrained.sep_token,
             'ukn_token'     : pretrained.unk_token,
-            'mask_token'    : pretrained.mask_token
+            'mask_token'    : pretrained.mask_token,
+            'additional_tokens' : getattr(pretrained, 'additional_special_tokens', None)
         })
+        
+        if pretrained.pad_token is not None:    kwargs['pad_token'] = pretrained.pad_token
+        elif kwargs.get('eos_token', None):     kwargs['pad_token'] = kwargs['eos_token']
+        else:                                   kwargs['pad_token'] = kwargs['vocab'][0]
+        
         return cls(** kwargs)
     
     @classmethod
@@ -1033,3 +1124,110 @@ class TextEncoder(object):
         if sort: vocab.sort()
 
         return cls(vocab, word_level, cleaners = cleaners, **kwargs)
+
+def _create_token_name(token):
+    return ''.join([c for c in token.lower() if c.isalnum()]) + '_token'
+
+def _can_split(encoded, idx, encoded_not_split):
+    if idx >= len(encoded): return 0, 0
+    
+    n_prev, n_next = 0, 0
+    for ns in encoded_not_split:
+        if encoded[idx] in ns:
+            pos = ns.index(encoded[idx])
+            if encoded[idx - pos : idx + len(ns) - pos] == ns:
+                n_prev, n_next = max(n_prev, pos), max(n_next, len(ns) - pos - 1)
+    return n_prev, n_next
+
+def _get_split_index(encoded, last_end, idx, _can_split_fn, _decrease = True):
+    new_idx = idx
+    while last_end < new_idx < len(encoded):
+        valid = _can_split_fn(
+            token   = encoded[idx],
+            prev_token  = encoded[idx - 1] if idx > 0 else None,
+            next_token  = encoded[idx + 1] if idx < len(encoded) - 1 else None
+        )
+        if _can_split_fn(encoded[idx]): return new_idx
+        elif _decrease: new_idx -= 1
+        else:           new_idx += 1
+    
+    if not _decrease: return len(encoded) - 1
+    return _get_split_index(encoded, last_end, idx, cans_plit_fn, False)
+
+
+
+def execute_and_concat(fn_name):
+    fn = getattr(TextEncoder, fn_name)
+    expanded_signature  = tf.nest.map_structure(
+        lambda sig: tf.TensorSpec(shape = (None, ) + sig.shape, dtype = sig.dtype, name = sig.name),
+        fn.signature
+    )
+    if not isinstance(expanded_signature, (list, tuple)):
+        expanded_signature = [expanded_signature]
+    
+    add_length = False
+    if not any(s.name == text_length_signature.name for s in expanded_signature):
+        expanded_signature = list(expanded_signature) + [text_length_signature]
+        add_length  = True
+    
+    def inner(self, * args, return_type = 'np', ** kwargs):
+        return_type = convert_to_str(return_type)
+        max_len = max(
+            [len(a) if isinstance(a, (list, np.ndarray)) else 1 for a in args] +
+            [len(v) if isinstance(v, (list, np.ndarray)) else 1 for v in kwargs.values()]
+        )
+        
+        results = [getattr(self, fn_name)(* [
+            a[i] if isinstance(a, (list, np.ndarray)) and len(a) == max_len else a
+            for a in args
+        ], ** {
+            k : v[i] if isinstance(v, (list, np.ndarray)) and len(v) == max_len else v
+            for k, v in kwargs.items()
+        }, return_type = 'np') for i in range(max_len)]
+        
+        if isinstance(results[0], list):
+            results = list(zip(* results))
+        else:
+            results = [results]
+        
+        if add_length:
+            results.append([len(encoded) for encoded in results[0]])
+        
+        if len(results) == 2:
+            results = filter_texts(* results, ** kwargs)
+        else:
+            texts, lengths, indices = filter_texts(
+                results[0], results[-1], return_indices = True, ** kwargs
+            )
+            results = [
+                texts, * [[res[idx] for idx in indices] for res in results[1:-1]], lengths
+            ]
+        
+        if return_type == 'list': return results
+        
+        if not results[0]:
+            results = [
+                np.zeros(shape = [0] * len(sign.shape), dtype = np.int32)
+                for sign in expanded_signature
+            ]
+        else:
+            texts   = pad_batch(results[0], self.blank_token_idx, dtype = np.int32)
+            others  = [pad_batch(res) for res in results[1:]]
+            results = [texts] + others
+        
+        if return_type == 'np':
+            return results
+        elif return_type == 'tf':
+            return [tf.cast(res, tf.int32) for res in results]
+        else:
+            raise ValueError("Unknown `return_type` : {}".format(return_type))
+    
+    inner.__doc__   = fn.__doc__
+    inner.__name__  = 'multi_' + fn_name
+    return execute_eagerly(
+        inner, signature = expanded_signature, numpy = True, default_key = fn.default_key
+    )
+
+for fn_name in ('encode', 'format', 'split', 'split_and_format'):
+    setattr(TextEncoder, 'multi_' + fn_name, execute_and_concat(fn_name))
+    

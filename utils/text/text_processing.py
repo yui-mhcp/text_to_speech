@@ -14,6 +14,8 @@ import logging
 import numpy as np
 import tensorflow as tf
 
+from utils.generic_utils import convert_to_str
+
 logger  = logging.getLogger(__name__)
 
 _max_length = 150
@@ -78,88 +80,68 @@ def remove_slice_tokens(logits, index, remove_after, value = tf.float32.min):
     )
     return remove_batch_tokens(logits, indices, value)
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def filter_texts(encoded_texts  : tf.Tensor,
-                 lengths    : tf.Tensor,
+def filter_texts(encoded_texts,
+                 lengths,
 
-                 min_length : tf.Tensor = -1,
-                 max_length : tf.Tensor = -1,
+                 min_text_length    = -1,
+                 max_text_length    = -1,
+                 max_sentences  = -1,
+                 max_sentence_length    = -1,
 
-                 max_total_length   : tf.Tensor = -1,
-                 sort_by_length : tf.Tensor = False,
+                 max_total_length   = -1,
+                 sort_by_length = False,
 
-                 required_idx   : tf.Tensor = -1,
-
-                 max_texts  : tf.Tensor = -1,
+                 max_texts  = -1,
                  select_mode    = 'start',
                  
+                 required_idx   = -1,
+                 flatten    = True,
+                 
+                 return_indices = False,
+
                  ** kwargs
                 ):
-    """
-        Filter a batch of texts to only keep those with length in the range [min_length, max_length]
-        
-        Arguments :
-            - encoded_texts : 2-D / 3-D `tf.Tensor`, the encoded batch of texts
-            - lengths       : 1-D / 2-D `tf.Tensor`, the texts' lengths
-            
-            - {min / max}_length    : the minimal / maximal length
-            
-            - max_total_length      : the maximal total cumulated length
-            - sort_by_length        : whether to sort by length when filtering on max_total_length
-            
-            - required_idx  : index to keep even if its length is not in the expected range
-            
-            - max_texts     : maximum number of texts to keep
-            - select_mode   : selection mode if there are too much texts
-        Returns :
-            - filtered_texts    : the filtered batch of texts
-            - filtered_lengths  : the filtered lengths
-        
-        Warning : if no texts respects the constraints, the 1st outputs' dimension can be 0 !
-        
-        Note : if `encoded_texts` is a 3-D `tf.Tensor`, it represents a *splitted* version, meaning that :
-        - The 1st dimension is the number of paragraphs
-        - The 2nd dimension is the number of sentences
-        - The 3rd dimension is the encoded sentence
-        In this case, `lengths` is a 2-D `tf.Tensor` and the filters on length are applied on the paragraphs' lengths (i.e. `tf.reduce_sum(lengths, axis = -1)`)
-    """
     ####################
     # Filter on length #
     ####################
     
-    text_lengths    = lengths if len(tf.shape(encoded_texts)) == 2 else tf.reduce_sum(lengths, axis = -1)
+    required_idx    = int(required_idx)
+    lengths     = np.array(lengths, dtype = np.int32)
+    is_multi    = lengths.ndim == 2
+    text_lengths    = lengths if not is_multi else np.sum(lengths, axis = -1)
     
-    valid_mask  = tf.ones_like(text_lengths, dtype = tf.bool)
-    if min_length > -1:
-        valid_mask = tf.math.logical_and(valid_mask, text_lengths >= min_length)
+    valid_mask  = np.ones((len(text_lengths), ), dtype = bool)
+    if min_text_length > -1:
+        valid_mask[text_lengths < min_text_length] = False
     
-    if max_length > -1:
-        valid_mask = tf.math.logical_and(valid_mask, text_lengths <= max_length)
+    if max_text_length > -1:
+        valid_mask[text_lengths > max_text_length] = False
     
+    if is_multi:
+        if max_sentences > 0:
+            valid_mask[np.sum(lengths > 0, axis = -1) > max_sentences] = False
+        
+        if max_sentence_length > -1:
+            valid_mask[np.max(lengths, axis = -1) > max_sentence_length] = False
+
     ##############################
     #   Filter on total length   #
     ##############################
     
-    if max_total_length > 0 and tf.reduce_any(valid_mask):
-        if required_idx != -1:
-            valid_mask = tf.tensor_scatter_nd_update(
-                valid_mask, [[required_idx]], [True]
-            )
-        
+    if max_total_length > 0 and np.sum(text_lengths[valid_mask]) > max_total_length:
         if sort_by_length:
-            indexes = tf.argsort(text_lengths)
-            indexes = tf.boolean_mask(indexes, tf.gather(valid_mask, indexes))
+            indexes = np.argsort(text_lengths)
+            indexes = indexes[valid_mask[indexes]]
         else:
-            indexes = tf.squeeze(tf.where(valid_mask), axis = 1)
+            indexes = np.where(valid_mask)[0]
         
-        skip_mask = tf.math.cumsum(tf.gather(text_lengths, indexes)) > max_total_length
-        if tf.reduce_any(skip_mask):
-            bad_indexes = tf.boolean_mask(indexes, skip_mask)
-            valid_mask  = tf.tensor_scatter_nd_update(
-                valid_mask,
-                tf.expand_dims(bad_indexes, axis = 1),
-                tf.zeros((tf.shape(bad_indexes)[0], ), dtype = tf.bool)
-            )
+        if required_idx != -1:
+            indexes = np.concatenate([[required_idx], indexes[indexes != required_idx]], axis = 0)
+        
+        skip_mask = np.cumsum(text_lengths[indexes]) > max_total_length
+        if np.any(skip_mask):
+            skip_indexes = indexes[skip_mask]
+            valid_mask[skip_indexes] = False
 
     ##############################
     #   Filter on texts' number  #
@@ -168,34 +150,46 @@ def filter_texts(encoded_texts  : tf.Tensor,
     if max_texts > 0:
         if required_idx != -1: max_texts -= 1
         
-        if tf.reduce_sum(tf.cast(valid_mask, tf.int32)) > max_texts:
-            indexes = tf.squeeze(tf.where(valid_mask), axis = 1)
+        if np.sum(valid_mask) > max_texts:
+            select_mode = convert_to_str(select_mode)
+            
+            indexes = np.where(valid_mask)[0]
+            if required_idx != -1: indexes = indexes[indexes != required_idx]
             
             if select_mode == 'random':
-                skip_indexes = tf.random.shuffle(indexes)[max_texts :]
+                skip_indexes = np.random.choice(indexes, size = max_texts)
             elif select_mode == 'start':
                 skip_indexes = indexes[max_texts:]
             elif select_mode == 'end':
                 skip_indexes = indexes[:-max_texts]
+            else:
+                raise ValueError('Unknown `select_mode` : {}'.format(select_mode))
             
-            valid_mask  = tf.tensor_scatter_nd_update(
-                valid_mask,
-                tf.expand_dims(skip_indexes, axis = 1),
-                tf.zeros((max_texts, ), dtype = tf.bool)
-            )
+            valid_mask[skip_indexes] = False
     
-    if required_idx != -1:
-        valid_mask = tf.tensor_scatter_nd_update(
-            valid_mask, [[required_idx]], [True]
-        )
+    if required_idx != -1 and not valid_mask[required_idx]: valid_mask[:] = False
     
-    encoded_texts   = tf.boolean_mask(encoded_texts, valid_mask)
-    lengths         = tf.boolean_mask(lengths,       valid_mask)
-    
-    if tf.reduce_any(valid_mask):
-        encoded_texts = encoded_texts[..., : tf.reduce_max(lengths)]
+    lengths = lengths[valid_mask]
+    if isinstance(encoded_texts, list):
+        encoded_texts = [text for text, valid in zip(encoded_texts, valid_mask) if valid]
+    else:
+        encoded_texts = encoded_texts[valid_mask]
+        
+        if is_multi and flatten:
+            encoded_texts   = np.reshape(encoded_texts, [-1, encoded_texts.shape[-1]])
+            lengths         = np.reshape(lengths, [-1])
 
-    return encoded_texts
+            encoded_texts   = encoded_texts[lengths > 0]
+            lengths         = lengths[lengths > 0]
+        
+        if len(encoded_texts) > 0:
+            encoded_texts = encoded_texts[..., : np.max(lengths)]
+            
+            if is_multi and not flatten:
+                encoded_texts = encoded_texts[:, : np.max(np.sum(lengths > 0, axis = -1)), :]
+    
+    if return_indices: return encoded_texts, lengths, np.where(valid_mask)[0]
+    return encoded_texts, lengths
 
 def extract_sentence(text, pattern):
     pattern = pattern.lower()

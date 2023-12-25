@@ -61,6 +61,7 @@ def to_json(data):
     if isinstance(data, enum.Enum): data = data.value
     if isinstance(data, (tf.Tensor, tf.Variable)):  data = data.numpy()
     if isinstance(data, bytes): data = data.decode('utf-8')
+    if isinstance(data, np.ndarray) and len(data.shape) == 0: data = data.item()
     
     if isinstance(data, bool): return data
     elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%d %H:%M:%S")
@@ -91,27 +92,34 @@ def to_lower_keys(data):
     """ Returns the same dict with lowercased keys"""
     return {k.lower() : v for k, v in data.items()}
 
-def get_args(fn):
-    """ Returns a `list` of the positional arguments (even if they have default values) """
-    return inspect.getfullargspec(fn).args
+def normalize_key(key, mapping):
+    """ Normalizes `key` based on a `mapping` `{normalized_key : alternative_keys}` """
+    for k, alt in mapping.items():
+        if key in alt: return k
+    return key
 
-def get_kwargs(fn):
+def get_args(fn, include_args = True, ** kwargs):
+    """ Returns a `list` of the positional argument names (even if they have default values) """
+    kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    if include_args: kinds += (inspect.Parameter.VAR_POSITIONAL, )
+    return [
+        name for name, param in inspect.signature(fn, ** kwargs).parameters.items()
+        if param.kind in kinds
+    ]
+
+def get_kwargs(fn, ** kwargs):
     """ Returns a `dict` containing the kwargs of `fn` """
-    sign = inspect.getfullargspec(fn)
-    
-    kwargs = {}
-    if sign.defaults:
-        kwargs.update({
-            k : v for k, v in zip(sign.args[- len(sign.defaults) :], sign.defaults)
-        })
-    
-    if sign.kwonlydefaults:
-        kwargs.update(sign.kwonlydefaults)
-    
-    return kwargs
+    return {
+        name : param.default for name, param in inspect.signature(fn, ** kwargs).parameters.items()
+        if param.default is not inspect._empty
+    }
 
-def signature_to_str(fn):
-    return '{}{}'.format(fn.__name__, str(inspect.signature(fn)))
+def signature_to_str(fn, add_doc = False, ** kwargs):
+    return '{}{}{}'.format(
+        fn.__name__,
+        str(inspect.signature(fn, ** kwargs)),
+        '\n{}'.format(fn.__doc__) if add_doc else ''
+    )
 
 def print_objects(objects, print_name = 'objects', _logger = logger):
     """ Displays the list of available objects (i.e. simply prints `objects.keys()` :D ) """

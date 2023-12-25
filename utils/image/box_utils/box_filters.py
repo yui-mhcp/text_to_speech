@@ -72,7 +72,7 @@ class RepetitionFilter(BoxFilter):
         Box filtering method to only keep boxes that have been seen multiple times (`n_repeat`) at the same place (`iou_threshold`)
         The filter also filters out boxes that have already been emitted to avoid repeating them
     """
-    def __init__(self, iou_threshold = 0.6, n_repeat = 2, max_unseen = 2, filter_memory = True):
+    def __init__(self, iou_threshold = 0.5, n_repeat = 2, max_unseen = 2, filter_memory = True):
         self.n_repeat       = n_repeat
         self.max_unseen     = max_unseen
         self.iou_threshold  = iou_threshold

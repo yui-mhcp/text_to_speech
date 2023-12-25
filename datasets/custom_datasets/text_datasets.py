@@ -11,6 +11,7 @@
 # limitations under the License.
 
 import os
+import glob
 import logging
 import numpy as np
 import pandas as pd
@@ -28,6 +29,7 @@ logger  = logging.getLogger(__name__)
 _siamese_renaming = {'sentence1' : 'text_x', 'sentence2' : 'text_y'}
 _spaces = (' ', '\n', '\t')
 
+LM      = 'Language Modeling'
 TRANS   = 'Translation'
 QnA_EN  = 'Q&A (English)'
 QnA_FR  = 'Q&A (French)'
@@ -487,6 +489,14 @@ def preprocess_triviaqa_annots(directory, unfiltered = False, wikipedia = True,
     
     return pd.DataFrame(metadata)
 
+def preprocess_apache_annots(directory, n_files = None, tqdm = lambda x: x, ** kwargs):
+    import pyarrow.parquet as pq
+    
+    return pd.concat([
+        pq.read_table(file).to_pandas()
+        for file in tqdm(glob.glob(directory + '/*.parquet')[:n_files])
+    ])
+
 
 add_dataset(
     'French SQUAD', processing_fn = 'squad', task = QnA_FR,
@@ -509,4 +519,8 @@ add_dataset(
 add_dataset(
     'piaf', processing_fn = 'squad', task = QnA_FR,
     directory = '{}/piaf', subset = 'piaf', version = '1.1'
+)
+
+add_dataset(
+    'refined_web', processing_fn = preprocess_apache_annots, task = LM, directory = '{}/RefinedWeb'
 )

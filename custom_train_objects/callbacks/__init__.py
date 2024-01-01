@@ -12,9 +12,21 @@
 
 import tensorflow as tf
 
+from utils.generic_utils import get_object, print_objects
+
 from custom_train_objects.callbacks.ckpt_callback import CkptCallback
 from custom_train_objects.callbacks.terminate_on_nan import TerminateOnNaN
 from custom_train_objects.callbacks.predictor_callback import PredictorCallback
+
+def get_callbacks(callback_name = None, * args, ** kwargs):
+    return get_object(
+        _callbacks, callback_name, * args, ** kwargs, print_name = 'callbacks', err = True,
+        types = tf.keras.callbacks.Callback
+    )
+
+
+def print_callbacks():
+    print_objects(_callbacks, 'callbacks')
 
 
 _callbacks = {
@@ -33,30 +45,3 @@ _callbacks = {
     'PredictorCallback'     : PredictorCallback,
     'predictor_callback'    : PredictorCallback
 }
-
-class CallbackList(object):
-    def __init__(self, *callbacks):
-        self.callbacks = []
-        self._init_callbacks(callbacks)
-        
-    def _init_callbacks(self, callbacks):
-        for callback in callbacks:
-            if isinstance(callback, tf.keras.callbacks.Callback):
-                self.callbacks.append(callback)
-            elif isinstance(callback, (list, tuple)):
-                self._init_callbacks(callback)
-            else:
-                raise ValueError("Callback non valide ! \n  Accepté : tf.keras.callbacks.Callback subclass\n  Reçu : {}".format(type(callback)))
-        
-    def on_train_batch_begin(self, *args, **kwargs):
-        [c.on_train_batch_begin(*args, **kwargs) for c in self.callbacks]
-    
-    def on_train_batch_end(self, *args, **kwargs):
-        [c.on_train_batch_end(*args, **kwargs) for c in self.callbacks]
-    
-    def on_epoch_begin(self, *args, **kwargs):
-        [c.on_epoch_begin(*args, **kwargs) for c in self.callbacks]
-    
-    def on_epoch_end(self, *args, **kwargs):
-        [c.on_epoch_end(*args, **kwargs) for c in self.callbacks]
-    

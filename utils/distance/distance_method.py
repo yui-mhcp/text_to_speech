@@ -27,24 +27,17 @@ _str_distance_methods   = {}
 _similarity_methods     = {}
 _distance_methods       = {}
 
-def distance_method_wrapper(fn      = None,
-                            name    = None,
-                            str_only    = False,
-                            is_similarity   = False,
-                            expand  = True
-                           ):
+def distance_method_wrapper(fn = None, name = None, is_similarity = False, expand = True):
     def wrapper(fn):
         @functools.wraps(fn)
         def inner(x, y, as_matrix = False, ** kwargs):
-            if not str_only and expand:
-                x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
+            if expand: x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
             return fn(x, y, as_matrix = as_matrix, ** kwargs)
         
         key = name if name else fn.__name__.split('_')[0]
         
         distance.dispatch(inner, key)
         
-        if str_only:        _str_distance_methods[key] = inner
         if is_similarity:   _similarity_methods[key] = inner
         return inner
     
@@ -166,10 +159,9 @@ def distance(x,
 
 @similarity_method_wrapper(expand = False)
 def cosine_similarity(x, y, as_matrix = False, ** kwargs):
+    norm_fn = tf.math.l2_normalize if isinstance(x, tf.Tensor) else lambda x: x / np.linalg.norm(x, axis = -1, keepdims = True)
     return dot_product(
-        tf.math.l2_normalize(x, axis = -1),
-        tf.math.l2_normalize(y, axis = -1),
-        as_matrix = as_matrix, ** kwargs
+        norm_fn(x), norm_fn(y), as_matrix = as_matrix, ** kwargs
     )
 
 @similarity_method_wrapper(name = 'dp')
@@ -277,103 +269,6 @@ iou = similarity_method_wrapper(
 intersect   = similarity_method_wrapper(
     partial(bbox_metric, metric = 'intersect'), expand = False, name = 'intersect'
 )
-
-@similarity_method_wrapper(str_only = True)
-def edit_distance(hypothesis,
-                  truth,
-                  partial   = False,
-                  deletion_cost     = {},
-                  insertion_cost    = {}, 
-                  replacement_cost  = {},
-                  
-                  default_del_cost  = 1,
-                  default_insert_cost   = 1,
-                  default_replace_cost  = 1,
-                  
-                  normalize     = True,
-                  return_matrix = False,
-                  verbose   = False,
-                  ** kwargs
-                 ):
-    """
-        Compute a weighted Levenstein distance
-        
-        Arguments :
-            - hypothesis    : the predicted value   (iterable)
-            - truth         : the true value        (iterable)
-            - partial       : whether to make partial alignment or not
-            - insertion_cost    : weights to insert a new symbol
-            - replacement_cost  : weights to replace a symbol (a --> b) but 
-            is not in both sens (a --> b != b --> a) so you have to specify weights in both sens
-            - normalize     : whether to normalize on truth length or not
-            - return_matrix : whether to return the matrix or not
-            - verbose       : whether to show costs for path or not
-        Return :
-            - distance if not return_matrix else (distance, matrix)
-                - distance  : scalar, the Levenstein distance between `hypothesis` and truth `truth`
-                - matrix    : np.ndarray of shape (N, M) where N is the length of truth and M the length of hypothesis. 
-        
-        Note : if `partial` is True, the distance is the minimal distance
-        Note 2 : `distance` (without normalization) corresponds to the "number of errors" between `hypothesis` and `truth`. It means that the start of the best alignment (if partial) is `np.argmin(matrix[-1, 1:]) - len(truth) - distance`
-    """
-    matrix = np.zeros((len(hypothesis) + 1, len(truth) + 1))
-    # Deletion cost
-    deletion_costs = np.array([0] + [deletion_cost.get(h, default_del_cost) for h in hypothesis])
-    insertion_costs = np.array([insertion_cost.get(t, default_insert_cost) for t in truth])
-    
-    matrix[:, 0] = np.cumsum(deletion_costs)
-    # Insertion cost
-    if not partial:
-        matrix[0, :] = np.cumsum([0] + [insertion_cost.get(t, default_insert_cost) for t in truth])
-
-    truth_array = truth if not isinstance(truth, str) else np.array(list(truth))
-    for i in range(1, len(hypothesis) + 1):
-        deletions = matrix[i-1, 1:] + deletion_costs[i]
-        
-        matches   = np.array([
-            replacement_cost.get(hypothesis[i-1], {}).get(t, default_replace_cost) for t in truth
-        ])
-        matches   = matrix[i-1, :-1] + matches * (truth_array != hypothesis[i-1])
-        
-        min_costs = np.minimum(deletions, matches)
-        for j in range(1, len(truth) + 1):
-            insertion   = matrix[i, j-1] + insertion_costs[j-1]
-
-            matrix[i, j] = min(min_costs[j-1], insertion)
-    
-    if verbose:
-        columns = [''] + [str(v) for v in truth]
-        index = [''] + [str(v) for v in hypothesis]
-        logger.info(pd.DataFrame(matrix, columns = columns, index = index))
-    
-    distance = matrix[-1, -1] if not partial else np.min(matrix[-1, 1:])
-    if normalize:
-        distance = distance / len(truth) if not partial else distance / len(hypothesis)
-    
-    return distance if not return_matrix else (distance, matrix)
-
-@distance_method_wrapper(str_only = True)
-def hamming_distance(hypothesis, truth, replacement_matrix = {}, normalize = True,
-                     ** kwargs):
-    """
-        Compute a weighted hamming distance
-        
-        Arguments : 
-            - hypothesis    : the predicted value   (iterable)
-            - truth         : the true value        (iterable)
-            - replacement_matrix    : weights to replace element 1 to 2 (from hypothesis to truth). Note that this is not in 2 sens so a --> b != b --> a
-            - normalize     : whether to normalize on truth length or not
-        Return : distance between hypothesis and truth (-1 if they have different length)
-    """
-    if len(hypothesis) != len(truth): return -1
-    distance = sum([
-        replacement_matrix.get(c1, {}).get(c2, 1)
-        for c1, c2 in zip(hypothesis, truth) if c1 != c2
-    ])
-    if normalize: distance = distance / len(truth)
-    return distance
-
-
 
 def _maybe_expand_for_matrix(x, y, as_matrix = False):
     """

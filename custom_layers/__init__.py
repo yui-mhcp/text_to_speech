@@ -10,20 +10,11 @@
 # limitations under the License.
 
 import os
-import glob
-import importlib
 
 from hparams import HParams
+from utils.generic_utils import import_objects
 from custom_layers.custom_activations import *
 
-def __load():
-    for module in glob.glob(os.path.join(* __package__.split('.'), '*.py')):
-        if module.endswith(('__init__.py', '_old.py')): continue
-        module = importlib.import_module(module.replace(os.path.sep, '.')[:-3])
-        
-        globals().update({
-            k : v for k, v in vars(module).items()
-            if not k.startswith('_') and isinstance(v, (type, HParams))
-        })
-
-__load()
+globals().update(
+    import_objects(__package__.replace('.', os.path.sep), types = (type, HParams))
+)

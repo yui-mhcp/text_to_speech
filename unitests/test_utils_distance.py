@@ -21,6 +21,17 @@ class TestDistance(CustomTestCase):
         self.queries    = np.random.normal(size = (n, d)).astype(np.float32)
         self.points     = np.random.normal(size = (n, d)).astype(np.float32)
 
+    def test_text_metrics(self):
+        self.assertEqual([1, 1, 1, 1], text_f1("Hello World !", "Hello ! World"))
+        self.assertEqual([0, 1, 1, 1], text_f1("Hello World !", "Hello ! World", normalize = False))
+        self.assertEqual(
+            [0, 2 / 3, 2 / 3, 2 / 3], text_f1("Hello World !", "Hello ! world", normalize = False)
+        )
+        self.assertEqual([1, 1, 1, 1], text_f1("Hello World !", "Hello world"))
+        self.assertEqual([0, 1, 1, 1], text_f1([0, 1, 2], [0, 2, 1]))
+        self.assertEqual([1, 1, 1, 1], text_f1([0, 1, 2], [0, 2], exclude = [1]))
+        self.assertEqual([0, 0.8, 1, 2 / 3], text_f1([0, 1, 2], [0, 2]))
+
     def test_single_distance(self):
         self.assertEqual(
             distance(self.queries[0], self.points, method = 'manhattan'),

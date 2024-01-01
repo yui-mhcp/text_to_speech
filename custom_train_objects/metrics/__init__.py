@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -10,35 +9,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import glob
 import tensorflow as tf
 
-from custom_train_objects.metrics.metric_list import MetricList, LossMetrics
+try:
+    from keras.metrics import MeanMetricWrapper
+except:
+    from keras.src.metrics import MeanMetricWrapper
 
-from custom_train_objects.metrics.text_accuracy import TextAccuracy
-from custom_train_objects.metrics.text_metric import TextMetric
-from custom_train_objects.metrics.confusion_matrix import *
-from custom_train_objects.metrics.equal_error_rate import EER
+from utils.generic_utils import import_objects, get_object, print_objects, is_function
+
+def get_metrics(metric_name, * args, ** kwargs):
+    if isinstance(metric_name, (list, tuple)):
+        return [get_metrics(m, * args, ** kwargs) for m in metric_name]
+    
+    if isinstance(metric_name, dict):
+        if 'class_name' in metric_name:
+            return tf.keras.metrics.deserialize(metric_name, _metrics)
+        
+        name_key    = 'metric' if 'metric' in metric_name else 'name'
+        config_key  = 'metric_config' if 'metric_config' in metric_name else 'config'
+        kwargs      = {** kwargs, ** metric_name.get(config_key, {})}
+        metric_name = metric_name.get(name_key, metric_name)
+    
+    return get_object(
+        _metrics, metric_name, * args, ** kwargs, types = (type, tf.keras.metrics.Metric),
+        err = True, print_name = 'metric', function_wrapper = MeanMetricWrapper
+    )
+
+def add_metric(metric, name = None):
+    if name is None: name = metric.__name__ if is_function(metric) else metric.__class__.__name__
+    
+    _metrics[name] = metric
+
+def print_metrics():
+    print_objects(_metrics, 'metrics')
+
+
+def _is_class_or_callable(name, val):
+    return isinstance(val, type) or callable(val)
 
 _metrics = {
-    'EER'                       : EER,
-    'TextAccuracy'              : TextAccuracy,
-    'TextMetric'                : TextMetric,
-    'ConfusionMatrixMetric'     : ConfusionMatrixMetric,
-    'ConfusionMatrix'           : ConfusionMatrixMetric,
-    'confusion_matrix'          : ConfusionMatrixMetric,
-    'TrueNegative'              : TrueNegative,
-    'true_negative'             : TrueNegative,
-    'TruePositive'              : TruePositive,
-    'true_positive'             : TruePositive,
-    
-    'AUC'                       : tf.keras.metrics.AUC,
-    'Acc'                       : tf.keras.metrics.Accuracy,
-    'Accuracy'                  : tf.keras.metrics.Accuracy,
-    'BinaryAccuracy'            : tf.keras.metrics.BinaryAccuracy,
-    'binary_accuracy'           : tf.keras.metrics.BinaryAccuracy,
-    'CategoricalAccuracy'       : tf.keras.metrics.CategoricalAccuracy,
-    'categorical_accuracy'      : tf.keras.metrics.CategoricalAccuracy,
-    'KLDivergence'              : tf.keras.metrics.KLDivergence,
-    'SparseCategoricalAccuracy' : tf.keras.metrics.SparseCategoricalAccuracy,
-    'sparse_categorical_accuracy'   : tf.keras.metrics.SparseCategoricalAccuracy,
+    ** import_objects(__package__.replace('.', os.path.sep), types = type),
+    ** import_objects(
+        [tf.keras.metrics],
+        filters = _is_class_or_callable,
+        exclude = ('get', 'serialize', 'deserialize'),
+    )
 }
+globals().update(_metrics)

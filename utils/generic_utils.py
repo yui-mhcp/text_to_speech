@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import os
+import glob
 import enum
 import json
 import timeit
@@ -17,6 +18,7 @@ import inspect
 import logging
 import datetime
 import argparse
+import importlib
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -93,10 +95,21 @@ def to_lower_keys(data):
     return {k.lower() : v for k, v in data.items()}
 
 def normalize_key(key, mapping):
-    """ Normalizes `key` based on a `mapping` `{normalized_key : alternative_keys}` """
-    for k, alt in mapping.items():
-        if key in alt: return k
-    return key
+    normalized  = [k for k, alt in mapping.items() if key in alt]
+    return normalized if normalized else [key]
+
+def normalize_keys(mapping, alternatives):
+    normalized = {}
+    for key, value in mapping.items():
+        for norm in normalize_key(key, alternatives):
+            normalized[norm] = value
+    return normalized
+
+def is_object(o):
+    return not isinstance(o, type) and not is_function(o)
+
+def is_function(f):
+    return f.__class__.__name__ == 'function'
 
 def get_args(fn, include_args = True, ** kwargs):
     """ Returns a `list` of the positional argument names (even if they have default values) """
@@ -121,11 +134,39 @@ def signature_to_str(fn, add_doc = False, ** kwargs):
         '\n{}'.format(fn.__doc__) if add_doc else ''
     )
 
+def import_objects(modules, filters = None, types = None, exclude = (), fn = None):
+    if fn is None: fn = lambda v: v
+    if types is not None: filters = lambda name, val: isinstance(val, types)
+    elif filters is None: filters = lambda name, val: True
+    if isinstance(modules, str) and os.path.isdir(modules): modules = glob.glob(modules + '/*.py')
+    elif not isinstance(modules, list): modules = [modules]
+
+    objects = {}
+    for module in modules:
+        if isinstance(module, str):
+            if module.endswith(('__init__.py', '_old.py')): continue
+            module = importlib.import_module(module.replace(os.path.sep, '.')[:-3])
+        
+        objects.update({
+            k : fn(v) for k, v in vars(module).items()
+            if not k.startswith('_') and not k in exclude and filters(k, v)
+        })
+    
+    return objects
+    
 def print_objects(objects, print_name = 'objects', _logger = logger):
     """ Displays the list of available objects (i.e. simply prints `objects.keys()` :D ) """
     _logger.info("Available {} : {}".format(print_name, sorted(list(objects.keys()))))
 
-def get_object(objects, obj, * args, print_name = 'object', err = False, types = None, ** kwargs):
+def get_object(objects,
+               obj,
+               * args,
+               err  = False,
+               types    = (type, ),
+               print_name   = 'object',
+               function_wrapper = None,
+               ** kwargs
+              ):
     """
         Get corresponding object based on a name (`obj`) and dict of object names with associated class / function to call (`objects`)
         
@@ -136,11 +177,11 @@ def get_object(objects, obj, * args, print_name = 'object', err = False, types =
             - print_name    : name for printing if object is not found
             - err   : whether to raise error if object is not available
             - types : expected return type
+            - function_wrapper  : wrapper that takes the stored function as single argument
         Return : 
-            - (list of) instance(s) or function results
+            - (list of) object instance(s) or function result(s)
     """
-    if types is not None and isinstance(obj, types): return obj
-    elif obj is None:
+    if obj is None:
         return [get_object(
             objects, n, * args, print_name = print_name, err = err, types = types, ** kw
         ) for n, kw in kwargs.items()]
@@ -151,23 +192,33 @@ def get_object(objects, obj, * args, print_name = 'object', err = False, types =
         ) for n in obj]
     
     elif isinstance(obj, dict):
-        if 'class_name' in obj:
-            return get_object(
-                objects, obj['class_name'], * args, print_name = print_name, err = err, types = types, ** obj.get('config', {})
-            )
-        return [get_object(
-            objects, n, * args, print_name = print_name,  err = err, types = types, ** kwargs
-        ) for n, args in obj.items()]
+        if 'class_name' not in obj:
+            return [get_object(
+                objects, n, * args, print_name = print_name,  err = err, types = types, ** kwargs
+            ) for n, args in obj.items()]
+        
+        obj, args, kwargs = obj['class_name'], (), obj.get('config', {})
     
-    elif isinstance(obj, str) and obj.lower() in to_lower_keys(objects):
-        return to_lower_keys(objects)[obj.lower()](* args, ** kwargs)
+    _lower_objects = to_lower_keys(objects)
+    if isinstance(obj, str) and obj.lower() in _lower_objects:
+        obj = _lower_objects[obj.lower()]
+    elif types is not None and isinstance(obj, types) or callable(obj):
+        pass
     elif err:
-        raise ValueError("{} is not available !\n  Accepted : {}\n  Got :{}".format(
+        raise ValueError("{} is not available !\n  Accepted : {}\n  Got : {}".format(
             print_name, tuple(objects.keys()), obj
         ))
     else:
-        logger.warning("{} : `{}` is not available !".format(print_name, obj))
+        logger.warning("Unknown {} !\n  Accepted : {}\n  Got : {}".format(
+            print_name, tuple(objects.keys()), obj
+        ))
         return obj
+    
+    if is_object(obj):
+        return obj
+    elif not isinstance(obj, type) and function_wrapper is not None:
+        return function_wrapper(obj, ** kwargs)
+    return obj(* args, ** kwargs)
 
 def get_enum_item(value, enum, upper_names = True):
     if isinstance(value, enum): return value

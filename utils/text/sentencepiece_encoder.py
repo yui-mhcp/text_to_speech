@@ -49,9 +49,11 @@ class SentencePieceTextEncoder(TextEncoder):
     def decode(self, sequence, skip_padding = True, attach_punctuation = True,
                remove_tokens = False):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
-        if isinstance(sequence, tf.Tensor): sequence = sequence.numpy()
+        if hasattr(sequence, 'tokens'): sequence = sequence.tokens
+        if hasattr(sequence, 'numpy'):  sequence = sequence.numpy()
         if hasattr(sequence, 'shape'):
-            if sequence.dtype in (np.float32, np.float64): sequence = np.argmax(sequence, axis = -1)
+            if np.issubdtype(sequence.dtype, np.floating):
+                sequence = np.argmax(sequence, axis = -1) if sequence.shape[0] > 0 else sequence
             if len(sequence.shape) > 1:
                 return [self.decode(
                     s, skip_padding = skip_padding, attach_punctuation = attach_punctuation,

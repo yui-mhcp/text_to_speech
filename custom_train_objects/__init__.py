@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -10,68 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
-
-from utils import get_object, print_objects
-
 from custom_train_objects.history import History
 
 from custom_train_objects.generators import *
-from custom_train_objects.losses import _losses
-from custom_train_objects.metrics import _metrics, MetricList
-from custom_train_objects.callbacks import _callbacks, CallbackList
-from custom_train_objects.optimizers import _optimizers, _schedulers
-
-
-def get_callbacks(callback_name = None, * args, ** kwargs):
-    return get_object(
-        _callbacks, callback_name, * args, ** kwargs, print_name = 'callbacks',
-        types = tf.keras.callbacks.Callback
-    )
-
-def get_loss(loss_name, * args, ** kwargs):
-    return get_object(
-        _losses, loss_name, * args, ** kwargs, print_name = 'loss', types = tf.keras.losses.Loss
-    )
-
-def get_metrics(metrics_name, * args, ** kwargs):
-    if isinstance(metrics_name, (list, tuple)):
-        return [get_metrics(m, * args, ** kwargs) for m in metrics_name]
-    if isinstance(metrics_name, dict):
-        config_key = 'metric_config' if 'metric_config' in metrics_name else 'config'
-        kwargs = {** kwargs, ** metrics_name.get(config_key, {})}
-        metrics_name = metrics_name.get('metric', metrics_name)
-    
-    return get_object(
-        _metrics, metrics_name, * args, ** kwargs, print_name = 'metric',
-        types = tf.keras.metrics.Metric
-    )
-
-def get_optimizer(optimizer_name = "adam", * args, ** kwargs):
-    lr = kwargs.pop('lr', None)
-    if lr is None: lr = kwargs.get('learning_rate', None)
-    if lr is not None:
-        if isinstance(lr, (dict, str)):
-            if isinstance(lr, str): lr = {'name' : lr}
-            if 'class_name' in lr:  lr = {** lr['config'], 'name' : lr['class_name']}
-            lr = get_object(_schedulers, lr.pop('name'), ** lr, print_name = 'lr scheduler')
-        kwargs['learning_rate'] = lr
-    
-    return get_object(
-        _optimizers, optimizer_name, * args, ** kwargs, print_name = 'optimizer', 
-        types = tf.keras.optimizers.Optimizer
-    )
-
-
-def print_callbacks():
-    print_objects(_callbacks, 'callbacks')
-    
-def print_losses():
-    print_objects(_losses, 'losses')
-    
-def print_metrics():
-    print_objects(_metrics, 'metrics')
-
-def print_optimizers():
-    print_objects(_optimizers, 'optimizers')
-
+from custom_train_objects.losses import _losses, add_loss, get_loss, print_losses
+from custom_train_objects.metrics import _metrics, MetricList, add_metric, get_metrics, print_metrics
+from custom_train_objects.callbacks import _callbacks, get_callbacks, print_callbacks
+from custom_train_objects.optimizers import _optimizers, _schedulers, get_optimizer, print_optimizers

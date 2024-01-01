@@ -17,3 +17,4 @@ from utils.distance.spectral_clustering import spectral_clustering
 from utils.distance.clustering import find_clusters, evaluate_clustering
 
 from utils.distance.distance_method import *
+from utils.distance.text_distance_method import *

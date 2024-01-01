@@ -120,6 +120,7 @@ def _kmeans(points  : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
 @tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
 def kmeans_pp_init(points   : tf.Tensor,
                    k        : tf.Tensor,
+                   start    : tf.Tensor = -1,
                    distance_metric  = 'euclidian',
                    random_state     = None
                   ):
@@ -131,7 +132,10 @@ def kmeans_pp_init(points   : tf.Tensor,
             4) Returns at step 2, until `k` centroids have been selected
     """
     n   = tf.shape(points)[0]
-    idx = tf.random.uniform((), minval = 0, maxval = n, dtype = tf.int32)
+    if start == -1:
+        idx = tf.random.uniform((), minval = 0, maxval = n, dtype = tf.int32)
+    else:
+        idx = tf.cast(start, tf.int32)
     
     centroids = tf.TensorArray(dtype = tf.float32, size = k, dynamic_size = False)
     centroids = centroids.write(0, tf.gather(points, idx))

@@ -26,10 +26,10 @@ class CustomTestCase(unittest.TestCase):
     def assertEqual(self, value, target, msg = None, ** kwargs):
         self.assertTrue(* is_equal(target, value, ** kwargs))
     
-    def assertReproductible(self, value, file):
+    def assertReproductible(self, value, file, max_err = 1e-3, ** kwargs):
         file = os.path.join(reproductibility_dir, file)
         if not os.path.exists(file):
             os.makedirs(reproductibility_dir, exist_ok = True)
             dump_data(filename = file, data = value)
-        self.assertEqual(load_data(file), value)
+        self.assertEqual(load_data(file), value, max_err = max_err, ** kwargs)
     

@@ -377,9 +377,12 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     im = None
     if isinstance(y, dict):
         if len(y) > 0: kwargs.pop('color', None)
+        colors = _normalize_colors(color, cmap = kwargs.pop('cmap', None)) if isinstance(
+            color, _data_iterable) else None
         for i, (label, data) in enumerate(y.items()):
             xi = x
             if plot_type == 'bar': xi = x + i * kwargs['width'] + 0.1
+            if colors is not None: kwargs['color'] = colors[i]
             im = _plot_data(ax, xi, data, {'label' : label, ** kwargs})
         
     else:
@@ -797,7 +800,7 @@ def plot_confusion_matrix(cm = None, true = None, pred = None, x = None, labels 
     )
 
 def plot_matrix(matrix = None, x = None, x_labels = None, y_labels = None, norm = False,
-                factor_size = 1., cmap = 'magma', ticksize = 13, repeat_factor = 0,
+                factor_size = 1., cmap = 'magma', ticksize = 13, repeat_factor = 0, show_text = True,
                 
                 filename = None, show = True, close = True, ** kwargs
                ):
@@ -842,7 +845,7 @@ def plot_matrix(matrix = None, x = None, x_labels = None, y_labels = None, norm 
     
     ax, im = plot(matrix, show = False, close = False, ** kwargs)
     
-    if len(x_labels) <= _tick_label_limit and len(y_labels) <= _tick_label_limit:
+    if len(x_labels) <= _tick_label_limit and len(y_labels) <= _tick_label_limit and show_text:
         matrix = np.around(matrix, decimals = 2)
         
         threshold = matrix.max() - (matrix.max() - matrix.min()) / 2.

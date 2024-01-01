@@ -36,8 +36,16 @@ from models.model_utils import _pretrained_models_folder, is_model_name, get_mod
 
 logger = logging.getLogger(__name__)
 
-_trackable_objects = (
-    tf.keras.Model, tf.keras.losses.Loss, tf.keras.optimizers.Optimizer, tf.keras.metrics.Metric
+if tf.__version__ > '2.10':
+    _optimizer_types    = (tf.keras.optimizers.Optimizer, tf.keras.optimizers.legacy.Optimizer)
+else:    
+    _optimizer_types    = (tf.keras.optimizers.Optimizer, )
+
+_trackable_objects  = (
+    tf.keras.Model,
+    tf.keras.losses.Loss,
+    tf.keras.metrics.Metric,
+    * _optimizer_types
 )
 
 class ModelInstances(type):
@@ -483,7 +491,7 @@ class BaseModel(metaclass = ModelInstances):
             
         if isinstance(var, tf.keras.Model):
             self._init_model(name, var)
-        elif isinstance(var, tf.keras.optimizers.Optimizer):
+        elif isinstance(var, _optimizer_types):
             self._init_optimizer(name, var)
         elif isinstance(var, tf.keras.losses.Loss):
             self._init_loss(name, var)
@@ -513,7 +521,7 @@ class BaseModel(metaclass = ModelInstances):
         setattr(self.__ckpt, name, model)
         
     def _init_optimizer(self, name, optimizer):
-        assert isinstance(optimizer, tf.keras.optimizers.Optimizer), "'optimizer' must be a `tf.keras.optimizers.Optimizer` instance !"
+        assert isinstance(optimizer, _optimizer_types), "'optimizer' must be a `tf.keras.optimizers.Optimizer` instance !"
         
         if name in self.__optimizers:
             logger.warning("Optimizer '{}' already exists !".format(name))
@@ -584,9 +592,9 @@ class BaseModel(metaclass = ModelInstances):
             return [self.__metrics[m] if isinstance(m, str) else m for m in met_name]
         return self.__metrics[met_name] if isinstance(met_name, str) else met_name
     
-    def get_compiled_metrics(self, new_metrics = None, add_loss = True):
+    def get_compiled_metrics(self, new_metrics = None, add_loss = True, ** kwargs):
         metrics = get_metrics(
-            new_metrics, ** self.default_metrics_config
+            new_metrics, ** {** self.default_metrics_config, ** kwargs}
         ) if new_metrics else self.__metrics
         return MetricList(metrics, losses = self.__losses if add_loss else None)
     

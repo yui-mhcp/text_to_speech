@@ -129,7 +129,8 @@ def _to_np(boxes):
     if hasattr(boxes, 'numpy'):     return boxes.numpy()
     elif isinstance(boxes, dict):   return {k : _to_np(v) for k, v in boxes.items()}
     elif isinstance(boxes, list):   return [_to_np(b) for b in boxes]
-    return np.array(boxes)
+    elif isinstance(boxes, BoundingBox):    return np.array(boxes)
+    return boxes
 
 def convert_box_format(box,
                        output_format    = BoxFormat.DEFAULT,

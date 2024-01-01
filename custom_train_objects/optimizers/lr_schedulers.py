@@ -43,9 +43,9 @@ class DivideByStep(CustomScheduler):
     
     def get_config(self):
         config = super(DivideByStep, self).get_config()
-        config['factor'] = self.factor
-        config['minval'] = self.minval
-        config['maxval'] = self.maxval
+        config['factor'] = float(self.factor)
+        config['minval'] = float(self.minval)
+        config['maxval'] = float(self.maxval)
         return config
 
 class WarmupScheduler(CustomScheduler):

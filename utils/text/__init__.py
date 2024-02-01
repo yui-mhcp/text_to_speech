@@ -14,7 +14,7 @@ import logging
 
 from utils.text import cmudict
 
-from utils.text.bpe import bytes_to_unicode, bpe
+from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
 from utils.text.text_encoder import TextEncoder
 from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
 from utils.text.ctc_decoder import ctc_decode

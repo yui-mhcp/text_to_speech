@@ -31,7 +31,7 @@ _data_iterable  = (list, tuple, range, np.ndarray)
 
 _keys_to_propagate  = (
     'x', 'hlines', 'vlines', 'hlines_kwargs', 'vlines_kwargs', 'legend_kwargs',
-    'xtick_labels', 'ytick_labels', 'tick_labels', 'marker', 'marker_kwargs'
+    'xtick_labels', 'ytick_labels', 'tick_labels', 'marker', 'marker_kwargs', 'linestyle'
 )
 
 _default_polygon_plot_config  = {
@@ -93,16 +93,45 @@ _default_volume_plot_config = {
     'cmap'  : 'magma'
 }
 
+def _get_label_config(label, idx, config):
+    if isinstance(config, dict): return config[label]
+    elif isinstance(config, _data_iterable): return config[idx]
+    return config
+
 def _normalize_colors(colors, cmap = None):
     if not isinstance(colors, _data_iterable): return colors
     
     if (isinstance(colors, np.ndarray) and colors.dtype in (np.uint8, np.int32, np.int64)) or all(
         isinstance(c, int) for c in colors):
-        colors = np.array(colors)
+        colors = np.array(list(colors))
         mapper = plt.cm.ScalarMappable(cmap = cmap)
         colors = np.reshape(mapper.to_rgba(np.reshape(colors, [-1])), colors.shape + (4, ))
     
     return colors
+
+def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
+    if lines is None: return
+    _drawing_method = getattr(ax, 'axvline' if vertical else 'axhline')
+    
+    config = config.copy()
+    if 'colors' in config: config['color'] = config.pop('colors')
+    elif not isinstance(default_color, _data_iterable): 
+        config.setdefault('color', default_color)
+    
+    if not isinstance(lines, dict): lines = {None : lines}
+
+    for label, lines in lines.items():
+        if not isinstance(lines, _data_iterable): lines = [lines]
+        lines_config = config if not label else {
+            k : v if not isinstance(v, dict) else v[label] for k, v in config.items()
+        }
+        if 'color' in lines_config:
+            lines_config['color'] = _normalize_colors(lines_config['color'], cmap)
+        for i, line in enumerate(lines):
+            if label: config['label'] = label if i == 0 else None
+            _drawing_method(
+                line, ** {k : _get_label_config(label, i, v) for k, v in lines_config.items()}
+            )
 
 def _set_boxplot_colors(im, colors, facecolor, cmap = None):
     colors = _normalize_colors(colors, cmap = cmap) if isinstance(colors, _data_iterable) else [colors] * len(im['boxes'])
@@ -378,53 +407,25 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     if isinstance(y, dict):
         if len(y) > 0: kwargs.pop('color', None)
         colors = _normalize_colors(color, cmap = kwargs.pop('cmap', None)) if isinstance(
-            color, _data_iterable) else None
+            color, _data_iterable
+        ) else None
         for i, (label, data) in enumerate(y.items()):
+            kwargs_i = {k : _get_label_config(label, i, v) for k, v in kwargs.items()}
+            
             xi = x
-            if plot_type == 'bar': xi = x + i * kwargs['width'] + 0.1
-            if colors is not None: kwargs['color'] = colors[i]
-            im = _plot_data(ax, xi, data, {'label' : label, ** kwargs})
+            if plot_type == 'bar': xi = x + i * kwargs_i['width'] + 0.1
+            if colors is not None: kwargs_i['color'] = colors[i]
+            im = _plot_data(ax, xi, data, {'label' : label, ** kwargs_i})
         
     else:
         im = _plot_data(ax, x, y, kwargs)
     
-    if hlines is not None:
-        hlines_kwargs.setdefault('colors', color)
-        if xlim is None:
-            h_colors = hlines_kwargs.pop('colors')
-            if not isinstance(hlines, _data_iterable): hlines = [hlines]
-            if not isinstance(h_colors, _data_iterable): h_colors = [h_colors]
-            
-            if not isinstance(hlines, dict): hlines = {None : hlines}
-
-            for label, lines in hlines.items():
-                for i, line in enumerate(lines):
-                    if label: hines_kwargs['label'] = label if i == 0 else None
-                    ax.axvline(
-                        line, color = h_colors[i if len(h_colors) > 1 else 0], ** hlines_kwargs
-                    )
-        else:
-            xmin, xmax = xlim
-            ax.hlines(hlines, xmin, xmax, ** hlines_kwargs)
-    
-    if vlines is not None:
-        vlines_kwargs.setdefault('colors', color)
-        if ylim is None:
-            v_colors = vlines_kwargs.pop('colors')
-            if not isinstance(vlines, (* _data_iterable, dict)): vlines = [vlines]
-            if not isinstance(v_colors, _data_iterable): v_colors = [v_colors]
-            
-            if not isinstance(vlines, dict): vlines = {None : vlines}
-
-            for label, lines in vlines.items():
-                for i, line in enumerate(lines):
-                    if label: vlines_kwargs['label'] = label if i == 0 else None
-                    ax.axvline(
-                        line, color = v_colors[i if len(v_colors) > 1 else 0], ** vlines_kwargs
-                    )
-        else:
-            ymin, ymax = ylim
-            ax.vlines(vlines, ymin, ymax, ** vlines_kwargs)
+    _plot_lines(
+        ax, hlines, hlines_kwargs, color, vertical = False, cmap = kwargs.get('cmap', None)
+    )
+    _plot_lines(
+        ax, vlines, vlines_kwargs, color, vertical = True, cmap = kwargs.get('cmap', None)
+    )
     
     if (
         isinstance(y, dict)

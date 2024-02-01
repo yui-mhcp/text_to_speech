@@ -83,7 +83,7 @@ def convert_to_tensor(data):
         This function uses the `tf.cast` with the inferred output type
         The other benefit is the standardization between types (e.g., floating --> tf.float32)
     """
-    if isinstance(data, tf.Tensor): return data
+    if isinstance(data, tf.Tensor) or data is None: return data
     if isinstance(data, (list, tuple, dict)):
         return tf.nest.map_structure(convert_to_tensor, data)
     
@@ -210,16 +210,25 @@ def execute_eagerly(fn  = None,
     
     return wrapper if fn is None else wrapper(fn)
 
-def cast_arg(value, annot):
+def cast_arg(value, annot, force = False):
+    if value is None: return None
     if isinstance(annot, tf.TensorSpec):
         value = tf.cast(value, annot.dtype)
         if annot.shape is not None: value = tf.ensure_shape(value, annot.shape)
         return value
     elif annot == tf.Tensor:
         return convert_to_tensor(value)
+    elif force and not isinstance(value, (str, bool)) and not callable(value):
+        return convert_to_tensor(value)
     return value
 
-def tf_compile(fn = None, experimental_follow_type_hints = False, ** kwargs):
+def tf_compile(fn = None,
+               support_xla  = False,
+               cast_kwargs  = False,
+               cast_defaults    = True,
+               follow_type_hints    = False,
+               ** compile_kwargs
+              ):
     """
         This function is equivalent to `tf.function` except that it pre-processes the arguments to cast them to `tf.Tensor` (only if `experimental_follow_type_hints == True`)
         If `experimental_follow_type_hints = False` it simply returns `tf.function` call
@@ -257,29 +266,56 @@ def tf_compile(fn = None, experimental_follow_type_hints = False, ** kwargs):
     """
     def wrapper(fn):
         @wraps(fn)
-        def inner(* args, ** kwargs):
-            if tf.executing_eagerly():
+        def inner(* args, run_eagerly = False, use_xla = None, recompile = False, ** kwargs):
+            if run_eagerly or not tf.executing_eagerly(): return fn(* args, ** kwargs)
+            
+            if follow_type_hints and fn_annots:
                 args = tuple([
                     cast_arg(arg, fn_annots.get(name, None))
                     for name, arg in zip(fn_args[: len(args)], args)
                 ])
                 kwargs  = {
-                    k : cast_arg(v, fn_annots.get(k, None)) for k, v in kwargs.items()
+                    k : cast_arg(v, fn_annots.get(k, None), cast_kwargs)
+                    for k, v in kwargs.items()
                 }
+            if cast_defaults:
+                for k, annot in defaults_to_cast.items():
+                    if k not in fn_args[:len(args)] and k not in kwargs:
+                        kwargs[k] = cast_arg(fn_kwargs[k], annot)
             
-            return graph_fn(* args, ** kwargs)
+            if use_xla is None: use_xla = support_xla
+            if use_xla and not support_xla:
+                warnings.warn('`use_xla = True` while the function {} does not support XLA\nSet `support_xla = True` in the decorator if you want to enable it'.format(fn.__name__))
+                use_xla = False
+            
+            if not use_xla:
+                if recompile or 'graph' not in _compiled:
+                    _compiled['graph'] = tf.function(fn, ** compile_kwargs)
+                return _compiled['graph'](* args, ** kwargs)
+            else:
+                if recompile or 'xla' not in _compiled:
+                    _compiled['xla'] = tf.function(fn, jit_compile = True, ** compile_kwargs)
+                return _compiled['xla'](* args, ** kwargs)
+        
+        _compiled   = {}
         
         fn_args     = get_args(fn)
+        fn_kwargs   = get_kwargs(fn)
         if hasattr(inspect, 'get_annotations'):
             fn_annots   = inspect.get_annotations(fn)
         else:
             fn_annots   = fn.__annotations__
+        fn_annots = {
+            k : v for k, v in fn_annots.items()
+            if isinstance(v, tf.TensorSpec) or v is tf.Tensor
+        }
+        defaults_to_cast    = {
+            k : v for k, v in fn_annots.items() if fn_kwargs.get(k, None) is not None
+        }
         
-        graph_fn    = tf.function(fn, ** kwargs)
-        
-        return inner if fn_annots else graph_fn
+        return inner
     
-    if not experimental_follow_type_hints: return tf.function(fn, ** kwargs)
+    follow_type_hints = compile_kwargs.pop('experimental_follow_type_hints', follow_type_hints)
     return wrapper if fn is None else wrapper(fn)
 
 def unstack_and_flatten(struct):

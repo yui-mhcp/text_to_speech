@@ -27,19 +27,26 @@ class ContextManager:
 
 def dispatch_wrapper(methods, name, default = None):
     def wrapper(fn):
-        def dispatch(dispatch_fn = None, keys = None):
-            if dispatch_fn is not None and callable(dispatch_fn):
-                if keys is None: keys = dispatch_fn.__name__.split('_')[-1]
-                if not isinstance(keys, (list, tuple)): keys = [keys]
-                methods.update({k : dispatch_fn for k in keys})
+        def dispatch(dispatch_fn = None, keys = None, method = None, doc = None):
+            def dispatch_wrapper(dispatch_fn):
+                entries = keys if keys else dispatch_fn.__name__.split('_')[-1]
+                if not isinstance(entries, (list, tuple)): entries = [entries]
+                methods.update({e : dispatch_fn for e in entries})
                 
                 add_dispatch_doc(
-                    fn = fn, dispatch_fn = dispatch_fn, keys = keys, name = name, default = default
+                    fn      = fn,
+                    dispatch_fn = dispatch_fn,
+                    keys    = entries,
+                    name    = name,
+                    default = default,
+                    method  = method,
+                    doc     = doc
                 )
                 return dispatch_fn
             
-            keys = dispatch_fn
-            return lambda dispatch_fn: fn.dispatch(dispatch_fn, keys)
+            if dispatch_fn is not None and not callable(dispatch_fn):
+                dispatch_fn, keys = None, dispatch_fn
+            return dispatch_wrapper if dispatch_fn is None else dispatch_wrapper(dispatch_fn)
         
         fn.dispatch = dispatch
         fn.methods  = methods
@@ -51,18 +58,29 @@ def dispatch_wrapper(methods, name, default = None):
     
     return wrapper
 
-def add_dispatch_doc(fn, dispatch_fn, name, keys, show_doc = False, default = None):
+def add_dispatch_doc(fn,
+                     dispatch_fn,
+                     name,
+                     keys,
+                     show_doc   = False,
+                     default    = None,
+                     method     = None,
+                     doc        = None
+                    ):
     if not keys: return
     display = keys[0] if len(keys) == 1 else tuple(keys)
     
-    fn.__doc__ = '{}{}{}: {}\n    {}{}{}'.format(
+    _show_fn    = dispatch_fn
+    if doc is not None: _show_fn = doc
+    elif method:        _show_fn = getattr(dispatch_fn, method)
+    fn.__doc__  = '{}{}{}: {}\n    {}{}{}'.format(
         '{}\n\n'.format(fn.__doc__) if fn.__doc__ is not None else '',
         name,
         ' (default) ' if default and default in keys else ' ',
         display,
-        dispatch_fn.__name__,
-        inspect.signature(dispatch_fn),
-        '\n{}'.format(dispatch_fn.__doc__) if show_doc and dispatch_fn.__doc__ else ''
+        dispatch_fn.__name__ + ('' if not method else '.{}'.format(method)),
+        inspect.signature(_show_fn),
+        '\n{}'.format(_show_fn.__doc__) if show_doc and _show_fn.__doc__ else ''
     )
 
 def partial(fn = None, * partial_args, _force = False, ** partial_config):

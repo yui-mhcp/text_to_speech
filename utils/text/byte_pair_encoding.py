@@ -57,7 +57,6 @@ def bpe(token, bpe_ranks, end_of_word = None):
     
     while True:
         bigram = min(pairs, key = lambda pair: bpe_ranks.get(pair, float('inf')))
-
         if bigram not in bpe_ranks: break
         
         first, second = bigram

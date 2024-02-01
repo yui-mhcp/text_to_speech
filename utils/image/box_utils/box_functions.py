@@ -180,7 +180,8 @@ def convert_box_format(box,
     """
     if as_list is None: as_list = extended
     
-    if isinstance(box, (list, tuple)) and isinstance(box[0], (list, np.ndarray)): box = np.array(box)
+    if isinstance(box, (list, tuple)) and box and isinstance(box[0], (list, np.ndarray)):
+        box = np.array(box)
     if isinstance(box, tf.Tensor):
         stack_fn, unstack_fn, min_fn, max_fn = tf.stack, tf.unstack, tf.reduce_min, tf.reduce_max
         reshape_fn = tf.reshape
@@ -194,6 +195,7 @@ def convert_box_format(box,
     shape_fn = tf.shape if not tf.executing_eagerly() else lambda t: t.shape
     
     if isinstance(box, (list, tuple)):
+        if not box: return []
         if isinstance(box[0], (dict, BoundingBox)):
             result = [convert_box_format(
                 b,

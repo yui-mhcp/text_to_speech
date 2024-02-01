@@ -17,7 +17,7 @@ from utils.tensorflow_utils import tf_compile
 from utils.distance.distance_method import tf_distance
 from utils.distance.clustering import clustering_wrapper, get_assignment, compute_score
 
-@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True, cast_defaults = True)
 def _kmeans(points  : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
             k       : tf.TensorSpec(shape = (), dtype = tf.int32),
 
@@ -117,7 +117,7 @@ def _kmeans(points  : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
     
     return centroids, assignment
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True, cast_defaults = True)
 def kmeans_pp_init(points   : tf.Tensor,
                    k        : tf.Tensor,
                    start    : tf.Tensor = -1,

@@ -26,6 +26,7 @@ def get_loss(loss_name, * args, ** kwargs):
         return tf.keras.losses.deserialize(loss_name, _losses)
 
     if loss_name == 'LossFunctionWrapper': loss_name = kwargs.pop('fn')
+    else: kwargs.pop('fn', None)
     return get_object(
         _losses, loss_name, * args, ** kwargs, types = (type, tf.keras.losses.Loss),
         err = True, print_name = 'loss', function_wrapper = LossFunctionWrapper

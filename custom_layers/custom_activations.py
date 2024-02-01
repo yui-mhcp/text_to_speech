@@ -13,6 +13,19 @@
 import math
 import tensorflow as tf
 
+class CustomActivation(tf.keras.layers.Layer):
+    def __init__(self, activation, ** kwargs):
+        super().__init__(** kwargs)
+        self.activation = activation
+        
+        self.activation_fn  = get_activation(activation, return_layer = False)
+    
+    def call(self, inputs):
+        return self.activation_fn(inputs)
+    
+    def get_config(self):
+        return {** super().get_config(), 'activation' : self.activation}
+
 def l2_norm(x, axis = -1):
     return tf.math.l2_normalize(x, axis = axis)
 
@@ -73,6 +86,7 @@ _activations = {
     "LogSoftmax"    : LogSoftmax,
     "L2Norm"        : L2Norm,
     "l2_norm"       : L2Norm,
+    'l2_normalize'  : L2Norm,
     "glu"           : GLU,
     "gelu"          : GeLU,
     "gelu_new"      : gelu_new,

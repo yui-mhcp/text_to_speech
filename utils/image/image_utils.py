@@ -49,7 +49,7 @@ def normalize_color(color, image = None):
         return tuple(float(ci) / 255. for ci in color)
     return tuple(int(ci) for ci in color)
 
-@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True)
 def tf_normalize_color(color : tf.Tensor, image : tf.Tensor = None):
     """ Converts `color` to a 3-items `tf.Tensor` with the same dtype as `image` (if provided, default to `uint8`) """
     color = color_to_rgb(color)

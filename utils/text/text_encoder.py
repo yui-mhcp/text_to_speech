@@ -24,8 +24,8 @@ from functools import cached_property
 from utils import dump_json, load_json, flatten, pad_batch, get_enum_item, convert_to_str, download_file
 from utils.tensorflow_utils import execute_eagerly
 from utils.text import cleaners as cleaners_module
-from utils.text.bpe import bytes_to_unicode, bpe
 from utils.text.ctc_decoder import ctc_decode
+from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
 from utils.text.text_processing import split_sentence, split_and_join, filter_texts
 
 logger  = logging.getLogger(__name__)
@@ -946,7 +946,7 @@ class TextEncoder(object):
             specials = [w for w in tokenizer.all_special_tokens if w not in vocab]
             return list(sorted(vocab, key = vocab.get)) + specials
         
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, WhisperTokenizer
         
         pretrained = name
         if isinstance(name, str):
@@ -969,7 +969,7 @@ class TextEncoder(object):
                 'sos_token'         : pretrained.cls_token,
                 'eos_token'         : pretrained.sep_token
             })
-        elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer)):
+        elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer, WhisperTokenizer)):
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             kwargs.update({
                 'vocab' : get_vocab_from_encoder(pretrained),
@@ -1071,33 +1071,7 @@ class TextEncoder(object):
 
     @classmethod
     def from_whisper_pretrained(cls, multilingual = True, ** kwargs):
-        from models import _pretrained_models_folder
-        from transformers import GPT2Tokenizer
-        sub_dir = 'multilingual' if multilingual else 'gpt2'
-        
-        directory   = os.path.join(
-            _pretrained_models_folder, 'pretrained_weights', sub_dir
-        )
-        os.makedirs(directory, exist_ok = True)
-        
-        for f in ('added_tokens.json', 'merges.txt', 'special_tokens_map.json', 'tokenizer_config.json', 'vocab.json'):
-            _ = download_file(url = _whisper_url.format(sub_dir, f), directory = directory)
-        
-        pretrained = GPT2Tokenizer.from_pretrained(directory)
-        specials = [
-            "<|startoftranscript|>",
-            * [f"<|{lang}|>" for lang in WHISPER_LANGUAGES.keys()],
-            "<|translate|>",
-            "<|transcribe|>",
-            "<|startoflm|>",
-            "<|startofprev|>",
-            "<|nospeech|>",
-            "<|notimestamps|>",
-        ]
-
-        pretrained.add_special_tokens(dict(additional_special_tokens = specials))
-
-        return cls.from_transformers_pretrained(pretrained)
+        return cls.from_transformers_pretrained('openai/whisper-base')
 
     @classmethod
     def build_from_corpus(cls, textes, word_level, max_vocab_size = -1, 

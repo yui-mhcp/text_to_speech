@@ -17,7 +17,7 @@ from utils.distance.k_means import _kmeans
 from utils.distance.distance_method import tf_distance
 from utils.distance.clustering import clustering_wrapper
 
-@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True, cast_defaults = True)
 def _spectral_clustering(points : tf.TensorSpec(shape = (None, None), dtype = tf.float32),
                          k      : tf.TensorSpec(shape = (), dtype = tf.int32),
                          

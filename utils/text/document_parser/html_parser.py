@@ -1,5 +1,4 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
+# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
 # Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
@@ -13,13 +12,16 @@
 import re
 import logging
 
+from utils import get_timer
 from utils.text.document_parser.parser import parse_document
 
+timer, time_logger, _ = get_timer()
 logger = logging.getLogger(__name__)
 
 _wiki_cleaner = r'(\[edit\]|\[[0-9]\])'
 
 @parse_document.dispatch
+@timer
 def parse_html(text,
                level    = 2,
                
@@ -42,11 +44,13 @@ def parse_html(text,
               ):
     from bs4 import BeautifulSoup
 
+    @timer
     def clean_parts(parts, separator = '\n\n'):
         if _remove_regex is not None: parts = [re.sub(_remove_regex, lambda m: '', p) for p in parts]
         text = [' '.join([w for w in p.split(' ') if len(w) > 0]) for p in parts]
         return separator.join([p for p in text if len(p) > 0])
     
+    @timer
     def should_skip_list(title_levels, current_text):
         if len(title_levels) <= 1 and not is_sub_document: return True
         for t in title_levels[1:]:
@@ -56,6 +60,7 @@ def parse_html(text,
         return False
         
         
+    @timer
     def normalize_paragraph(title_levels, current_paragraph_idx, paragraph):
         paragraphs = clean_parts(paragraph.get('text', []), p_separator)
         
@@ -69,6 +74,7 @@ def parse_html(text,
 
         return {'text' : []}, formatted
     
+    @timer
     def _is_list_of_links(tag, text):
         links = tag.find_all('a')
         if not links: return False
@@ -83,7 +89,8 @@ def parse_html(text,
     if not isinstance(tags_to_keep, (list, tuple)): tags_to_keep = [tags_to_keep]
     _remove_regex = None if not remove_pattern else re.compile(remove_pattern)
     
-    parser = BeautifulSoup(text)
+    with time_logger.timer('parsing'):
+        parser = BeautifulSoup(text)
 
     to_skip_tags    = []
     if skip_header: to_skip_tags.append('header')
@@ -93,6 +100,9 @@ def parse_html(text,
     tag_titles = [tag_title] + ['h{}'.format(i+2) for i in range(level)]
     tags = tags_to_keep + tag_titles + to_skip_tags
     
+    with time_logger.timer('find tags'):
+        parsed_tags = parser.find_all(tags)
+
     title_levels = []
     
     to_skip = []
@@ -100,7 +110,7 @@ def parse_html(text,
     paragraphs = []
     current_paragraph = {'text' : []}
     current_paragraph_idx = 0
-    for tag in parser.find_all(tags):
+    for tag in parsed_tags:
         if tag.name in tag_titles:
             current_paragraph, parsed = normalize_paragraph(title_levels, current_paragraph_idx, current_paragraph)
             if parsed: paragraphs.append(parsed)

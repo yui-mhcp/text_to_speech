@@ -45,7 +45,7 @@ def distance_method_wrapper(fn = None, name = None, is_similarity = False, expan
 
 similarity_method_wrapper = partial(distance_method_wrapper, is_similarity = True)
 
-@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True)
 def tf_distance(x : tf.Tensor,
                 y : tf.Tensor,
                 method,

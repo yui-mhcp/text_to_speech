@@ -247,7 +247,7 @@ def find_layers_mapping(tf_model,
         Note 3 : In theory this function has been designed to map tensorflow's weights (tf_model) to pytorch's weights (pt_model)
                  but, in practice, both can be either tensorflow or pytorch models
     """
-    from utils.distance.distance_method import edit_distance
+    from utils.distance import edit_distance
     
     shape_fn  = sorted if not partial else len
     

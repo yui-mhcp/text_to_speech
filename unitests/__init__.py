@@ -23,8 +23,8 @@ data_dir    = os.path.join(os.path.dirname(__file__), '__data')
 reproductibility_dir    = os.path.join(os.path.dirname(__file__), '__reproduction')
 
 class CustomTestCase(unittest.TestCase):
-    def assertEqual(self, value, target, msg = None, ** kwargs):
-        self.assertTrue(* is_equal(target, value, ** kwargs))
+    def assertEqual(self, value, target, msg = None, max_err = 1e-6, ** kwargs):
+        self.assertTrue(* is_equal(target, value, max_err = max_err, ** kwargs))
     
     def assertReproductible(self, value, file, max_err = 1e-3, ** kwargs):
         file = os.path.join(reproductibility_dir, file)

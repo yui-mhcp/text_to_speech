@@ -16,7 +16,7 @@ import tensorflow as tf
 
 from utils.embeddings import load_embedding, compute_centroids, embeddings_to_np, get_embeddings_with_ids
 from utils.tensorflow_utils import tf_compile
-from utils.distance.distance_method import tf_distance
+from utils.distance.distance_method import distance
 
 class KNN(object):
     """
@@ -219,7 +219,7 @@ class KNN(object):
             marker_kwargs = marker_kwargs, ** kwargs
         )
 
-@tf_compile(reduce_retracing = True, experimental_follow_type_hints = True)
+@tf_compile(reduce_retracing = True, follow_type_hints = True, cast_defaults = True)
 def knn(query   : tf.TensorSpec(shape = None, dtype = tf.float32) = None,
         embeddings  : tf.TensorSpec(shape = (None, None), dtype = tf.float32) = None,
         distance_matrix : tf.TensorSpec(shape = (None, None), dtype = tf.float32) = None,
@@ -257,9 +257,13 @@ def knn(query   : tf.TensorSpec(shape = None, dtype = tf.float32) = None,
     assert distance_matrix is not None or (query is not None and embeddings is not None and distance_metric)
     
     if distance_matrix is None:
-        distance_matrix = tf_distance(
-            query, embeddings, distance_metric, as_matrix = True, force_distance = True,
-            max_matrix_size = max_matrix_size
+        distance_matrix = distance(
+            query,
+            embeddings,
+            distance_metric,
+            max_matrix_size = max_matrix_size,
+            force_distance  = True,
+            as_matrix   = True
         )
 
     k_nearest_dists, k_nearest_idx = tf.nn.top_k(

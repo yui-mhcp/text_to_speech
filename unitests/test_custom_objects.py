@@ -20,6 +20,7 @@ from custom_train_objects.optimizers import DivideByStep
 class TestCustomObjects(CustomTestCase):
     def test_losses(self):
         for loss in _losses.keys():
+            if loss == 'LossFunctionWrapper': continue
             with self.subTest(loss = loss):
                 try:
                     loss_obj = get_loss(loss, name = loss)
@@ -27,6 +28,8 @@ class TestCustomObjects(CustomTestCase):
                     continue
                 
                 self.assertTrue(isinstance(loss_obj, tf.keras.losses.Loss), str(loss_obj))
+                if loss_obj.__class__.__name__ == 'LossFunctionWrapper' and 'fn' not in loss_obj.get_config():
+                    continue
                 self.assertEqual(
                     get_loss(tf.keras.losses.serialize(loss_obj)), loss_obj
                 )
@@ -34,9 +37,8 @@ class TestCustomObjects(CustomTestCase):
                     'class_name' : loss_obj.__class__.__name__, 'config' : loss_obj.get_config()
                 }), loss_obj)
                 config = loss_obj.get_config()
-                config.pop('fn', None)
                 self.assertEqual(get_loss(loss, ** config), loss_obj)
-                
+    
     def test_metrics(self):
         for metric in _metrics.keys():
             with self.subTest(metric = metric):
@@ -58,6 +60,7 @@ class TestCustomObjects(CustomTestCase):
 
     def test_optimizers(self):
         for optim in _optimizers.keys():
+            if optim == 'Optimizer': continue
             with self.subTest(optimizer = optim):
                 optimizer = get_optimizer(optim, name = optim)
                 

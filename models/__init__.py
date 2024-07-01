@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,50 +10,50 @@
 # limitations under the License.
 
 import os
-import glob
+import logging
 
-from models.model_utils import _pretrained_models_folder, infer_model_class
-from utils.generic_utils import get_object, print_objects
+from .saving import *
+from .model_utils import *
+from .interfaces.base_model import BaseModel
 
-def __load():
-    for module_name in glob.glob('models/*'):
-        if not os.path.isdir(module_name): continue
-        module_name = module_name.replace(os.path.sep, '.')
+from utils import import_objects
 
-        module = __import__(
-            module_name, fromlist = ['_models']
-        )
-        if hasattr(module, '_models'):
-            _models.update(module._models)
+logger = logging.getLogger(__name__)
 
-def get_model(model_name, *args, **kwargs):
-    return get_object(
-        _models, model_name, * args, print_name = 'models', err = True, ** kwargs
-    )
+_models = import_objects(
+    __package__.replace('.', os.path.sep),
+    filters = lambda name, val: 'interfaces' not in val.__module__,
+    classes = BaseModel,
+    allow_functions = False
+)
+globals().update(_models)
 
-def print_models():
-    print_objects(_models, 'models')
 
-def get_pretrained(model_name):
-    model_class = infer_model_class(model_name, _models)
+def get_pretrained(name, ** kwargs):
+    model_class = infer_model_class(name, _models)
     if model_class is None:
         print_pretrained()
-        raise ValueError("Model {} does not exist or its configuration file is corrupted !".format(model_name))
+        raise ValueError("Model {} does not exist or has an invalid `config.json` !".format(
+            name
+        ))
     
-    return model_class(nom = model_name)
+    return model_class(name = name, ** kwargs)
 
 def print_pretrained():
     _str_classes = {k : k for k in _models.keys()}
     _groups = {}
     
-    for f in os.listdir(_pretrained_models_folder):
+    for f in os.listdir(get_saving_dir()):
         class_name = infer_model_class(f, _str_classes)
         if class_name: _groups.setdefault(class_name, []).append(f)
     
+    msg = ''
     for class_name, models in _groups.items():
-        print("Models for class {} :".format(class_name))
-        for m in models: print("- {}".format(m))
-        print()
+        msg += 'Models for class {} :\n- {}\n'.format(
+            class_name, '\n- '.join([m for m in models])
+        )
+    logger.info(msg)
+    return _groups
 
 def update_models():
     names = [
@@ -65,10 +64,7 @@ def update_models():
     for name in names:
         print("Update model '{}'".format(name))
         model = get_pretrained(name)
-        model.save(save_ckpt = False)
+        model.save()
         print(model)
         del model
     
-_models = {}
-
-__load()

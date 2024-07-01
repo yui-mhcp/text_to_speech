@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,20 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-    WaveGlow classes (both supported in tf 2.x and pytorch)
-    Note that the tf2.x is not fully integrated with the new `BaseAudioModel` interface but it should still be trainable (but I recommand to use the pretrained model from NVIDIA)
-"""
-
 import math
 import logging
 import numpy as np
-import tensorflow as tf
 
+from utils import pad_to_multiple
 from loggers import timer, time_logger
 from models.interfaces import BaseModel
+from utils.keras_utils import TensorSpec, ops, graph_compile
 from custom_architectures import get_architecture
-from models.weights_converter import pt_convert_model_weights
 
 logger = logging.getLogger(__name__)
 
@@ -54,26 +48,26 @@ class WaveGlow(BaseModel):
     def __init__(self,
                  audio_rate         = 22050,
                  n_mel_channels     = 80,
+                 pad_mel_value      = -11.,
                  max_input_length   = DEFAULT_MAX_MEL_LENGTH,
                  run_eagerly    = False,
                  ** kwargs
                 ):
         self.audio_rate         = audio_rate
         self.n_mel_channels     = n_mel_channels
+        self.pad_mel_value      = pad_mel_value
         self.max_input_length   = max_input_length
 
         super().__init__(** kwargs)
-        
-        if hasattr(self.vocoder, 'dummy_inputs'): self.vocoder(self.vocoder.dummy_inputs)
     
-    def _build_model(self, ** kwargs):
-        super()._build_model(
+    def build(self, vocoder = None, ** kwargs):
+        if not vocoder:
             vocoder = {
-                'architecture_name' : kwargs.pop('architecture_name', 'waveglow'),
+                'architecture'  : kwargs.pop('architecture', 'waveglow'),
                 'n_mel_channels'    : self.n_mel_channels,
                 ** kwargs
             }
-        )
+        return super().build(vocoder = vocoder)
     
     @property
     def run_eagerly(self):
@@ -81,13 +75,11 @@ class WaveGlow(BaseModel):
     
     @property
     def input_signature(self):
-        return tf.TensorSpec(
-            shape = (None, None, self.n_mel_channels), dtype = tf.float32
-        )
+        return TensorSpec(shape = (None, None, self.n_mel_channels), dtype = 'float32')
     
     @property
     def output_signature(self):
-        return tf.TensorSpec(shape = (None, None), dtype = tf.float32)
+        return TensorSpec(shape = (None, None), dtype = 'float32')
         
     @property
     def training_hparams(self):
@@ -99,51 +91,69 @@ class WaveGlow(BaseModel):
         des += "- Mel channels : {}\n".format(self.n_mel_channels)
         return des
     
+    def prepare_for_xla(self, mel, * args, padding_multiple = 512, ** kwargs):
+        return (
+            self, pad_to_multiple(mel, padding_multiple, 1, constant_values = self.pad_mel_value)
+        ), {}
+
+    @graph_compile(
+        prepare_for_graph = lambda self, * a, ** kw: self.prepare_for_xla(* a, ** kw)
+    )
+    def compiled_infer(self, spect):
+        return self.vocoder.infer(spect)
+
     def call(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect, ** kwargs)
     
     @timer(name = 'inference WaveGlow')
     def infer(self,
               mel,
-              * args,
-              win_len   = -1,
+              *,
+              win_len   = None,
               hop_len   = -64,
-              pad_value = None,
               batch     = False,
-              max_win_len   = -1,
+              use_slice = False,
+              max_win_len   = None,
               ** kwargs
              ):
         if isinstance(mel, str):    mel = np.load(mel)
-        if len(mel.shape) == 2:     mel = tf.expand_dims(mel, axis = 0)
+        if len(mel.shape) == 2:     mel = ops.expand_dims(mel, axis = 0)
+
+        seq_len     = mel.shape[1]
+        audio_len   = seq_len * 256
+        if win_len is None:
+            return self.compiled_infer(mel, ** kwargs)[:, : audio_len]
+
         if isinstance(win_len, float):
-            if pad_value is None:
-                win_len = max(1, mel.shape[1] // win_len) * win_len
+            if not use_slice:
+                win_len = int(math.ceil(seq_len / win_len) * win_len)
             else:
-                win_len = int(math.ceil(mel.shape[1] / win_len) * win_len)
+                win_len = max(1, seq_len // win_len) * int(win_len)
+
+        if max_win_len is not None: win_len = min(max_win_len, win_len)
         
-        if max_win_len > 0 and win_len > max_win_len: win_len = max_win_len
-        
-        if win_len == -1 or mel.shape[1] <= win_len:
-            if win_len != -1 and pad_value is not None:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('Padding mel with shape {} to {} frames'.format(mel.shape, win_len))
-                
-                audio_len = mel.shape[1] * 256
-                return self.vocoder.infer(tf.pad(
-                    mel, [(0, 0), (0, win_len - mel.shape[1]), (0, 0)], constant_values = pad_value
-                ))[:, : audio_len]
-            else:
-                return self.vocoder.infer(mel)
+        if seq_len <= win_len:
+            win_len = max(win_len, seq_len)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('Padding mel with shape {} to {} frames'.format(
+                    mel.shape, win_len
+                ))
+            
+            return self.compiled_infer(ops.pad(
+                mel, [(0, 0), (0, win_len - seq_len), (0, 0)],
+                constant_values = self.pad_mel_value
+            ), ** kwargs)[:, : audio_len]
         elif mel.shape[0] > 1:
             logger.info('Batch size is higher than 1 ({}), performing direct inference !'.format(
                 mel.shape
             ))
-            return self.vocoder.infer(mel)
+            return self.compiled_infer(mel, ** kwargs)
 
-        if hop_len <= 0:                 hop_len = win_len + hop_len
-        elif isinstance(hop_len, float): hop_len = int(win_len * hop_len)
+        win_len, hop_len = win_len, hop_len
+        if isinstance(hop_len, float):  hop_len = int(win_len * hop_len)
+        if hop_len < 0:                 hop_len = win_len + hop_len
 
-        starts  = _get_steps(mel.shape[1], win_len, hop_len)
+        starts  = _get_steps(seq_len, win_len, hop_len)
         parts   = [mel[:, start : start + win_len] for start in starts]
         overlaps    = ((starts[:-1] + win_len) - starts[1:]) * 256
         
@@ -153,12 +163,12 @@ class WaveGlow(BaseModel):
             ))
 
         if batch:
-            audio_parts = self.vocoder.infer(tf.concat(parts, axis = 0)).numpy()
+            audio_parts = self.compiled_infer(ops.concatenate(parts, axis = 0), ** kwargs)
         else:
             audio_parts = []
             for p in parts:
                 with time_logger.timer('single mel inference'):
-                    audio_parts.append(self.vocoder.infer(p)[0].numpy())
+                    audio_parts.append(self.compiled_infer(p, ** kwargs)[0])
 
         audio = []
         for i, part in enumerate(audio_parts):
@@ -166,14 +176,14 @@ class WaveGlow(BaseModel):
             end   = None if i == len(audio_parts) - 1 else -overlaps[i] // 2
             audio.append(part[start : end])
 
-        return np.concatenate(audio)
+        return ops.concatenate(audio, axis = -1)
     
     def compile(self, loss = 'mse', metrics = [], ** kwargs):
         super().compile(loss = loss, metrics = metrics, ** kwargs)
     
     def get_dataset_config(self, ** kwargs):
         kwargs['pad_kwargs']    = {
-            'padding_values'    : (-11., 0.)
+            'padding_values'    : (self.pad_mel_value, 0.)
         }
         kwargs['padded_batch']      = True
         
@@ -184,6 +194,7 @@ class WaveGlow(BaseModel):
         config.update({
             'audio_rate'    : self.audio_rate,
             'n_mel_channels'    : self.n_mel_channels,
+            'pad_mel_value'     : self.pad_mel_value,
             'max_input_length'  : self.max_input_length
         })
         

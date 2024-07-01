@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import numpy as np
+import keras.ops as K
 import tensorflow as tf
 
 from sklearn.utils import shuffle as sklearn_shuffle
@@ -19,7 +20,7 @@ from utils.distance import knn, kmeans, evaluate_clustering, find_clusters
 from utils import sample_df, compute_centroids, get_embeddings_with_ids
 from unitests import CustomTestCase, data_dir
 
-class TestDistance(CustomTestCase):
+class TestClustering(CustomTestCase):
     def setUp(self):
         self.points_x = np.array([
             [1., 1.], [2., 2.], [2., 1.], [1., 2.],
@@ -40,9 +41,10 @@ class TestDistance(CustomTestCase):
         points_x, points_y = sklearn_shuffle(self.points_x, self.points_y, random_state = 10)
         centroid_ids, centroids = compute_centroids(points_x, points_y)
         
-        self.assertEqual(set(centroid_ids.numpy().tolist()), set(points_y.tolist()))
+        self.assertEqual(set(K.convert_to_numpy(centroid_ids).tolist()), set(points_y.tolist()))
         self.assertEqual(
-            centroids, [np.mean(points_x[points_y == i], axis = 0) for i in centroid_ids.numpy()]
+            centroids,
+            [np.mean(points_x[points_y == i], axis = 0) for i in K.convert_to_numpy(centroid_ids)]
         )
 
         points, ids = get_embeddings_with_ids(self.points_x, self.points_y, [0, 2])
@@ -56,10 +58,11 @@ class TestDistance(CustomTestCase):
             sub_x, sub_y = points_x[indices], points_y[indices]
 
             self.assertEqual(
-                knn(x, sub_x, distance_metric = 'euclidian', ids = sub_y), [y]
+                knn(x, sub_x, distance_metric = 'euclidian', ids = sub_y), np.array([y])
             )
             self.assertEqual(
-                knn(x, sub_x, distance_metric = 'euclidian', ids = sub_y, weighted = True), [y]
+                knn(x, sub_x, distance_metric = 'euclidian', ids = sub_y, weighted = True),
+                np.array([y])
             )
             
             many_x = x + np.random.uniform(-0.1, 0.1, size = (16, len(x)))

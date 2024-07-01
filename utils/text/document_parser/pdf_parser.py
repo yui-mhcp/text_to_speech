@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -18,12 +17,7 @@ import numpy as np
 
 from PIL import Image
 
-from utils.text.document_parser.parser import parse_document, first_page_to_image
-try:
-    from loggers import DEV
-except ImportError as e:
-    DEV = 11
-    logging.addLevelName(DEV, 'DEV')
+from .parser import parse_document, first_page_to_image
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +92,13 @@ def parse_pdf(filename,
             paragraphes = []
             last_layout = None
             
-            if logger.isEnabledFor(DEV):
-                logger.log(DEV, "Page #{} layout : {}".format(page_number, page_layout))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Page #{} layout : {}".format(page_number, page_layout))
             
             # split page into 2 columns (if page is structured in 2-column format). 
             page_h, page_w = page_layout.bbox[3], page_layout.bbox[2]
             
-            if logger.isEnabledFor(DEV): logger.log(DEV, "\nMargin filtering...")
+            if logger.isEnabledFor(logging.DEBUG): logger.debug("\nMargin filtering...")
             
             left_col = sorted([
                 l for l in page_layout
@@ -117,7 +111,7 @@ def parse_pdf(filename,
             
             cols  = left_col + [None] + right_col
                 
-            logger.log(DEV, "\nParagraphs processing")
+            logger.debug("\nParagraphs processing")
             # process each layout in page (beginning by left column)
             for layout_idx, l in enumerate(cols):
                 # For column change (avoid overlap between last paragraph of left col and 1st paragraph of right col)
@@ -127,8 +121,8 @@ def parse_pdf(filename,
                 elif isinstance(l, LTTextBox) and len(l.get_text().strip()) == 0:
                     continue
                 
-                if logger.isEnabledFor(DEV):
-                    logger.log(DEV, 'Layout {} (box : {}) :\n  {}'.format(
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('Layout {} (box : {}) :\n  {}'.format(
                         layout_idx, [float('{:.2f}'.format(coord)) for coord in l.bbox], l
                     ))
                 
@@ -198,7 +192,7 @@ def is_overlap(last, new, page_h, max_diff_overlap = 0.05):
     _, _, _, y1 = new.bbox
     overlap = 1 if abs(y1 - y0) < max_diff_overlap or y1 > y0 else 0
     
-    logger.log(DEV, "Distance : {:.3f} (merging {})\n  Layout 1 : {}\n  Layout 2 : {}".format(
+    logger.debug("Distance : {:.3f} (merging {})\n  Layout 1 : {}\n  Layout 2 : {}".format(
         abs(y1 - y0), overlap, last, new
     ))
     return overlap
@@ -215,7 +209,7 @@ def is_in_margin(layout, page_h, page_w, skip_margin):
     if x0 / page_w < skip_w or x0 / page_w > (1. - skip_w): is_margin = True
 
     if is_margin:
-        logger.log(DEV, "Layout at position ({:.2f}, {:.2f}) is in margin ! (page shape : {})\n  {}".format(
+        logger.debug("Layout at position ({:.2f}, {:.2f}) is in margin ! (page shape : {})\n  {}".format(
             y0 / page_h, x0 / page_w, [page_h, page_w], layout
         ))
     return is_margin

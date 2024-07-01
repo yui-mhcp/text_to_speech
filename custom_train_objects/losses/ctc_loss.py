@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,31 +9,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
+import keras
+import keras.ops as K
 
-class CTCLoss(tf.keras.losses.Loss):
-    def __init__(self, pad_value = 0, name = 'CTCLoss', **kwargs):
+@keras.saving.register_keras_serializable('custom_loss')
+class CTCLoss(keras.losses.Loss):
+    def __init__(self, pad_value = 0, name = 'ctc_loss', ** kwargs):
+        for k in ('eos_value', 'from_logits'): kwargs.pop(k, None)
         super().__init__(name = name, ** kwargs)
         self.pad_value  = pad_value
     
     def call(self, y_true, y_pred):
-        if not isinstance(y_true, (list, tuple)):
-            target_length = tf.reduce_sum(tf.cast(
-                tf.math.not_equal(y_true, self.pad_value), tf.int32
-            ), axis = -1)
-        else:
-            y_true, target_length = y_true
+        true_length = K.count_nonzero(y_true == self.pad_value, axis = 1)
+        pred_length = K.full(K.shape(target_length), K.shape(y_pred)[1], dtype = 'int32')
         
-        pred_length = tf.fill(tf.shape(target_length), tf.shape(y_pred)[0])
-        
-        loss = tf.nn.ctc_loss(
-            y_true, y_pred, target_length, pred_length, logits_time_major = False,
-            blank_index = self.pad_value
+        return K.ctc_loss(
+            y_true, y_pred, true_length, pred_length, mask_value = self.pad_value
         )
-
-        return loss / tf.maximum(tf.cast(target_length, tf.float32), 1e-6)
     
     def get_config(self):
-        config = super().get_config()
-        config['pad_value'] = self.pad_value
-        return config
+        return {** super().get_config(), 'pad_value' : self.pad_value}

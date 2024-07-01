@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,14 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
 import numpy as np
-import tensorflow as tf
 
 from functools import wraps
 
 from utils.embeddings import compute_centroids
+from utils.keras_utils import TensorSpec, graph_compile, ops
 from utils.wrapper_utils import dispatch_wrapper, add_doc
-from utils.distance.distance_method import tf_distance
+from utils.distance.distance_method import distance
 
 _clustering_methods = {}
 
@@ -37,7 +37,7 @@ def clustering_wrapper(clustering_fn):
     def wrapper(points, k, distance_metric = 'euclidian', normalize = False, ** kwargs):
         """
             Arguments :
-                - points    : `tf.Tensor` with shape `(n_embeddings, embedding_dim)`
+                - points    : `Tensor` with shape `(n_embeddings, embedding_dim)`
                 - k     : the number of centroids to compute
                     - int   : exact number of centroids
                     - list / range  : computes the assignment for each `k`, then returns the result for the `k` selected by `kneed.KNeeLocator`
@@ -45,10 +45,10 @@ def clustering_wrapper(clustering_fn):
                 - normalize : whether to normalize the scores or not
                 - kwargs    : forwarded to the original clustering function
             Return : `(centroids, assignment)`
-                - centroids     : `tf.Tensor` with shape `(k, embedding_dim)`
-                - assignment    : `tf.Tensor` with shape `(n_embedding, )`, the id for each point
+                - centroids     : `Tensor` with shape `(k, embedding_dim)`
+                - assignment    : `Tensor` with shape `(n_embedding, )`, the id for each point
         """
-        points = tf.cast(points, tf.float32)
+        points = ops.convert_to_tensor(points, 'float32')
         
         if isinstance(k, (list, tuple, range)):
             from kneed import KneeLocator
@@ -65,14 +65,14 @@ def clustering_wrapper(clustering_fn):
                 else:
                     centroids, assignment = compute_centroids(points, clusters)[1], clusters
                 
-                score = compute_score(
+                score = ops.convert_to_numpy(compute_score(
                     points,
                     assignment,
                     centroids,
-                    tf.range(tf.shape(centroids)[0], dtype = tf.int32),
+                    ops.arange(len(centroids), dtype = 'int32'),
                     distance_metric = distance_metric,
                     normalize = normalize
-                ).numpy()
+                ))
                 scores[ki] = {'score' : score, 'centroids' : centroids, 'assignment' : assignment}
 
             assert len(scores) > 0, 'k must be a range with at least 1 value > 1'
@@ -109,49 +109,53 @@ def clustering_wrapper(clustering_fn):
     return wrapper
 
 def evaluate_clustering(y_true, y_pred):
-    y_true  = tf.cast(y_true, tf.int32)
-    y_pred  = tf.cast(y_pred, tf.int32)
+    y_true  = ops.convert_to_tensor(y_true, 'int32')
+    y_pred  = ops.convert_to_tensor(y_pred, 'int32')
     
-    uniques = tf.unique(y_true)[0]
+    uniques = ops.unique(y_true, return_inverse = False, return_counts = False)
     
     all_f1 = np.zeros((len(uniques), ))
     for i, cluster_id in enumerate(uniques):
         mask    = y_true == cluster_id
         
-        pred_ids    = tf.boolean_mask(y_pred, mask)
-        pred_ids    = tf.boolean_mask(pred_ids, pred_ids >= 0)
+        pred_ids    = y_pred[mask]
+        pred_ids    = pred_ids[pred_ids >= 0]
         
-        if tf.shape(pred_ids)[0] == 0: continue
+        if len(pred_ids) == 0: continue
         
-        counts  = tf.math.bincount(pred_ids)
-        main_id = tf.argmax(counts, output_type = tf.int32)
+        counts  = ops.cast(ops.bincount(pred_ids), 'int32')
+        main_id = ops.argmax(counts)
         
-        true_positive   = tf.cast(tf.reduce_max(counts), tf.float32)
-        total_pred      = tf.reduce_sum(tf.cast(y_pred == main_id, tf.float32))
-        total_true      = tf.reduce_sum(tf.cast(mask, tf.float32))
+        true_positive   = ops.cast(ops.max(counts), 'float32')
+        total_pred      = ops.cast(ops.count_nonzero(y_pred == main_id), 'float32')
+        total_true      = ops.cast(ops.count_nonzero(mask), 'float32')
         
         precision = true_positive / total_pred
         recall    = true_positive / total_true
         f1        = (2 * precision * recall) / (precision + recall)
 
-        y_pred    = tf.where(y_pred == main_id, -1, y_pred)
+        y_pred    = ops.where(y_pred == main_id, -1, y_pred)
 
         all_f1[i] = f1
     
     return np.mean(all_f1), all_f1
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def get_assignment(points : tf.Tensor, centroids : tf.Tensor, distance_metric = 'euclidian'):
+@graph_compile(reduce_retracing = True)
+def get_assignment(points   : keras.KerasTensor(shape = (None, None), dtype = 'float32'),
+                   centroids    : keras.KerasTensor(shape = (None, None), dtype = 'float32'),
+                   distance_metric  = 'euclidian',
+                   ** kwargs
+                  ):
     """ Returns a vector of ids, the nearest centroid's index (according to `distance_metric`) """
-    return tf.argmin(tf_distance(
-        points, centroids, distance_metric, as_matrix = True, force_distance = True
-    ), axis = -1, output_type = tf.int32)
+    return ops.argmin(distance(
+        points, centroids, distance_metric, as_matrix = True, force_distance = True, ** kwargs
+    ), axis = -1)
 
-@tf.function(reduce_retracing = True, experimental_follow_type_hints = True)
-def compute_score(points    : tf.Tensor,
-                  ids       : tf.Tensor,
-                  centroids : tf.Tensor,
-                  centroid_ids  : tf.Tensor,
+@graph_compile(reduce_retracing = True)
+def compute_score(points    : TensorSpec(shape = (None, None), dtype = 'float32'),
+                  ids       : TensorSpec(shape = (None, )),
+                  centroids : TensorSpec(shape = (None, None), dtype = 'float32'),
+                  centroid_ids  : TensorSpec(shape = (None, )),
                   distance_metric = 'euclidian',
                   normalize = False
                  ):
@@ -167,15 +171,11 @@ def compute_score(points    : tf.Tensor,
         Returns :
             - score : the scalar value representing the total distance between all points and their associated centroid
     """
-    mask    = tf.cast(
-        tf.expand_dims(ids, axis = 1) == centroid_ids, tf.float32
-    )
-    dist    = tf_distance(
-        points, centroids, distance_metric, as_matrix = True, force_distance = True
-    )
+    mask    = ops.cast(ids[:, np.newaxis] == centroid_ids[np.newaxis], 'float32')
+    dist    = distance(points, centroids, distance_metric, as_matrix = True, force_distance = True)
     if normalize:
-        return tf.reduce_sum(tf.math.divide_no_nan(
-            tf.reduce_sum(dist * mask, axis = -1), tf.reduce_sum(mask, axis = -1)
+        return ops.sum(ops.divide_no_nan(
+            ops.sum(dist * mask, axis = -1), ops.sum(mask, axis = -1)
         ))
-    return tf.reduce_sum(dist * mask)
+    return ops.sum(dist * mask)
 

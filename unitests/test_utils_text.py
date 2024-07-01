@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,6 +12,7 @@
 import os
 import logging
 import unittest
+import tensorflow as tf
 
 from utils.text import *
 from utils.text.cleaners import *
@@ -222,4 +223,25 @@ class TestText(CustomTestCase):
             filter_texts(texts, lengths, max_text_length = 4, required_idx = 1),
             (texts[[]], lengths[[]])
         )
-        
+    def test_logits_filtering(self):
+        logits = np.random.normal(size = (5, 25)).astype(np.float32)
+        for i in range(0, 25, 5):
+            with self.subTest(i = i):
+                filtered = logits.copy()
+                filtered[:, i :] = - np.inf
+                self.assertEqual(
+                    remove_slice_tokens(logits, i, remove_after = True), filtered
+                )
+
+                filtered = logits.copy()
+                filtered[:, : i] = - np.inf
+                self.assertEqual(
+                    remove_slice_tokens(logits, i, remove_after = False), filtered
+                )
+
+                indexes = [i, 24, 1]
+                filtered = logits.copy()
+                filtered[:, indexes] = - np.inf
+                self.assertEqual(
+                    remove_batch_tokens(logits, indexes), filtered
+                )

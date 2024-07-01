@@ -1,5 +1,5 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,8 +10,9 @@
 # limitations under the License.
 
 import numpy as np
-import tensorflow as tf
+import keras.ops as K
 
+from utils.keras_utils import TensorSpec, ops, graph_compile
 from utils.wrapper_utils import dispatch_wrapper
 from utils.sequence_utils import pad_batch
 
@@ -26,58 +27,53 @@ def ctc_decode(sequence, lengths = None, blank_index = 0, method = 'greedy', ** 
             tuple(_ctc_decoder_methods.keys()), method
         ))
     
-    if len(sequence.shape) == 2: sequence = tf.expand_dims(sequence, axis = 0)
+    if len(ops.shape(sequence)) == 2: sequence = ops.expand_dims(sequence, axis = 0)
     
     if lengths is None:
-        lengths = tf.fill((sequence.shape[0], ), sequence.shape[1])
+        lengths = ops.fill((len(sequence), ), ops.shape(sequence)[1])
     else:
-        lengths = tf.cast(lengths, tf.int32)
-        if len(lengths.shape) == 0: lengths = tf.expand_dims(lengths, axis = 0)
+        lengths = ops.cast(lengths, 'int32')
+        if len(ops.shape(lengths)) == 0: lengths = ops.expand_dims(lengths, axis = 0)
     
     return _ctc_decoder_methods[method](
         sequence, lengths = lengths, blank_index = blank_index
     )
 
 @ctc_decode.dispatch('greedy')
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
-    tf.TensorSpec(shape = (), dtype = tf.int32)
+@graph_compile(input_signature = [
+    TensorSpec(shape = (None, None, None), dtype = 'float32'),
+    TensorSpec(shape = (None, ), dtype = 'int32')
 ])
 def ctc_greedy_decoder(sequence, lengths, blank_index):
-    tokens, score = tf.nn.ctc_greedy_decoder(
-        tf.transpose(sequence, [1, 0, 2]), lengths, blank_index = blank_index
+    tokens, scores = K.ctc_decode(
+        sequence, lengths, strategy = 'greedy', mask_index = blank_index
     )
-    tokens = tf.sparse.to_dense(tokens[0])
-    return tokens, scores[:, 0] / tf.cast(lengths, scores.dtype)
+    return tokens[0], scores[:, 0] / K.cast(lengths, scores.dtype)
 
 @ctc_decode.dispatch(('beam', 'beam_search'))
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
-    tf.TensorSpec(shape = (), dtype = tf.int32)
+@graph_compile(input_signature = [
+    TensorSpec(shape = (None, None, None), dtype = 'float32'),
+    TensorSpec(shape = (None, ), dtype = 'int32')
 ])
 def tf_ctc_beam_search_decoder(sequence, lengths, blank_index = 0):
-    tokens, scores = tf.nn.ctc_beam_search_decoder(
-        tf.transpose(sequence, [1, 0, 2]), lengths, beam_width = 25
+    tokens, scores = K.ctc_decode(
+        sequence, lengths, strategy = 'beam_search', mask_index = blank_index
     )
-    tokens = tf.sparse.to_dense(tokens[0])
-    scores = scores[:, 0] / tf.reduce_sum(tf.cast(tokens != 0, scores.dtype), axis = -1)
-    
-    return tokens, scores
+    tokens = K.transpose(tokens, [1, 0, 2])
+    return tokens, scores / K.cast(lengths, scores.dtype)[:, None]
 
 def ctc_beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
     def build_beam(p_tot = - _inf, p_b = - _inf, p_nb = - _inf, p_text = 0):
         return {'p_tot' : p_tot, 'p_b' : p_b, 'p_nb' : p_nb, 'p_text' : p_text}
     
-    if tf.rank(encoded) == 3:
+    if ops.rank(encoded) == 3:
         return pad_batch([beam_search_decoder(
             enc, lm = lm, blank_idx = blank_idx, beam_width = beam_width
         ) for enc in encoded], pad_value = blank_idx)
     
     beams = {() : build_beam(p_b = 0, p_tot = 0)}
     
-    encoded = encoded.numpy()
+    encoded = ops.convert_to_numpy(encoded)
     
     for t in range(len(encoded)):
         new_beams = {}

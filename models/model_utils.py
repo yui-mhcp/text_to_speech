@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,141 +9,128 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import glob
 import numpy as np
-import pandas as pd
 
-from utils import load_json
-from custom_train_objects.history import History
+def get_signature(shape):
+    import tensorflow as tf
+    if isinstance(shape, list):
+        return [tf.TensorSpec(shape = s[1:], dtype = 'float32') for s in shape]
+    return tf.TensorSpec(shape = shape[1:], dtype = 'float32')
 
-_pretrained_models_folder = 'pretrained_models'
+def describe_model(model, with_compile = True):
+    des = ''
+    try:
+        des += "- Inputs \t: {}\n".format(model.input_shape)
+        des += "- Outputs \t: {}\n".format(model.output_shape)
+    except AttributeError:
+        des += "- Inputs \t: unknown\n"
+        des += "- Outputs \t: unknown\n"
+    des += "- Number of layers \t: {}\n".format(len(model.layers))
+    des += "- Number of parameters \t: "
+    if model.count_params() >= 1000000:
+        des += '{:,.3f} Millions\n'.format(model.count_params() / 1000000)
+    else:
+        des += '{}\n'.format(model.count_params())
+    
+    if model.compiled:
+        if with_compile:
+            des += optimizer_to_str(getattr(model, 'optimizer', None))
+            des += loss_to_str(getattr(model, 'loss', None))
+            des += metrics_to_str(getattr(model, 'compile_metrics', None))
+    else:
+        des += "- Model not compiled yet\n"
 
-def get_models(pattern = None, model_class = None):
-    """
-        Return all models with `pattern` (unix-style) in their name and / or `model_class` (str) as `class_name`
-    """
-    names = os.listdir(_pretrained_models_folder) if pattern is None else [
-        os.path.basename(f) for f in glob.glob(os.path.join(_pretrained_models_folder, pattern))
+    return des
+
+def optimizer_to_str(optimizer):
+    return keras_object_to_str(optimizer, name = 'Optimizer')
+
+def loss_to_str(loss):
+    return keras_object_to_str(loss, name = 'Loss')
+
+def metrics_to_str(metrics):
+    return keras_object_to_str(metrics, name = 'Metric')
+
+def keras_object_to_str(obj, name = None, format = '- {name} \t: {value}\n'):
+    if isinstance(obj, list):
+        if len(obj) == 1:
+            return keras_object_to_str(obj[0] if len(obj) == 1 else None, name, format)
+        obj = {'{} #{}'.format(name, i) : obj_i for i, obj_i in enumerate(obj)}
+    
+    if isinstance(obj, dict):
+        return ''.join([
+            keras_object_to_str(obj = v, name = k, format = format) for k, v in obj.items()
+        ])
+    
+    if obj is None: return ''
+    if isinstance(obj, str):    return format.format(name = name, value = obj)
+    if hasattr(obj, 'get_config'):    return format.format(name = name, value = obj.get_config())
+    if callable(obj):   return format.format(name = name, value = obj.__name__)
+
+    raise ValueError('Unknown data type ({}) : {}'.format(type(obj), obj))
+
+def infer_downsampling_factor(model):
+    """ Based on a sequential model, computes an estimation of the downsampling factor """
+    from keras.layers import (
+        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
+        AveragePooling1D, AveragePooling2D, AveragePooling3D
+    )
+    _downsampling_types = [
+        Conv1D, Conv2D, Conv3D, MaxPooling1D, MaxPooling2D, MaxPooling3D,
+        AveragePooling1D, AveragePooling2D, AveragePooling3D
     ]
+    try:
+        from custom_layers import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D
+        _downsampling_types.extend([MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D])
+    except Exception as e:
+        pass
     
-    names = [n for n in names if is_model_name(n)]
-    if model_class is not None:
-        if not isinstance(model_class, (list, tuple)): model_class = [model_class]
-        names = [n for n in names if get_model_class(n) in model_class]
-    return names
-
-def get_model_dir(name, * args):
-    return os.path.join(_pretrained_models_folder, name, * args)
-
-def is_model_name(name):
-    """ Check if the model `name` has a directory with `config.json` file """
-    return os.path.exists(get_model_dir(name, 'config.json'))
-
-def get_model_infos(name):
-    if name is None: return {}
-    if not isinstance(name, str):
-        return {
-            'class_name' : name.__class__.__name__,
-            'config'     : name.get_config(with_trackable_variables = False)
-        }
-    return load_json(get_model_dir(name, 'config.json'), default = {})
-
-def get_model_class(name):
-    """ Return the (str) class of model named `name` """
-    return get_model_infos(name).get('class_name', None)
-
-def get_model_history(name):
-    """ Return the `History` class for model `name` """
-    return History.load(get_model_dir(name, 'saving', 'historique.json'))
-
-def get_model_config(name):
-    return get_model_infos(name).get('config', {})
-
-def infer_model_class(name, possible_class):
-    """
-        Return the `class` object of model `name` given a dict of possible classes {class_name : class_object}
-    """
-    if name is None or not isinstance(name, str): return None
-    
-    config = get_model_infos(name)
+    def _get_factor(model):
+        factor = 1
+        for l in model.layers:
+            if type(l) in _downsampling_types:
+                factor = factor * np.array(l.strides)
+            elif hasattr(l, 'layers'):
+                factor = factor * _get_factor(l)
         
-    return possible_class.get(config.get('class_name', ''), None)
+        return factor
+    return _get_factor(model)
 
-def remove_training_checkpoint(name):
-    """ Remove checkpoints in `{model}/training-logs/checkpoints/*` """
-    training_ckpt_dir = get_model_dir(name, 'training-logs', 'checkpoints')
-    for file in os.listdir(training_ckpt_dir):
-        os.remove(os.path.join(training_ckpt_dir, file))
-
-def compare_models(names,
-                   skip_identical   = False,
-                   order_by_uniques = False,
-                   add_training_config  = False,
-                   
-                   epoch        = 'last',
-                   metric       = 'val_loss', # Only relevant if `epoch == 'best'`
-                   criteria_fn  = np.argmin
-                  ):
-    """
-        Given a list of names, put all their configuration with their metrics for the selected epoch, in a pd.DataFrame to compare all models
-        If `add_training_config`, it will also add the training configuration of the kept epoch
-        The selected epoch depends on `epoch` (last or best) and `metric` (if best epoch)
-        The `order_by_unique` sorts the DataFrame columns in the increasing order of unique values such that the left-most column will have the less unique values (then the most common between all models)
-    """
-    def n_unique(c):
-        try:
-            return len(infos[c].dropna().unique())
-        except TypeError:
-            return -1
+def infer_upsampling_factor(model):
+    """ Based on a sequential model, computes an estimation of the upsampling factor """
+    from keras.layers import (
+        UpSampling1D, UpSampling2D, UpSampling3D,
+        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
+    )
+    _downsampling_types = [
+        UpSampling1D, UpSampling2D, UpSampling3D,
+        Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
+    ]
+    try:
+        from custom_architectures.east_arch import UpSampling2DWithAlignedCorners
+        _downsampling_types.append(UpSampling2DWithAlignedCorners)
+    except Exception as e:
+        pass
     
-    _metrics = None
-
-    infos = {}
-    for name in names:
-        if not os.path.exists(os.path.join(_pretrained_models_folder, name)): continue
+    def _get_factor(model):
+        factor = 1
+        for l in model.layers:
+            if type(l) in _downsampling_types:
+                if hasattr(l, 'strides'):
+                    strides = l.strides
+                elif hasattr(l, 'size'):
+                    strides = l.size
+                elif hasattr(l, 'scale_factor'):
+                    strides = l.scale_factor
+                factor = factor * np.array(strides)
+            elif hasattr(l, 'layers'):
+                factor = factor * _get_factor(l)
         
-        infos_i = get_model_infos(name)
-        hist_i  = get_model_history(name)
+        return factor
+    return _get_factor(model)
 
-        metrics_i, train_config_i, epoch_i = {}, {}, -1
-        if len(hist_i) > 0:
-            if _metrics is None: _metrics = ['epochs'] + list(hist_i.history[-1].keys())
-
-            if epoch == 'last':
-                epoch_i = len(hist_i) - 1
-            elif epoch == 'first':
-                epoch_i = 0
-            elif epoch == 'best':
-                epoch_i = criteria_fn([e[metric] for e in hist_i])
-            elif isinstance(epoch, int):
-                epoch_i = epoch
-
-            metrics_i       = hist_i.history[epoch_i]
-            train_config_i  = {} if not add_training_config else hist_i.get_epoch_config(epoch_i)
-        train_config_i.pop('epoch', None)
-        
-        infos[name] = {
-            'class' : infos_i['class_name'], 'epochs' : epoch_i,
-            ** infos_i['config'], ** metrics_i, ** train_config_i
-        }
-        infos[name] = {k : v for k, v in infos[name].items() if not isinstance(v, str) or name not in v}
-    
-    infos = pd.DataFrame(infos).T
-    
-    if skip_identical:
-        lengths     = {c : n_unique(c) for c in infos.columns}
-        non_uniques = [k for k, v in lengths.items() if v not in (0, 1) or k in _metrics]
-        
-        infos = infos[non_uniques]
-    
-    if order_by_uniques:
-        lengths     = {c : n_unique(c) for c in infos.columns if c not in _metrics}
-        unhashable  = [k for k, v in lengths.items() if v == -1]
-        lengths     = {k : v for k, v in lengths.items() if v != -1}
-        order       = sorted(lengths.keys(), key = lambda c: lengths[c])
-        
-        infos = infos[order + _metrics + unhashable]
-        infos = infos.sort_values(order)
-    
-    return infos
+def _get_tracked_type(value, types):
+    if isinstance(value, (list, tuple)) and len(value) > 0: value = value[0]
+    for t in types:
+        if isinstance(value, t): return t
+    return None

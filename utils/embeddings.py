@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,19 +10,22 @@
 # limitations under the License.
 
 import os
+import keras
 import random
 import logging
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
+from .file_utils import load_data, dump_data, path_to_unix
+from utils.keras_utils import TensorSpec, graph_compile, ops
+
 logger = logging.getLogger(__name__)
 
-_allowed_embeddings_ext = ('.csv', '.npy', '.pkl', '.pdpkl')
-_default_embedding_ext  = '.csv'
+_allowed_embeddings_ext = ('.csv', '.npy', '.pkl', '.pdpkl', '.embeddings.h5')
+_default_embedding_ext  = '.embeddings.h5'
 _embedding_filename = 'embeddings_{}'
 
 _accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')
@@ -42,10 +44,10 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
             - embeddings    : the embeddings to load / convert
             - col   : the column to use if `embeddings` is a `pd.DataFrame`
             - dtype : the embeddings dtype (if string representation)
-            - force_np  : whether to convert `tf.Tensor` to `np.ndarray` or not
+            - force_np  : whether to convert `Tensor` to `np.ndarray` or not
         Return :
             - embedding : `np.ndarray` of dtype `float32`, the embeddings
-                If `force_np == False`, the result may be a `tf.Tensor`
+                If `force_np == False`, the result may be a `Tensor`
     """
     # if it is a string representation of a numpy matrix
     if isinstance(embeddings, str):
@@ -62,12 +64,12 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
             sep = '\t' if ', ' not in embeddings else ', '
             return np.fromstring(embeddings[1:-1], dtype = dtype, sep = sep).astype(np.float32)
         elif not os.path.isfile(embeddings):
-            raise ValueError("You must provide an existing embedding file (got {})".format(embeddings))
+            raise ValueError("The file {} does not exist !".format(embeddings))
             
         return embeddings_to_np(load_embeddings(embeddings), col = col, dtype = dtype)
     
     elif isinstance(embeddings, np.ndarray):    return embeddings
-    elif isinstance(embeddings, tf.Tensor):     return embeddings.numpy() if force_np else embeddings
+    elif hasattr(embeddings, 'numpy'):          return ops.convert_to_numpy(embeddings) if force_np else embeddings
     elif isinstance(embeddings, pd.DataFrame):
         embeddings = [embeddings_to_np(e) for e in embeddings[col].values]
         if len(embeddings[0].shape) == 1: return np.array(embeddings)
@@ -76,7 +78,9 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
         
         return pad_batch(embeddings)
     else:
-        raise ValueError("Invalid type of embeddings : {}\n{}".format(type(embeddings), embeddings))
+        raise ValueError("Invalid type of embeddings : {}\n{}".format(
+            type(embeddings), embeddings
+        ))
 
 def select_embedding(embeddings, mode = 'random', ** kwargs):
     """
@@ -91,7 +95,7 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
     """
     if isinstance(embeddings, pd.DataFrame):
         filtered_embeddings = embeddings
-        if kwargs:
+        if any(k in embeddings.columns for k in kwargs.keys()):
             from utils.pandas_utils import filter_df
             
             filtered_embeddings = filter_df(embeddings, ** kwargs)
@@ -121,22 +125,39 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
 
 def aggregate_embeddings(dataset,
                          column = 'id',
-                         aggregation_name = 'speaker_embedding',
+                         embedding_col  = 'embedding',
+                         aggregation_name   = 'speaker_embedding',
                          mode = 0
                         ):
-    """ Aggregates the `embedding` column by grouping on `column` """
+    """ Aggregates the `embedding_col` column by grouping on `column` """
+    if embedding_col not in dataset.columns:
+        raise ValueError('The embedding column {} is not available in {}'.format(
+            embedding_col, dataset.columns
+        ))
+    
     from utils.pandas_utils import aggregate_df
     
     if aggregation_name in dataset.columns: dataset.pop(aggregation_name)
     
-    if column not in dataset.columns: column = 'id'
-    if column != 'id':
-        for idx, row in dataset.iterrows():
-            if column not in row or row[column] is np.nan:
-                dataset.at[idx, column] = row['id']
+    if column not in dataset.columns:
+        if 'id' not in dataset.columns:
+            raise RuntimeError('The column {} is not available in {} !'.format(
+                column, dataset.columns
+            ))
+        logger.warning('The column {} is not available in {}. Using by default `id`'.format(
+            column, dataset.columns
+        ))
+        column = 'id'
+    
+    if column != 'id' and 'id' in dataset.columns and np.any(dataset[column].isnan()):
+        dataset = dataset.fillna({
+            col : dataset['id'] for col in (column if isinstance(column, list) else [column])
+        })
     
     return aggregate_df(
-        dataset, group_by = column, columns = 'embedding', merge = True, ** {aggregation_name : mode}
+        dataset, group_by = column, columns = embedding_col, merge = True, ** {
+            aggregation_name : mode
+        }
     )
 
 def load_embedding(directory,
@@ -177,8 +198,6 @@ def load_embedding(directory,
             - else  : `os.path.join(directory, embedding_name)`
         
     """
-    from utils.file_utils import load_data, path_to_unix
-
     if os.path.isfile(directory):
         emb_file = directory
     else:
@@ -202,19 +221,18 @@ def load_embedding(directory,
         return None
     
     embeddings  = load_data(emb_file)
-    if not isinstance(embeddings, pd.DataFrame): return embeddings
-
-    
-    if any('Unnamed:' in col for col in embeddings.columns):
+    if isinstance(embeddings, dict):
+        embeddings = pd.DataFrame({k : list(v) for k, v in embeddings.items()})
+    elif not isinstance(embeddings, pd.DataFrame):
+        return embeddings
+    elif any('Unnamed:' in col for col in embeddings.columns):
         embeddings = embeddings.drop(
             columns = [col for col in embeddings.columns if 'Unnamed:' in col]
         )
     
-    for embedding_col_name in [col for col in embeddings.columns if col.endswith('embedding')]:
-        if isinstance(embeddings.loc[0, embedding_col_name], np.ndarray): continue
-        embeddings[embedding_col_name] = embeddings[embedding_col_name].apply(
-            lambda x: embeddings_to_np(x)
-        )
+    for col in embeddings.columns:
+        if 'embedding' not in col or isinstance(embeddings.loc[0, col], np.ndarray): continue
+        embeddings[col] = embeddings[col].apply(embeddings_to_np)
     
     if aggregate_on is not None and aggregate_on in embeddings.columns:
         embeddings = aggregate_embeddings(
@@ -224,14 +242,14 @@ def load_embedding(directory,
     if filename_prefix is not None and 'filename' in embeddings.columns:
         if filename_prefix is True:
             try:
-                from datasets.custom_datasets import get_dataset_dir
+                from utils.datasets import get_dataset_dir
                 filename_prefix = get_dataset_dir()
             except (ImportError, ModuleNotFoundError):
                 pass
         
         if isinstance(filename_prefix, str):
             embeddings['filename'] = embeddings['filename'].apply(
-                lambda f: os.path.join(filename_prefix, f)
+                lambda f: os.path.join(filename_prefix, f) if not f.startswith(filename_prefix) else f
             )
     
     if dataset is None: return embeddings
@@ -240,7 +258,7 @@ def load_embedding(directory,
     
     for col in intersect:
         if embeddings[col].dtype != dataset[col].dtype:
-            embeddings[col] = embeddings[col].apply(lambda i: str(i))
+            embeddings[col] = embeddings[col].apply(str)
         
         if 'filename' in col:
             embeddings[col] = embeddings[col].apply(path_to_unix)
@@ -253,7 +271,7 @@ def load_embedding(directory,
         raise ValueError('Merge resulted in an empty dataframe !\n  Columns : {}\n  Embeddings : {}'.format(intersect, embeddings))
     
     dataset = dataset.dropna(
-        axis = 'index', subset = ['embedding', aggregate_name]
+        axis = 'index', subset = ['embedding']
     )
     
     return dataset
@@ -277,8 +295,6 @@ def save_embeddings(directory,
                 It is useful when saving datasets as the dataset directory may differ between hosts, meaning that filenames also differ.
                 Note that it is removed only at the start of filenames such that if your filename is not in the dataset directory, it will have no effect ;)
     """
-    from utils.file_utils import dump_data, path_to_unix
-
     if os.path.splitext(directory)[1] in _allowed_embeddings_ext:
         embedding_file = directory
     else:
@@ -302,7 +318,7 @@ def save_embeddings(directory,
     elif remove_file_prefix is not None and isinstance(embeddings, pd.DataFrame) and 'filename' in embeddings.columns:
         if remove_file_prefix is True:
             try:
-                from datasets.custom_datasets import get_dataset_dir
+                from utils.datasets import get_dataset_dir
                 remove_file_prefix = get_dataset_dir()
             except (ImportError, ModuleNotFoundError):
                 pass
@@ -338,7 +354,7 @@ def embed_dataset(directory,
     if load_fn is None:
         cache_size, round_tqdm, tqdm = batch_size, tqdm, None
     else:
-        from utils.thread_utils import Consumer
+        from utils.threading import Consumer
         
         round_tqdm      = lambda x: x
         cache_size      = max(cache_size, batch_size)
@@ -403,7 +419,7 @@ def pad_dataset_embedding(dataset, columns = None):
         Pads `columns`' embeddings to have matrices with same dimensions, and adds a n_{col} column with the current number of embeddings (to allow to retrieve the original embeddings' matrix)
         The operation is skipped for columns with single embedding (1D array)
     """
-    if columns is None: columns = [c for c in dataset.columns if c.endswith('_embedding')]
+    if columns is None: columns = [c for c in dataset.columns if c.endswith('embedding')]
     if not isinstance(columns, (list, tuple)): columns = [columns]
     
     for col in columns:
@@ -414,11 +430,10 @@ def pad_dataset_embedding(dataset, columns = None):
     
     return dataset
 
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ),     dtype = tf.int32)
-])
-def compute_centroids(embeddings, ids):
+@graph_compile
+def compute_centroids(embeddings    : TensorSpec(shape = (None, None), dtype = 'float'),
+                      ids           : TensorSpec(shape = (None, )),
+                     ):
     """
         Compute the mean embeddings (named the `centroids`) for each id
         Arguments :
@@ -429,21 +444,23 @@ def compute_centroids(embeddings, ids):
                 - unique_ids    : vector of unique ids
                 - centroids     : centroids[i] is the centroid associated to embeddings of ids[i]
     """
-    uniques, indexes = tf.unique(ids)
-    mask = tf.expand_dims(tf.range(tf.size(uniques)), axis = 1) == tf.expand_dims(indexes, axis = 0)
-    return uniques, tf.math.divide_no_nan(
-        tf.reduce_sum(
-            tf.where(tf.expand_dims(mask, axis = -1), tf.expand_dims(embeddings, 0), 0.), axis = 1
-        ),
-        tf.reduce_sum(tf.cast(mask, tf.float32), axis = -1, keepdims = True)
+    uniques, indexes, counts = ops.unique(ids, return_inverse = True, return_counts = True)
+    # mask.shape == [len(uniques), len(embeddings)]
+    mask = ops.arange(ops.size(uniques))[:, None] == indexes[None, :]
+    return uniques, ops.divide_no_nan(
+        ops.sum(ops.where(
+            mask[:, :, None],
+            embeddings[None, :, :],
+            ops.convert_to_tensor(0, embeddings.dtype)
+        ), axis = 1),
+        ops.cast(counts[:, None], dtype = embeddings.dtype)
     )
 
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.int32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.int32)
-])
-def get_embeddings_with_ids(embeddings, assignment, ids):
+@graph_compile
+def get_embeddings_with_ids(embeddings  : TensorSpec(shape = (None, None), dtype = 'float'),
+                            assignment  : TensorSpec(shape = (None, )),
+                            ids         : TensorSpec(shape = (None, ))
+                           ):
     """
         Returns a subset of `embeddings` and `assignment` with the expected `ids`
         
@@ -457,17 +474,14 @@ def get_embeddings_with_ids(embeddings, assignment, ids):
         ```
 
         Arguments :
-            - embeddings    : `tf.Tensor` with shape `(n_embeddings, embedding_dim)`
-            - assignment    : `tf.Tensor` with shape `(n_embeddings, )`, the embeddings ids
-            - ids       : `tf.Tensor`, the expected ids to keep
+            - embeddings    : `Tensor` with shape `(n_embeddings, embedding_dim)`
+            - assignment    : `Tensor` with shape `(n_embeddings, )`, the embeddings ids
+            - ids       : `Tensor`, the expected ids to keep
         Return :
             - (embeddings, assignment)  : subset of `embeddings` and `assignment` with valid id
     """
-    mask    = tf.reduce_any(assignment == tf.expand_dims(ids, axis = 1), axis = 0)
-        
-    assignment  = tf.boolean_mask(assignment, mask)
-    embeddings  = tf.boolean_mask(embeddings, mask)
-    return embeddings, assignment
+    mask    = ops.any(assignment[:, None] == ids[None, :], axis = -1)
+    return embeddings[mask], assignment[mask]
 
 def visualize_embeddings(embeddings,
                          metadata,
@@ -477,6 +491,8 @@ def visualize_embeddings(embeddings,
                          label_col  = 'id',
                          metadata_filename = 'metadata.tsv'
                         ):
+    import tensorflow as tf
+    
     from tensorboard.plugins import projector
     
     os.makedirs(log_dir, exist_ok = True)

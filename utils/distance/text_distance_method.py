@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -14,7 +14,7 @@ import functools
 import collections
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import keras.ops as K
 
 from utils.sequence_utils import pad_batch
 from utils.distance.distance_method import _str_distance_methods, distance_method_wrapper
@@ -229,7 +229,7 @@ def _is_nested_list(data):
     return False
 
 def _normalize(data):
-    if isinstance(data, tf.Tensor):     data = data.numpy()
+    if K.is_tensor(data):   data = K.convert_to_numpy(data)
     if isinstance(data, bytes):         data = data.decode()
     if isinstance(data, np.ndarray):    data = data.tolist()
     if isinstance(data, (list, tuple)) and isinstance(data[0], int):

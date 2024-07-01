@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -17,12 +17,12 @@ import logging
 import regex as re
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
-from functools import cached_property
+from keras import tree
+from functools import cached_property, cache
 
-from utils import dump_json, load_json, flatten, pad_batch, get_enum_item, convert_to_str, download_file
-from utils.tensorflow_utils import execute_eagerly
+from utils import dump_json, load_json, pad_batch, get_enum_item, convert_to_str, download_file
+from utils.keras_utils import TensorSpec, execute_eagerly, ops
 from utils.text import cleaners as cleaners_module
 from utils.text.ctc_decoder import ctc_decode
 from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
@@ -30,10 +30,10 @@ from utils.text.text_processing import split_sentence, split_and_join, filter_te
 
 logger  = logging.getLogger(__name__)
 
-text_signature          = tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'text')
-multi_text_signature    = tf.TensorSpec(shape = (None, None), dtype = tf.int32, name = 'text')
-text_length_signature   = tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'length')
-multi_text_length_signature = tf.TensorSpec(shape = (None, None), dtype = tf.int32, name = 'length')
+text_signature          = TensorSpec(shape = (None, ), dtype = 'int32', name = 'text')
+multi_text_signature    = TensorSpec(shape = (None, None), dtype = 'int32', name = 'text')
+text_length_signature   = TensorSpec(shape = (None, ), dtype = 'int32', name = 'length')
+multi_text_length_signature = TensorSpec(shape = (None, None), dtype = 'int32', name = 'length')
 
 _clip_bpe_url   = 'https://raw.githubusercontent.com/openai/CLIP/master/clip/bpe_simple_vocab_16e6.txt.gz'
 _whisper_url   = 'https://raw.githubusercontent.com/openai/whisper/master/whisper/assets/{}/{}'
@@ -153,6 +153,7 @@ class TextEncoder(object):
     def __init__(self,
                  vocab,
                  level,
+                 template   = None,
                  vocab_size     = None,
                  
                  lstrip     = False,
@@ -211,6 +212,7 @@ class TextEncoder(object):
         self.name       = name
         self._vocab     = list(vocab)
         self.level      = level
+        self.template   = template
         
         self.lstrip = lstrip
         self.rstrip = rstrip
@@ -254,7 +256,9 @@ class TextEncoder(object):
         self._symbol_to_id  = {}
         self._id_to_symbol  = {}
         self.__build_indexes(vocab_size, add_special_tokens_at_end)
-        self._cleaned_tokens    = {self.clean_text(token) : token for token in self._special_tokens}
+        self._cleaned_tokens    = {
+            self.clean_text(token) : token for token in self._special_tokens
+        }
         
         for name, token in self.additional_tokens.items():
             setattr(self, name, token)
@@ -325,6 +329,10 @@ class TextEncoder(object):
         tokens.update(self.additional_tokens)
         return tokens
     
+    @cached_property
+    def token_indexes(self):
+        return {v : self._symbol_to_id[v] for k, v in self.tokens.items()}
+    
     @property
     def sos_token_idx(self):
         return self._symbol_to_id[self.sos_token] if self.sos_token else -1
@@ -373,12 +381,27 @@ class TextEncoder(object):
             return self._id_to_symbol[idx]
         else:
             if idx not in self._symbol_to_id:
-                res = self.encode(idx, add_sos_and_eos = False, cleaned = True, return_type = 'list')
+                res = self.encode(
+                    idx, add_sos_and_eos = False, cleaned = True, return_type = 'list'
+                )
                 return res[0] if len(res) == 1 else res
             return self._symbol_to_id[idx]
     
     def __contains__(self, token):
         return token in self._symbol_to_id
+    
+    def _should_add_sos_and_eos(self,
+                                *,
+                                add_sos = None,
+                                add_eos = None,
+                                add_sos_and_eos = None,
+                                ** _
+                               ):
+        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
+        if add_sos is None: add_sos = add_sos_and_eos
+        if add_eos is None: add_eos = add_sos_and_eos
+        
+        return (add_sos and self.sos_token, add_eos and self.eos_token)
     
     def is_end_of_word(self, token, prev_token = None, next_token = None):
         if self.level == TextEncoderLevel.WORD:
@@ -434,7 +457,7 @@ class TextEncoder(object):
     
     def _sub_word_tokenize(self, token):
         if isinstance(token, (list, tuple)):
-            return flatten([self._sub_word_tokenize(tok) for tok in token])
+            return tree.flatten([self._sub_word_tokenize(tok) for tok in token])
         
         start, valid = 0, True
         sub_tokens = []
@@ -462,7 +485,7 @@ class TextEncoder(object):
     
     def _bpe_tokenize(self, token):
         if isinstance(token, (list, tuple)):
-            return flatten([self._bpe_tokenize(tok) for tok in token])
+            return tree.flatten([self._bpe_tokenize(tok) for tok in token])
         
         if token not in self._bpe_cache:
             bpe_token = ''.join([
@@ -507,13 +530,13 @@ class TextEncoder(object):
         
         return tokens
     
-    @execute_eagerly(signature = text_signature, default_key = 'text', numpy = True)
-    def encode(self, text, add_sos_and_eos = None, return_type = 'np', ** kwargs):
+    @execute_eagerly(signature = text_signature, default_key = ('text', 'label'), numpy = True)
+    def encode(self, text, *, return_type = 'np', ** kwargs):
         """
             Encode text in np.ndarray
             Arguments :
                 - text : text to encode
-                    Can be a string, dict, list / tuple / np.ndarray / tf.Tensor of dict or str
+                    Can be a string, dict, list / tuple / np.ndarray / Tensor of dict or str
             Return : 
                 - np.ndarray    : the encoded text (or list of np.ndarrays if multiple textwere given)
             
@@ -522,16 +545,14 @@ class TextEncoder(object):
             3) Convert all tokens to its corresponding id (with the `self.tokenize` method)
             4) If necessary, add [sos, eos] tokens 
         """
-        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
-        
         if isinstance(text, pd.DataFrame):          text = text['text'].values
         elif isinstance(text, (dict, pd.Series)):   text = text['text']
         text = convert_to_str(text)
         
         if isinstance(text, (list, tuple)):
-            return [self.encode(
-                t, add_sos_and_eos = add_sos_and_eos, return_type = return_type, ** kwargs
-            ) for t in text]
+            return [self.encode(t, return_type = return_type, ** kwargs) for t in text]
+        
+        add_sos, add_eos = self._should_add_sos_and_eos(** kwargs)
         
         tokens  = self.tokenize(text, ** kwargs)
 
@@ -540,13 +561,15 @@ class TextEncoder(object):
         ]
         tokens = [token for token in tokens if token not in (None, -1)]
 
-        if add_sos_and_eos:
-            if self.sos_token: tokens.insert(0, self.sos_token_idx)
-            if self.eos_token: tokens.append(self.eos_token_idx)
+        if (add_sos) and (len(tokens) == 0 or tokens[0] != self.sos_token_idx):
+            tokens.insert(0, self.sos_token_idx)
+        if (add_eos) and (len(tokens) == 0 or tokens[-1] != self.eos_token_idx):
+            tokens.append(self.eos_token_idx)
         
         if return_type == 'list': return tokens
         elif return_type == 'np': return np.array(tokens, dtype = np.int32)
-        elif return_type == 'tf': return tf.cast(tokens, dtype = tf.int32)
+        elif return_type == 'tf': return ops.convert_to_tf_tensor(tokens, dtype = 'int32')
+        elif return_type == 'tensor':   return ops.convert_to_tensor(tokens, dtype = 'int32')
         else:   raise ValueError("Unknown `return_type` : {}".format(return_type))
 
     def decode(self,
@@ -557,15 +580,17 @@ class TextEncoder(object):
               ):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
         if hasattr(sequence, 'tokens'): sequence = sequence.tokens
-        if hasattr(sequence, 'numpy'):  sequence = sequence.numpy()
-        if hasattr(sequence, 'shape'):
-            if np.issubdtype(sequence.dtype, np.floating):
-                sequence = np.argmax(sequence, axis = -1) if sequence.shape[0] > 0 else sequence
+        if ops.is_tensor(sequence):     sequence = ops.convert_to_numpy(sequence)
+        if isinstance(sequence, np.ndarray):
+            if np.issubdtype(sequence.dtype, np.floating) and all(s > 0 for s in sequence.shape):
+                sequence = np.argmax(sequence, axis = -1)
+            
             if len(sequence.shape) > 1:
                 return [self.decode(
                     s, skip_padding = skip_padding, attach_punctuation = attach_punctuation,
                     remove_tokens = remove_tokens
                 ) for s in sequence]
+        
         if isinstance(sequence, (list, tuple)) and not isinstance(sequence[0], (int, np.integer)):
             return [self.decode(
                 s, skip_padding = skip_padding, attach_punctuation = attach_punctuation,
@@ -623,23 +648,25 @@ class TextEncoder(object):
         decoded = self.decode(tokens, ** kwargs)
         return decoded if not return_scores else (decoded, scores)
 
-    def invert(self, text, add_sos_and_eos = False, ** kwargs):
-        return self.decode(self.encode(text, add_sos_and_eos = add_sos_and_eos, ** kwargs))
+    def invert(self, text, ** kwargs):
+        return self.decode(self.encode(text, ** kwargs))
+
+    @execute_eagerly(signature = text_signature, numpy = True)
+    def encode_template(self, template = None, *, encode = True, ** kwargs):
+        template = compile_jinja_template(convert_to_str(template if template else self.template))
+        kwargs   = convert_to_str(kwargs)
+        
+        text = template.render(** kwargs, ** self.tokens)
+        return self.encode(text, ** kwargs) if encode else text
 
     @execute_eagerly(signature = [
-        text_signature, tf.TensorSpec(shape = (None, ), dtype = tf.int32, name = 'types')
+        text_signature, TensorSpec(shape = (None, ), dtype = 'int32', name = 'types')
     ], numpy = True)
-    def join(self,
-             * sentences,
-             sep_token      = None,
-             return_type    = 'np',
-             add_sos_and_eos    = None,
-             ** kwargs
-            ):
+    def join(self, * sentences, sep_token = None, return_type = 'np', ** kwargs):
         kwargs.pop('text', None)
-        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
-        if sep_token is None:       sep_token = self.sep_token
-        
+        if sep_token is None:   sep_token = self.sep_token
+        add_sos, add_eos = self._should_add_sos_and_eos(** kwargs)
+
         encoded_parts = self.encode(
             sentences, add_sos_and_eos = False, return_type = 'list', ** kwargs
         )
@@ -653,19 +680,26 @@ class TextEncoder(object):
             encoded.extend(part)
             ids.extend([i] * len(part))
         
-        if add_sos_and_eos:
-            if self.sos_token:
-                encoded.insert(0, self.sos_token_idx)
-                ids.insert(0, 0)
-            if self.eos_token:
-                encoded.append(self.eos_token_idx)
-                ids.append(len(encoded_parts) - 1)
+        if (add_sos) and (len(encoded) == 0 or encoded[0] != self.sos_token_idx):
+            encoded.insert(0, self.sos_token_idx)
+            ids.insert(0, 0)
+        if (add_eos) and (len(encoded) == 0 or encoded[-1] != self.eos_token_idx):
+            encoded.append(self.eos_token_idx)
+            ids.append(len(encoded_parts) - 1)
         
         if return_type == 'list': return encoded, ids
         elif return_type == 'np':
             return np.array(encoded, dtype = np.int32), np.array(ids, dtype = np.int32)
         elif return_type == 'tf':
-            return tf.cast(encoded, dtype = tf.int32), tf.cast(ids, dtype = tf.int32)
+            return (
+                ops.convert_to_tf_tensor(encoded, dtype = 'int32'),
+                ops.convert_to_tf_tensor(ids, dtype = 'int32')
+            )
+        elif return_type == 'tensor':
+            return (
+                ops.convert_to_tensor(encoded, dtype = 'int32'),
+                ops.convert_to_tensor(ids, dtype = 'int32')
+            )
         else:
             raise ValueError('Unknown `return_type` : {}'.format(return_type))
 
@@ -719,7 +753,6 @@ class TextEncoder(object):
               sep_token = None,
               return_type   = 'np',
               split_level   = 'sentence',
-              add_sos_and_eos   = None,
               tokens_to_not_split   = None,
               ** kwargs
              ):
@@ -731,7 +764,7 @@ class TextEncoder(object):
                 - word  : avoid splitting at the middle of a word
                 - sentence  : avoid splitting a sentence (sentences are delimited by basic punctuation matching)
             
-            /!\ Only the "token" level ensures that each part is shorter than `max_length` ! If there is no possibility to split a part at the expected level, it may become longer than `max_length`
+            **WARNING** : Only the "token" level ensures that each part is shorter than `max_length` ! If there is no possibility to split a part at the expected level, it may become longer than `max_length`
             
             Example :
             ```python
@@ -753,13 +786,14 @@ class TextEncoder(object):
         """
         assert split_level in ('token', 'word', 'sentence')
 
-        if add_sos_and_eos is None: add_sos_and_eos = self.use_sos_and_eos
         if sep_token is None: sep_token = self.sep_token
         if tokens_to_not_split is None: tokens_to_not_split = []
         else:
             tokens_to_not_split = convert_to_str(tokens_to_not_split)
             if not isinstance(tokens_to_not_split, list): tokens_to_not_split = [tokens_to_not_split]
         
+        add_sos, add_eos = self._should_add_sos_and_eos(** kwargs)
+
         encoded_not_split = [self.encode(
             ' ' + tok.trip() + ' ', add_sos_and_eos = False, return_type = 'list'
         ) for tok in tokens_to_not_split]
@@ -777,9 +811,11 @@ class TextEncoder(object):
             prefix.append(sep_token_idx)
         if len(suffix) > 0 and sep_token_idx != -1 and sep_token_idx != suffix[0]:
             suffix.insert(0, sep_token_idx)
-        if add_sos_and_eos:
-            if self.sos_token: prefix.insert(0, self.sos_token_idx)
-            if self.eos_token: suffix.append(self.eos_token_idx)
+        
+        if add_sos and (not prefix or prefix[0] != self.sos_token_idx):
+            prefix.insert(0, self.sos_token_idx)
+        if add_eos and (not suffix or suffix[-1] != self.eos_token_idx):
+            suffix.append(self.eos_token_idx)
         
         max_length  = max(1, max_length - len(prefix) - len(suffix))
         
@@ -818,17 +854,22 @@ class TextEncoder(object):
         
         lengths = [len(part) for part in parts]
         
-        if return_type == 'list':
-            return parts, lengths
-        elif return_type == 'np':
+        if return_type == 'list': return parts, lengths
+        
+        parts = pad_batch(parts, self.blank_token_idx, dtype = np.int32)
+        if return_type == 'np':
             return (
-                pad_batch(parts, self.blank_token_idx, dtype = np.int32),
-                np.array(lengths, dtype = np.int32)
+                parts, np.array(lengths, dtype = np.int32)
             )
         elif return_type == 'tf':
             return (
-                tf.cast(pad_batch(parts, self.blank_token_idx, dtype = np.int32), tf.int32),
-                tf.cast(lengths, dtype = tf.int32)
+                ops.convert_to_tf_tensor(parts, 'int32'),
+                ops.convert_to_tf_tensor(lengths, dtype = 'int32')
+            )
+        elif return_type == 'tensor':
+            return (
+                ops.convert_to_tensor(parts, dtype = 'int32'),
+                ops.convert_to_tensor(lengths, dtype = 'int32')
             )
         else:
             raise ValueError('Unknown `return_type` : {}'.format(return_type))
@@ -899,6 +940,7 @@ class TextEncoder(object):
             'name'      : self.name,
             'vocab'     : self._vocab,
             'level'     : self.level,
+            'template'  : self.template,
             
             'lstrip'    : self.lstrip,
             'rstrip'    : self.rstrip,
@@ -946,7 +988,7 @@ class TextEncoder(object):
             specials = [w for w in tokenizer.all_special_tokens if w not in vocab]
             return list(sorted(vocab, key = vocab.get)) + specials
         
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, WhisperTokenizer
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, LlamaTokenizer, WhisperTokenizer
         
         pretrained = name
         if isinstance(name, str):
@@ -993,30 +1035,37 @@ class TextEncoder(object):
             data    = load_json(path[0])
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             vocab = data['model']['vocab']
+            if isinstance(vocab, dict): vocab = list(sorted(vocab.keys(), key = vocab.get))
             kwargs.update({
-                'vocab' : list(sorted(vocab.keys(), key = vocab.get)),
+                'vocab' : vocab,
                 'lstrip'    : False,
                 'rstrip'    : True,
+                'cleaners'  : _default_cleaners,
+                'sos_token' : pretrained.bos_token,
+                'eos_token' : pretrained.eos_token,
                 'split_pattern'     : _gpt_pattern,
-                'cleaners'          : _default_cleaners,
                 'bpe_pairs'         : [pair.split(' ') for pair in data['model']['merges']],
-                'byte_encoder'      : bytes_to_unicode(),
-                'sos_token'         : pretrained.bos_token,
-                'eos_token'         : pretrained.eos_token
+                'byte_encoder'      : bytes_to_unicode()
             })
-        elif isinstance(pretrained, (BarthezTokenizer, T5Tokenizer)):
+        elif hasattr(pretrained, 'sp_model'):
             from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
             cls = SentencePieceTextEncoder
+            
             kwargs.update({
                 'vocab' : [
                     pretrained.sp_model.id_to_piece(i)
                     for i in range(pretrained.sp_model.get_piece_size())
                 ],
+                'offset'    : getattr(pretrained, 'fairseq_offset', 0),
                 'tokenizer' : pretrained.sp_model,
                 'sub_word_prefix'   : '',
                 'sos_token'         : pretrained.bos_token,
                 'eos_token'         : pretrained.eos_token
             })
+            tokens  = pretrained.added_tokens_decoder.values()
+            kwargs['vocab'] = [v for v in kwargs['vocab'] if v not in tokens]
+            for idx, tok in getattr(pretrained, 'added_tokens_decoder', {}).items():
+                kwargs['vocab'].insert(idx, tok.content)
         # Common config
         kwargs.update({
             'level'         : TextEncoderLevel.TOKEN,
@@ -1024,13 +1073,14 @@ class TextEncoder(object):
             'sep_token'     : pretrained.sep_token,
             'ukn_token'     : pretrained.unk_token,
             'mask_token'    : pretrained.mask_token,
-            'additional_tokens' : getattr(pretrained, 'additional_special_tokens', None)
+            'additional_tokens' : getattr(pretrained, 'additional_special_tokens', None),
+            'template'  : getattr(pretrained, 'chat_template', None)
         })
         
         if pretrained.pad_token is not None:    kwargs['pad_token'] = pretrained.pad_token
         elif kwargs.get('eos_token', None):     kwargs['pad_token'] = kwargs['eos_token']
         else:                                   kwargs['pad_token'] = kwargs['vocab'][0]
-        
+
         return cls(** kwargs)
     
     @classmethod
@@ -1130,11 +1180,26 @@ def _get_split_index(encoded, last_end, idx, _can_split_fn, _decrease = True):
 
 
 
+@cache
+def compile_jinja_template(template):
+    import jinja2
+
+    from jinja2.exceptions import TemplateError
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    def raise_exception(message):
+        raise TemplateError(message)
+
+    env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    env.globals['raise_exception'] = raise_exception
+    return env.from_string(template)
+
 def execute_and_concat(fn_name):
     fn = getattr(TextEncoder, fn_name)
-    expanded_signature  = tf.nest.map_structure(
-        lambda sig: tf.TensorSpec(shape = (None, ) + sig.shape, dtype = sig.dtype, name = sig.name),
-        fn.signature
+    expanded_signature  = tree.map_structure(
+        lambda sig: TensorSpec(
+            shape = (None, ) + sig.shape, dtype = sig.dtype, name = sig.name
+        ), fn.signature
     )
     if not isinstance(expanded_signature, (list, tuple)):
         expanded_signature = [expanded_signature]
@@ -1157,7 +1222,7 @@ def execute_and_concat(fn_name):
         ], ** {
             k : v[i] if isinstance(v, (list, np.ndarray)) and len(v) == max_len else v
             for k, v in kwargs.items()
-        }, return_type = 'np') for i in range(max_len)]
+        }, i = i, return_type = 'np') for i in range(max_len)]
         
         if isinstance(results[0], list):
             results = list(zip(* results))
@@ -1186,13 +1251,15 @@ def execute_and_concat(fn_name):
             ]
         else:
             texts   = pad_batch(results[0], self.blank_token_idx, dtype = np.int32)
-            others  = [pad_batch(res) for res in results[1:]]
+            others  = [pad_batch(res, dtype = np.int32) for res in results[1:]]
             results = [texts] + others
         
         if return_type == 'np':
             return results
         elif return_type == 'tf':
-            return [tf.cast(res, tf.int32) for res in results]
+            return [ops.convert_to_tf_tensor(res, 'int32') for res in results]
+        elif return_type == 'tensor':
+            return [ops.convert_to_tensor(res, 'int32') for res in results]
         else:
             raise ValueError("Unknown `return_type` : {}".format(return_type))
     

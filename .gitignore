@@ -1,3 +1,7 @@
+# Custom directories
+pretrained_models/
+unitests/__reproduction/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

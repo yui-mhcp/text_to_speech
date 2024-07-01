@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,46 +11,43 @@
 
 import os
 import glob
-import tensorflow as tf
+import keras
 
-try:
-    from keras.losses import LossFunctionWrapper
-except:
-    from keras.src.losses import LossFunctionWrapper
+from keras.src.losses import LossFunctionWrapper
 
-from utils.generic_utils import import_objects, get_object, print_objects, is_function
+from utils import import_objects, get_object, print_objects, is_function, dispatch_wrapper
+from .loss_with_multiple_outputs import LossWithMultipleOutputs
 
-def get_loss(loss_name, * args, ** kwargs):
-    global _losses
-    if isinstance(loss_name, dict) and 'class_name' in loss_name:
-        return tf.keras.losses.deserialize(loss_name, _losses)
+_losses = import_objects(
+    [__package__.replace('.', os.path.sep), keras.losses],
+    classes     = keras.losses.Loss,
+    signature   = ['y_true', 'y_pred'],
+    exclude     = ('Loss', 'LossFunctionWrapper', 'LossWithMultipleOutputs')
+)
+globals().update(_losses)
 
-    if loss_name == 'LossFunctionWrapper': loss_name = kwargs.pop('fn')
+@dispatch_wrapper(_losses, 'loss')
+def get_loss(loss, * args, ** kwargs):
+    if loss == 'crossentropy': return loss
+    if isinstance(loss, dict):
+        if loss.get('class_name', None) == 'LossFunctionWrapper':
+            return keras.losses.deserialize(loss)
+        
+        name_key    = 'loss' if 'loss' in loss else 'class_name'
+        config_key  = 'config' if 'config' in loss else 'loss_config'
+        optimizer, kwargs = loss[name_key], loss[config_key]
+
+    if loss == 'LossFunctionWrapper': loss = kwargs.pop('fn')['config']
     else: kwargs.pop('fn', None)
     return get_object(
-        _losses, loss_name, * args, ** kwargs, types = (type, tf.keras.losses.Loss),
-        err = True, print_name = 'loss', function_wrapper = LossFunctionWrapper
+        _losses, loss, * args, ** kwargs, types = (type, keras.losses.Loss),
+        print_name = 'loss', function_wrapper = LossFunctionWrapper
     )
 
 def print_losses():
     print_objects(_losses, 'losses')
 
 def add_loss(loss, name = None):
-    if name is None: name = loss.__name__ if is_vunction(loss) else loss.__class__.__name__
-    
-    _losses[name] = loss
-    
+    if name is None: name = loss.__name__ if is_function(loss) else loss.__class__.__name__
+    get_loss.dispatch(loss, name)
 
-def _is_class_or_callable(name, val):
-    return isinstance(val, type) or callable(val)
-
-_losses = {
-    'LossFunctionWrapper'   : LossFunctionWrapper,
-    ** import_objects(__package__.replace('.', os.path.sep), types = type),
-    ** import_objects(
-        [tf.keras.losses],
-        filters = _is_class_or_callable,
-        exclude = ('get', 'serialize', 'deserialize', 'Reduction')
-    )
-}
-globals().update(_losses)

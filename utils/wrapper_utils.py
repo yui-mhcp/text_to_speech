@@ -1,5 +1,5 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -44,14 +44,14 @@ def dispatch_wrapper(methods, name, default = None):
                 )
                 return dispatch_fn
             
-            if dispatch_fn is not None and not callable(dispatch_fn):
+            if dispatch_fn is not None and keys is None and not callable(dispatch_fn):
                 dispatch_fn, keys = None, dispatch_fn
             return dispatch_wrapper if dispatch_fn is None else dispatch_wrapper(dispatch_fn)
         
         fn.dispatch = dispatch
         fn.methods  = methods
         
-        for method_name, method_fn in methods.items():
+        for method_name, method_fn in sorted(methods.items()):
             fn.dispatch(method_fn, method_name)
         
         return fn
@@ -73,15 +73,38 @@ def add_dispatch_doc(fn,
     _show_fn    = dispatch_fn
     if doc is not None: _show_fn = doc
     elif method:        _show_fn = getattr(dispatch_fn, method)
-    fn.__doc__  = '{}{}{}: {}\n    {}{}{}'.format(
-        '{}\n\n'.format(fn.__doc__) if fn.__doc__ is not None else '',
-        name,
-        ' (default) ' if default and default in keys else ' ',
-        display,
-        dispatch_fn.__name__ + ('' if not method else '.{}'.format(method)),
-        inspect.signature(_show_fn),
-        '\n{}'.format(_show_fn.__doc__) if show_doc and _show_fn.__doc__ else ''
-    )
+    
+    if callable(_show_fn):
+        fn.__doc__  = '{}{}{}: {}\n    {}{}{}'.format(
+            '{}\n\n'.format(fn.__doc__) if fn.__doc__ is not None else '',
+            name,
+            ' (default) ' if default and default in keys else ' ',
+            display,
+            dispatch_fn.__name__ + ('' if not method else '.{}'.format(method)),
+            inspect.signature(_show_fn),
+            '\n{}'.format(_show_fn.__doc__) if show_doc and _show_fn.__doc__ else ''
+        )
+    else:
+        fn.__doc__  = '{}{}{}: {} ({})'.format(
+            '{}\n\n'.format(fn.__doc__) if fn.__doc__ is not None else '',
+            name,
+            ' (default) ' if default and default in keys else ' ',
+            display,
+            dispatch_fn
+        )
+
+
+def args_to_kwargs(source_fn):
+    def wrapper(fn):
+        @functools.wraps(fn)
+        def inner(* args, ** kwargs):
+            kwargs.update({
+                arg_name : arg for arg_name, arg in zip(fn_args[: len(args)], args)
+            })
+            return fn(** kwargs)
+        fn_args = list(inspect.signature(source_fn).parameters.keys())
+        return inner
+    return wrapper
 
 def partial(fn = None, * partial_args, _force = False, ** partial_config):
     """

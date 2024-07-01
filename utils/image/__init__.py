@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,14 +9,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from utils.image.image_io import *
-from utils.image.box_utils import *
-from utils.image.mask_utils import *
-from utils.image.image_utils import *
-from utils.image.video_utils import *
-from utils.image.image_augmentation import *
-from utils.image.custom_cameras import HTTPScreenMirror
-from utils.image.image_normalization import get_image_normalization_fn
+from .bounding_box import *
+from .image_io import *
+from .mask_utils import *
+from .image_utils import *
+from .video_utils import *
+from .image_augmentation import *
+from .custom_cameras import HTTPScreenMirror
+from .image_normalization import get_image_normalization_fn
 
 _image_formats  = ('gif', 'png', 'jpeg', 'jpg')
 _video_formats  = ('mp4', 'avi', 'ogg', 'm4a', 'mov')

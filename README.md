@@ -7,25 +7,23 @@ Check the [CHANGELOG](https://github.com/yui-mhcp/yui-mhcp/blob/main/CHANGELOG.m
 ```bash
 
 ├── custom_architectures
-│   ├── tacotron2_arch.py
-│   └── waveglow_arch.py
+│   ├── tacotron2_arch.py       : Tacotron-2 synthesizer architecture
+│   └── waveglow_arch.py        : WaveGlow vocoder architecture
 ├── custom_layers
 ├── custom_train_objects
 │   ├── losses
 │   │   └── tacotron_loss.py    : custom Tacotron2 loss
-├── datasets
-├── example_outputs         : some pre-computed audios to show you an example
-├── hparams
+├── example_outputs         : some pre-computed audios (cf the `text_to_speech` notebook)
 ├── loggers
 ├── models
-│   ├── siamese             : the `AudioSiamese` is used as encoder for the SV2TTS model
+│   ├── encoder             : the `AudioEncoder` is used as speaker encoder for the SV2TTS model*
 │   ├── tts
 │   │   ├── sv2tts_tacotron2.py : SV2TTS main class
 │   │   ├── tacotron2.py        : Tacotron2 main class
 │   │   ├── vocoder.py          : main functions for complete inference
 │   │   └── waveglow.py         : WaveGlow main class (both pytorch and tensorflow)
 ├── pretrained_models
-├── unitest
+├── unitests
 ├── utils
 ├── example_fine_tuning.ipynb
 ├── example_sv2tts.ipynb
@@ -36,7 +34,7 @@ Check the [CHANGELOG](https://github.com/yui-mhcp/yui-mhcp/blob/main/CHANGELOG.m
 
 Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more information about the unextended modules / structure / main classes. 
 
-\* Check my [Siamese Networks project](https://github.com/yui-mhcp/siamese_networks) for more information about the `models/siamese` module
+\* Check the [encoders](https://github.com/yui-mhcp/encoders) project for more information about the `models/encoder` module
 
 ## Available features
 
@@ -48,7 +46,7 @@ Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more i
 | stream            | `tts_stream`      | perform TTS on text you enter |
 | TTS logger        | `loggers.TTSLogger`   | converts `logging` logs to voice and play it |
 
-You can check the `text_to_speech` notebook for a concrete demonstration
+The `text_to_speech` notebook provides a concrete demonstration of the `tts` function
 
 ## Available models
 
@@ -61,9 +59,7 @@ Available architectures :
 - `Vocoder` :
     - [Waveglow](https://arxiv.org/abs/1811.00002)
 
-\* Some speaker's embeddings are created with the Siamese Networks approach, which differs from the original paper. Check the [Siamese Networks](https://github.com/yui-mhcp/siamese_networks) project for more information on this architecture. More recent models use the `GE2E`-loss based encoders (like in the original paper), with a CNN architecture (instead of the 3-layers LSTM), as it is faster to train. 
-
-My SV2TTS models are fine-tuned from pretrained Tacotron2 models, by using the *partial transfer learning* procedure (see below for details), which speeds up a lot the training.
+The SV2TTS models are fine-tuned from pretrained Tacotron2 models, by using the *partial transfer learning* procedure (see below for details), which speeds up a lot the training.
 
 ### Model weights
 
@@ -76,13 +72,11 @@ My SV2TTS models are fine-tuned from pretrained Tacotron2 models, by using the *
 | sv2tts_tacotron2_256_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full), [VoxForge](http://www.voxforge.org/), [CommonVoice](https://commonvoice.mozilla.org/fr/datasets)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1UK44V7C-hlj_pziAuQnJnHxAwLyoxcjt/view?usp=share_link)  |
 | sv2tts_siwis_v2   | `fr`      | [SIWIS](https://datashare.ed.ac.uk/handle/10283/2353?show=full)   | `SV2TTSTacotron2`   | `WaveGlow`    | [Google Drive](https://drive.google.com/file/d/1bzj9412l0Zje3zLaaqGOBNaQRBYLVO2q/view?usp=share_link) | [me](https://github.com/yui-mhcp)  | [Google Drive](https://drive.google.com/file/d/1BaCSuWeydNj5z0b6dgKddPUDM2j4rPvu/view?usp=share_link)  |
 
-You can download the `tensorflow` version of `WaveGlow` at [this link](https://drive.google.com/file/d/1Lx-MiiRuxWmBX4_ZORD9YT4LfgHb0Tfk/view?usp=sharing)
-
 Models must be unzipped in the `pretrained_models/` directory !
 
-**Important Note** : the `NVIDIA` models available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why I have released pre-converted models (both `Tacotron2` and `WaveGlow`) in `tensorflow` if you do not want to configure `pytorch` ! :smile:
+**Important Note** : the `NVIDIA` models available on `torch hub` requires a compatible GPU with the correct configuration for `pytorch`. It is the reason why the both models are provided in the expected `keras` checkpoint :smile:
 
-The `sv2tts_siwis` is a fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability, and to produce a voice with more intonation, compared to simply training the single-speaker model. 
+The `sv2tts_siwis` models are fine-tuned version of `sv2tts_tacotron2_256` on the `SIWIS` (single-speaker) dataset. Fine-tuning a multi-speaker on a single-speaker dataset tends to improve the stability, and to produce a voice with more intonation, compared to simply training the single-speaker model. 
 
 ## Usage and demonstration
 
@@ -99,7 +93,7 @@ You can also find some audio generated in `example_outputs/`, or directly in the
 3. Install requirements : `pip install -r requirements.txt`
 4. Open `text_to_speech` notebook and follow the instruction !
 
-You also have to install `ffmpeg` for audio loading / saving.
+You may have to install `ffmpeg` for audio loading / saving.
 
 ## TO-DO list :
 
@@ -121,94 +115,73 @@ You also have to install `ffmpeg` for audio loading / saving.
 
 ## Multi-speaker Text-To-Speech
 
-There exists 2 main ways to enable `multi-speaker` in the `Tacotron2` architecture :
-1. Use a `speaker-id`, embed it with an `Embedding` layer and concat / add it to the `Encoder` output
-2. Use a `Speaker Encoder (SE)` to embed audio from speakers and concat / add this embedding to the `encoder output`
-
-I have not tested the 1st idea but it is available in my implementation.
+There are multiple ways to enable `multi-speaker` speech synthesis :
+1. Use a `speaker ID` that is embedded by a learnable `Embedding` layer. The speaker embedding is then learned during training. 
+2. Use a `Speaker Encoder (SE)` to embed audio from the reference speaker. This is often referred as `zero-shot voice cloning`, as it only requires a sample from the speaker (without training). 
+3. Recently, a new `prompt-based` strategy has been proposed to control the speech with prompts. 
 
 ### Automatic voice cloning with the `SV2TTS` architecture
 
-Note : in the next paragraphs, `encoder` refers to the `Tacotron Encoder` part while `SE` refers to a `speaker encoder` model (detailed below)
+Note : in the next paragraphs, `encoder` refers to the `Tacotron Encoder` part, while `SE` refers to a `speaker encoder` model (detailed below).
 
 #### The basic intuition
 
-The `Speaker Encoder Text-To-Speech` comes from the [From Speaker Verification To Text-To-Speech (SV2TTS)](https://papers.nips.cc/paper/2018/file/6832a7b24bc06775d02b7406880b93fc-Paper.pdf) paper which shows how to use a `Speaker Verification` model to embed audio and use them as input for a `Tacotron2` model
+The `Speaker Encoder-based Text-To-Speech` is inspired from the "[From Speaker Verification To Text-To-Speech (SV2TTS)](https://papers.nips.cc/paper/2018/file/6832a7b24bc06775d02b7406880b93fc-Paper.pdf)" paper. The authors have proposed an extension of the `Tacotron-2` architecture to include information about the speaker's voice. 
 
-The idea is the following : 
-1. Train a model to identify speakers based on their audio : the `speaker verification` model. This model basically takes as input an audio sample (5-10 sec) from a speaker, embed it and compare it to baseline embeddings to decide whether the speakers are the same or not
-2. It uses the `speaker encoder` model to produce embeddings of the speaker to clone
-3. It makes a classical `text encoding` with the `Tacotron Encoder` part
-4. It concatenates the `speaker embedding` (1D vector) to each frame of the `encoder output`\*
-5. It makes a classical forward pass with the `Tacotron Decoder` part
+Here is a short overview of the proposed procedure :
+1. Train a model to identify speakers based on short audio samples : the `speaker verification` model. This model basically takes as input an audio sample (5-10 sec) from a speaker, and encodes it on a *d*-dimensional vector, named the `embedding`. This embedding aims to capture relevant information about the speaker's voice (e.g., `frequencies`, `rythm`, `pitch`, ...). 
+2. This pre-trained `Speaker Encoder (SE)` is then used to encode the voice of the speaker to clone.
+3. The produced embedding is then concatenated with the output of the `Tacotron-2` encoder part, such that the `Decoder` has access to both the encoded text and the speaker embedding.
 
-The idea is that the `Decoder` will learn to use the `speaker embedding` to copy its prosody / intonation / ... to read the text with the voice of this speaker : it works quite well !
+The objective is that the `Decoder` will learn to use the `speaker embedding` to copy its prosody / intonation / ... to read the text with the voice of this speaker.
 
-\* The `embedding` is a 1D vector while the `encoder output` is a matrix with shape `(text_length, encoder_embedding_dim)`. The idea is to concatenate the `embedding` to each frame by repeating it `text_length` times
+#### Limitations and solutions
 
-#### Problems and solutions
+There are some limitations with the above approach : 
+- A perfect generalization to new speakers is really difficult, as it would require large datasets with many speakers. 
+- The audio should not have any noise / artifacts to avoid noisy synthetic audios.
+- The `Speaker Encoder` has to correctly separate speakers, and encode their voice in a meaningful way for the synthesizer.
 
-There are some issues with the above approach : 
-- A perfect generalization to new speakers is really hard as it requires datasets with many speakers (more than 1k), which is really rare in `Text-To-Speech` datasets
-- The audio should be good quality, to avoid creating noise in the output voices
-- The `Speaker Encoder` must be good enough to well separate speakers
-- The `Speaker Encoder` must be able to embed speakers in a relevant way, such that the `Tacotron` model can extract useful information on the speaker's prosody
-
-For the 1st issue, there is no real solution, except combining different datasets, as done in the example notebooks, with the `CommonVoice`, `VoxForge` and `SIWIS` datasets
-
-Another solution is to train a low quality model (i.e. trained with many noisy data), and fine-tune it with a small amount of good quality data on a particular speaker. The big advantage of this approach is that you can train a new model really fast with less than 20min of annotated audio from the speaker (which is impossible with a classical single-speaker model training).
-
-For the second point, pay attention to have good quality audio : my experiments have shown that with the original datasets (which contains quite poor quality data), the model *never* converges
-
-However there exists a solution : preprocessing ! The `utils/audio` module contains many powerful preprocessing functions for `noise reduction` (using the [noisereduce](https://pypi.org/project/noisereduce/) library) and `audio silence trimming` (which is really important for the model)
-
-For the 2 last points, read the next section on `speaker encoder`
+To tackle these limitations, the proposed solution is to perform a 2-step training :
+- First train a *low-quality* multi-speakers model on the `CommonVoice` database. This is one of the largest multilingual database for audio, at the cost of noisy / variable quality audios. This is therefore not suitable to train good quality models, whereas pre-processing still helps to obtain intelligible audios. 
+- Once a multi-speaker model is trained, a single-speaker database with few good quality data can be used to fine-tune the model on a single speaker. This allows the model to learn faster, with only limited amount of good quality data, and to produce really good quality audios !
 
 #### The Speaker Encoder (SE)
 
-The SE part should be able to differentiate speakers, and embed (encode in a 1-D vector) them in a *meaningful* way (i.e. to be able to differenciate them). 
+The SE part should be able to differentiate speakers, and embed (encode in a 1-D vector) them in a *meaningful* way. 
 
-The model used in the paper is a 3-layer `LSTM` model with a normalization layer and trained with the [GE2E](https://ieeexplore.ieee.org/abstract/document/8462665) loss. The problem is that training this model is **really slow** and took 2 weeks on 4 GPU's in the CorentinJ master thesis (cf his [github](https://github.com/CorentinJ/Real-Time-Voice-Cloning))
+The model used in the paper is a 3-layer `LSTM` model with a normalization layer trained with the [GE2E](https://ieeexplore.ieee.org/abstract/document/8462665) loss. The major limitation is that training this model is **really slow**, and took 2 weeks on 4 GPU's in the CorentinJ master thesis (cf his [github](https://github.com/CorentinJ/Real-Time-Voice-Cloning))
 
-This idea was not possible for me (because I do not have 4 GPU's :smile: ), so I have tested something else : use the [AudioSiamese](https://github.com/yui-mhcp/siamese_networks) model ! The objective of this model is to create speakers' embeddings, and try to minimize distance between embeddings from a same speaker, which is equivalent to the `GE2E` training objective !
-
-Experiments have shown 2 interesting results : 
-1. An `AudioSiamese` trained on raw audio is quite good for `speaker verification` but embeds in a non-meaningful way for `Tacotron` so the result were quite poor
-2. An `AudioSiamese` trained on mel-spectrogram (same parameters as the `Tacotron mel function`) is as good for `speaker verification` but seems to extract more meaningful information !
-
-The big advantage is that in less than 1 training night you can have your `Speaker Encoder` and use it which is crazy : 1 night on single GPU instead of 2 weeks on 4 GPU's !
-
-Furthermore in a visual comparison of embeddings made by the `3-layer LSTM` encoder and my `Siamese Network` encoder, they seem quite similar
+This project proposes a simpler architecture based on `Convolutional Neural Networks (CNN)`, which is much faster to train compared to `LSTM` networks. Furthermore, the `euclidian` distance has been used rather than the `cosine` metric, which has shown faster convergence. Additionally, a custom cache-based generator is proposed to speed up audio processing. These modifications allowed to train a 99% accuracy model within 2-3 hours on a single `RTX 3090` GPU !
 
 
 ## The *partial* Transfer Learning procedure
 
-In order to avoid training a SV2TTS model from scratch which would be completely impossible on a single GPU, I created a `partial transfer learning` code
+In order to avoid training a SV2TTS model from scratch, which would be completely impossible on a single GPU, a new `partial transfer learning` procedure is proposed. 
 
-The idea is quite simple : make transfer learning between models that have the same number of layers but different shapes\*. This allowed me to use my single-speaker pretrained model as base for the SV2TTS model ! Experiments showed that it works pretty well : the model has to learn new neurons specific to voice cloning but can reuse its pretrained-neurons for speaking, quite funny !
+This procedure takes a pre-trained model with a slightly different architecture, and transfer all the common weights (like in regular transfer learning). For the layers with different weights shape, only the common part is transfered, while the remaining weights are initialized to zeros. This result in a new model with different weights to mimic the behavior of the original model.
 
-Some ideas that showed some benefits (especially for single-speaker fine-tuning) : 
-- After some epochs (2-5) we can put the `Postnet` part as non-trainable : this part basically improves mel-quality but is not speaker-specific so no need to train it too much
-- After some epochs (5-10) you can put the `Tacotron Encoder` part non trainable (only if your pretrained model was for the same language) : text-encoding is not speaker-specific so no need to train it too much
-
-The idea behind these tricks is that the only *speaker-specific* part is the `DecoderCell` so we can make other parts non-trainable to force it to learn this specific part
-
-\* Note that I also implemented it when models do not have the same number of layers
+In the `SV2TTS` architecture, the speaker embedding is passed to the recurrent layer of the `Tacotron2 decoder`. This results in a different input shape, making the layer weights matrix different. The partial transfer learning allows to nitialize the model such that it replicates the behavior of the original single-speaker `Tacotron2` model !
 
 ## Contacts and licence
 
-You can contact [me](https://github.com/yui-mhcp) at yui-mhcp@tutanota.com or on [discord](https://discord.com) at `yui#0732`
+Contacts :
+- **Mail** : `yui-mhcp@tutanota.com`
+- **[Discord](https://discord.com)** : yui0732
 
-The objective of these projects is to facilitate the development and deployment of useful application using Deep Learning for solving real-world problems and helping people. 
-For this purpose, all the code is under the [Affero GPL (AGPL) v3 licence](LICENCE)
+### Terms of use
 
-All my projects are "free software", meaning that you can use, modify, deploy and distribute them on a free basis, in compliance with the Licence. They are not in the public domain and are copyrighted, there exist some conditions on the distribution but their objective is to make sure that everyone is able to use and share any modified version of these projects. 
+The goal of these projects is to support and advance education and research in Deep Learning technology. To facilitate this, all associated code is made available under the [GNU Affero General Public License (AGPL) v3](AGPLv3.licence), supplemented by a clause that prohibits commercial use (cf the [LICENCE](LICENCE) file).
 
-Furthermore, if you want to use any project in a closed-source project, or in a commercial project, you will need to obtain another Licence. Please contact me for more information. 
+These projects are released as "free software", allowing you to freely use, modify, deploy, and share the software, provided you adhere to the terms of the license. While the software is freely available, it is not public domain and retains copyright protection. The license conditions are designed to ensure that every user can utilize and modify any version of the code for their own educational and research projects.
 
-For my protection, it is important to note that all projects are available on an "As Is" basis, without any warranties or conditions of any kind, either explicit or implied. However, do not hesitate to report issues on the repository's project or make a Pull Request to solve it :smile: 
+If you wish to use this project in a proprietary commercial endeavor, you must obtain a separate license. For further details on this process, please contact me directly.
 
-If you use this project in your work, please add this citation to give it more visibility ! :yum:
+For my protection, it is important to note that all projects are available on an "As Is" basis, without any warranties or conditions of any kind, either explicit or implied. However, do not hesitate to report issues on the repository's project, or make a Pull Request to solve it :smile: 
+
+### Citation
+
+If you find this project useful in your work, please add this citation to give it more visibility ! :yum:
 
 ```
 @misc{yui-mhcp
@@ -220,16 +193,15 @@ If you use this project in your work, please add this citation to give it more v
 }
 ```
 
-## Notes and references
+## Notes and references 
 
-The code for this project is a mixture of multiple GitHub projects to have a fully modulable `Tacotron-2` implementation
-- [1] [NVIDIA's repository (tacotron2 / waveglow)](https://github.com/NVIDIA) : this was my first implementation where I copied their architecture in order to reuse their pretrained model in a `tensorflow 2.x` implementation. 
-- [2] [The TFTTS project](https://github.com/TensorSpeech/TensorflowTTS) : my 1st model was quite slow and had many `Out Of Memory (OOM)` errors so I improved the implementation by using the `TacotronDecoder` from this github which allows the `swap_memory` argument by using `dynamic_decode`
-- [3] [Tensorflow Addons](https://github.com/tensorflow/addons) : as I had some trouble to use the library due to version issues, I copied just the `dynamic_decode()` with `BaseDecoder` class to use it in the `TacotronDecoder` implementation
-- [4] [CorentinJ's Real-Time Voice cloning project](https://github.com/CorentinJ/Real-Time-Voice-Cloning) : this repository is an implementation of the `SV2TTS` architecture. I do not copy any of its code as I already had my own implementation (which is slightly different for this repo) but it inspired me to add the `SV2TTS` feature to my class. 
+The code for this project is a mixture of multiple GitHub projects, to have a fully modulable `Tacotron-2` implementation
+- [NVIDIA's repository (tacotron2 / waveglow)](https://github.com/NVIDIA) : the base pretrained model is are inspired from this repository. 
+- [The TFTTS project](https://github.com/TensorSpeech/TensorflowTTS) : some inference optimizations are inspired from their `dynamic decoder` implementation, which has now been optimized and updated to be `Keras 3` compatible.
+- [CorentinJ's Real-Time Voice cloning project](https://github.com/CorentinJ/Real-Time-Voice-Cloning) : the provided `SV2TTS` architecture is inspired from this repository, with small differences and optimizations. 
 
 Papers : 
-- [5] [Tacotron 2](https://arxiv.org/abs/1712.05884) : the original Tacotron2 paper
-- [6] [Waveglow](https://arxiv.org/abs/1811.00002) : the WaveGlow model
-- [7] [Transfer learning from Speaker Verification to Text-To-Speech](https://papers.nips.cc/paper/2018/file/6832a7b24bc06775d02b7406880b93fc-Paper.pdf)) : original paper for SV2TTS idea
-- [8] [Generalized End-to-End loss for Speaker Verification](https://ieeexplore.ieee.org/abstract/document/8462665) : the GE2E Loss paper
+- [Tacotron 2](https://arxiv.org/abs/1712.05884) : the original Tacotron2 paper
+- [Waveglow](https://arxiv.org/abs/1811.00002) : the original WaveGlow paper
+- [Transfer learning from Speaker Verification to Text-To-Speech](https://papers.nips.cc/paper/2018/file/6832a7b24bc06775d02b7406880b93fc-Paper.pdf)) : original paper for SV2TTS variant
+- [Generalized End-to-End loss for Speaker Verification](https://ieeexplore.ieee.org/abstract/document/8462665) : the GE2E Loss paper (used for speaker encoder in the SV2TTS architecture)

@@ -1,0 +1,16 @@
+services:
+    maggie:
+        image: maggie:latest
+        command: sh -c "python3 maggie.py"
+        build:
+            context: ..
+            dockerfile: Dockerfile
+        volumes:
+            - ..:/app
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          capabilities: [gpu]
+                          device_ids: ['0']

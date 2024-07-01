@@ -1,5 +1,5 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,7 +12,10 @@
 import time
 import logging
 import requests
-import tensorflow as tf
+import numpy as np
+
+from io import BytesIO
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,9 @@ class HTTPScreenMirror:
         if wait > 0: time.sleep(wait)
         
         try:
-            img = requests.get('{}/{}{}.jpg'.format(self.url, self.prefix, int(time.time() * 1000)))
+            img = requests.get(
+                '{}/{}{}.jpg'.format(self.url, self.prefix, int(time.time() * 1000))
+            )
         except requests.ConnectionError as e:
             logger.warning('Server connection has been closed !')
             return False, None
@@ -43,8 +48,7 @@ class HTTPScreenMirror:
             self.last_time = time.time()
         
         if not img.content: return False, None
-        with tf.device('cpu'):
-            return True, tf.image.decode_jpeg(img.content).numpy()[..., ::-1]
+        return np.array(Image.open(BytesIO(img.content)))[..., ::-1]
     
     def release(self):
         pass

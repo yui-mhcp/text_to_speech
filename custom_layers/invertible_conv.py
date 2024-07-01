@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,9 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
+import keras
+import keras.ops as K
 
-class Invertible1x1Conv(tf.keras.layers.Layer):
+class Invertible1x1Conv(keras.layers.Layer):
     """
     The layer outputs both the convolution, and the log determinant
     of its weight matrix.  If reverse=True it does convolution with
@@ -22,60 +22,40 @@ class Invertible1x1Conv(tf.keras.layers.Layer):
         super().__init__(** kwargs)
         self.c  = c
         
-        self.conv = tf.keras.layers.Conv1D(
+        self.conv = keras.layers.Conv1D(
             filters     = c,
             kernel_size = 1,
             strides     = 1,
             padding     = 'same',
-            use_bias    = False
+            use_bias    = False,
+            name    = 'conv'
         )
-        
-        self.built_inverse = False
-        
+    
     def build(self, input_shape):
-        self.conv.build(input_shape)
-        
-        W = tf.transpose(tf.squeeze(self.conv.weights))
-
-        if tf.linalg.det(W) < 0:
-            self.init_random()
-            self.build_inverse()
-        else:
-            self.build_inverse()
-
         super().build(input_shape)
+        self.conv.build(input_shape)
+        self.conv._load_own_variables = self.conv.load_own_variables
+        self.conv.load_own_variables = lambda store: self.build_inverse(store)
 
-    def init_random(self):
-        # Sample a random orthonormal matrix to initialize weights
-        W = tf.linalg.qr(tf.random.normal((self.c, self.c)))[0]
+    def build_inverse(self, store = None):
+        if store is not None: self.conv._load_own_variables(store)
+        kernel = self.conv.kernel
+        W = K.transpose(K.squeeze(kernel))
 
-        # Ensure determinant is 1.0 not -1.0
-        if tf.linalg.det(W) < 0:
-            W = W.numpy()
-            W[:,0] = -1*W[:,0]
-        
-        W = tf.reshape(W, [1, self.c, self.c])
-        self.conv.set_weights([W])
-
-    def build_inverse(self):
-        W = tf.transpose(tf.squeeze(self.conv.weights))
-
-        W_inverse = tf.transpose(tf.linalg.inv(W))
-        self.W_inverse = tf.expand_dims(W_inverse, axis = 0)
-        
-        self.built_inverse = True
+        W_inverse = K.transpose(K.inv(W))
+        self.W_inverse = K.expand_dims(W_inverse, axis = 0)
         
     def call(self, inputs, reverse = False):
         if reverse:
-            return tf.nn.conv1d(inputs, self.W_inverse, stride = 1, padding = 'SAME')
+            return K.conv(inputs, self.W_inverse, padding = 'same')
         else:
-            batch_size  = tf.cast(tf.shape(inputs)[0], tf.float32)
-            group_size  = tf.cast(tf.shape(inputs)[2], tf.float32)
-            n_of_groups = tf.cast(tf.shape(inputs)[1], tf.float32)
+            batch_size  = K.cast(K.shape(inputs)[0], 'float32')
+            group_size  = K.cast(K.shape(inputs)[2], 'float32')
+            n_of_groups = K.cast(K.shape(inputs)[1], 'float32')
             
-            W = tf.transpose(tf.squeeze(self.conv.weights))
+            W = K.transpose(K.squeeze(self.conv.weights))
             # Forward computation
-            log_det_W = batch_size * n_of_groups * tf.math.log(tf.linalg.det(W))
+            log_det_W = batch_size * n_of_groups * K.log(K.det(W))
             output = self.conv(inputs)
             return output, log_det_W
 

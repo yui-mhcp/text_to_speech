@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,38 +9,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
+import os
+import keras
 
-from utils.generic_utils import get_object, print_objects
+from utils import import_objects, dispatch_wrapper, get_object, print_objects
 
-from custom_train_objects.callbacks.ckpt_callback import CkptCallback
-from custom_train_objects.callbacks.terminate_on_nan import TerminateOnNaN
-from custom_train_objects.callbacks.predictor_callback import PredictorCallback
+_callbacks = import_objects(
+    [__package__.replace('.', os.path.sep), keras.callbacks],
+    classes     = keras.callbacks.Callback,
+    exclude     = ('Callback', 'CallbackList', 'History', 'ProgBarLogger')
+)
+globals().update(_callbacks)
 
-def get_callbacks(callback_name = None, * args, ** kwargs):
+@dispatch_wrapper(_callbacks, 'callback')
+def get_callbacks(callback = None, * args, ** kwargs):
     return get_object(
-        _callbacks, callback_name, * args, ** kwargs, print_name = 'callbacks', err = True,
-        types = tf.keras.callbacks.Callback
+        _callbacks, callback, * args, ** kwargs, print_name = 'callbacks',
+        types = keras.callbacks.Callback
     )
 
 
 def print_callbacks():
     print_objects(_callbacks, 'callbacks')
 
-
-_callbacks = {
-    'CkptCallback'          : CkptCallback,
-    'checkpoint'            : CkptCallback,
-    'ModelCheckpoint'       : CkptCallback,
-    'model_checkpoint'      : CkptCallback,
-    'csv_logger'            : tf.keras.callbacks.CSVLogger,
-    'CSVLogger'             : tf.keras.callbacks.CSVLogger,
-    'early_stopping'        : tf.keras.callbacks.EarlyStopping,
-    'EarlyStopping'         : tf.keras.callbacks.EarlyStopping,
-    'reduce_lr'             : tf.keras.callbacks.ReduceLROnPlateau,
-    'ReduceLROnPlateau'     : tf.keras.callbacks.ReduceLROnPlateau,
-    'TerminateOnNaN'        : TerminateOnNaN,
-    'terminate_on_nan'      : TerminateOnNaN, 
-    'PredictorCallback'     : PredictorCallback,
-    'predictor_callback'    : PredictorCallback
-}

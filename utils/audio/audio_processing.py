@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,12 +11,12 @@
 
 import enum
 import numpy as np
-import tensorflow as tf
 import librosa.util as librosa_util
 
 from scipy.signal import get_window
 
-from utils.generic_utils import get_enum_item
+from utils.keras_utils import ops
+from utils.generic_utils import get_enum_item, convert_to_str
 from utils.wrapper_utils import dispatch_wrapper
 
 _trimming_methods = {}
@@ -39,6 +38,7 @@ def trim_silence(audio, method = 'window', ** kwargs):
         Return :
             - trimmed_audio : `np.ndarray`, the audio with silence trimmed
     """
+    method = convert_to_str(method)
     return _trimming_methods.get(method, trim_silence_simple)(audio, ** kwargs)
 
 @trim_silence.dispatch
@@ -83,7 +83,8 @@ def trim_silence_window(audio,
             - kwargs    : unused
         Returns : the trimmed audio
     """
-    assert mode in ('start', 'end', 'start_end')
+    mode = convert_to_str(mode)
+    assert mode in ('start', 'end', 'start_end'), 'Invalid mode : {}'.format(mode)
     window_type = get_enum_item(window_type, WindowType)
     
     if isinstance(window_length, float): window_length = int(window_length * rate)
@@ -160,32 +161,29 @@ def trim_silence_simple(audio, threshold = 0.1, mode = 'start_end', ** kwargs):
 
 @trim_silence.dispatch
 def trim_silence_mel(mel, mode = 'start_end', min_factor = 0.5, ** kwargs):
-    max_amp = tf.reduce_max(mel)
-    min_amp = tf.reduce_min(mel)
+    min_amp, max_amp = ops.min(mel), ops.max(mel)
     
     min_val = min_amp + (max_amp - min_amp) * min_factor
     
     if mode == 'mean':
-        mean_frames_amp = tf.reduce_mean(mel, axis = -1)
-        return tf.boolean_mask(mel, mean_frames_amp >= min_val)
+        return mel[ops.mean(mel, axis = -1) >= min_val]
     
     elif mode == 'max':
-        max_frames_amp = tf.reduce_max(mel, axis = -1)
-        return tf.boolean_mask(mel, max_frames_amp >= min_val)
+        return mel[ops.max(mel, axis = -1) >= min_val]
     
     else:
         if 'max' in mode:
-            frames_amp = tf.reduce_max(mel, axis = -1)
+            frames_amp = ops.max(mel, axis = -1)
         else:
-            frames_amp = tf.reduce_mean(mel, axis = -1)
+            frames_amp = ops.mean(mel, axis = -1)
                     
-        start, stop = 0, tf.shape(mel)[0] - 1
+        start, stop = 0, len(mel) - 1
         if 'end' in mode:
             while stop >= 0 and frames_amp[stop] < min_val: stop = stop - 1
         if 'start' in mode:
             while start < stop and frames_amp[start] < min_val: start = start + 1
         
-        if stop == start: start, stop = 0, tf.shape(mel)[0]
+        if stop == start: start, stop = 0, ops.shape(mel)[0]
                 
         return mel[start : stop]
     
@@ -219,9 +217,6 @@ def convert_audio_dtype(audio, dtype):
     if np.issubdtype(dtype, np.integer): audio = audio * np.iinfo(dtype).max
     
     return audio.astype(dtype)
-
-def tf_normalize_audio(audio, max_val = 1., dtype = tf.float32):
-    return tf.cast((audio / tf.maximum(tf.reduce_max(tf.abs(audio)), 1e-6)) * max_val, dtype)
 
 def normalize_audio(audio, max_val = 32767, dtype = np.int16, normalize_by_mean = False):
     """
@@ -303,7 +298,7 @@ def griffin_lim(magnitudes, stft_fn, n_iters = 30):
     angles = np.angle(np.exp(2j * np.pi * np.random.rand(*magnitudes.size())))
     angles = angles.astype(np.float32)
 
-    signal = tf.squeeze(stft_fn.inverse(magnitudes, angles), 1)
+    signal = stft_fn.inverse(magnitudes, angles)[:, 0]
 
     for i in range(n_iters):
         _, angles = stft_fn.transform(signal)
@@ -314,21 +309,21 @@ def griffin_lim(magnitudes, stft_fn, n_iters = 30):
 def dynamic_range_compression(x, C = 1, clip_val = 1e-5):
     """
         Arguments :
-            - x : `tf.Tensor`, the audio to compress
+            - x : `Tensor`, the audio to compress
             - C : compression factor
         Return :
-            - compressed    : `tf.Tensor` with same shape as `x`
+            - compressed    : `Tensor` with same shape as `x`
     """
-    return tf.math.log(tf.maximum(x, clip_val) * C)
+    return ops.log(ops.maximum(x, clip_val) * C)
 
 
 def dynamic_range_decompression(x, C = 1):
     """
         Arguments :
-            - x : `tf.Tensor`, the audio to decompress
+            - x : `Tensor`, the audio to decompress
             - C : compression factor
         Return :
-            - decompressed  : `tf.Tensor` with same shape as `x`
+            - decompressed  : `Tensor` with same shape as `x`
     """
-    return tf.exp(x) / C
+    return ops.exp(x) / C
 

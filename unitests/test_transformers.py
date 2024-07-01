@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -18,7 +18,6 @@ except:
     AutoTokenizer   = None
     
 from utils.text import *
-from datasets import get_dataset
 from unitests import CustomTestCase
 
 test_with_dataset   = False
@@ -31,6 +30,7 @@ _default_texts  = [
 ]
 dataset_texts = []
 if test_with_dataset:
+    from datasets import get_dataset
     dataset = get_dataset('squad', modes = 'valid')
     dataset_texts = dataset['question'].values.tolist() + dataset['context'].values.tolist()
     del dataset

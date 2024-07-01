@@ -1,13 +1,13 @@
 {
-    "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you train new models, do not hesitate to contact me, or add it in the available models !": {
-        "text": "\nHello world ! I hope you will enjoy this funny API for Text-To-Speech ! \nIf you train new models, do not hesitate to contact me, or add it in the available models !\n",
-        "cleaned": "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you train new models, do not hesitate to contact me, or add it in the available models !",
+    "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you want to share new models, please contact me so i can add it in the available models !": {
+        "text": "\nHello world ! I hope you will enjoy this funny API for Text-To-Speech ! \nIf you want to share new models, please contact me so I can add it in the available models !\n",
+        "cleaned": "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you want to share new models, please contact me so i can add it in the available models !",
         "parts": [
-            "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you train new models, do not hesitate to contact me, or add it in the available models !"
+            "hello world ! i hope you will enjoy this funny api for text-to-speech ! if you want to share new models, please contact me so i can add it in the available models !"
         ],
-        "timestamp": 1703517087.1679027,
+        "timestamp": 1719747297.0436132,
         "mel": "example_outputs/en/mels/mel_0.npy",
         "audio": "example_outputs/en/audios/audio_0.mp3",
-        "time": 12.1556462585034
+        "time": 11.435827664399094
     }
 }

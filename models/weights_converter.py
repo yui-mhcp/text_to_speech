@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,14 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import re
+import sys
 import enum
 import logging
 import warnings
 import collections
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 class PartialInitializer(enum.IntEnum):
     NONE    = -1
@@ -84,63 +84,137 @@ _attn_split     = {
     }
 }
 
-def _get_layer_name_sep(vars_mapping):
-    """ Get the layer's names separator ('.' for pytorch and '/' for tensorflow) """
-    pt, tf = 0, 0
-    for name in vars_mapping:
-        pt += name.count('.')
-        tf += name.count('/')
-    if tf == pt:
-        raise RuntimeError('Unable to determine separator for layer\'s names :\n{}'.format('\n'.join(vars_mapping.keys())))
-        
-    return '/' if tf > pt else '.'
+_int_distance = {
+    str(i) : {str(j) : abs(i - j) / 10. for j in range(10)}
+    for i in range(10)
+}
 
-def _get_root_name(vars_mapping, model = None, sep = None, threshold = 0.9):
+def _is_torch_module(x):
+    if 'torch' not in sys.modules: return False
+    import keras
+    import torch.nn
+    if isinstance(x, dict):
+        return all(isinstance(v, torch.Tensor) for v in x.values())
+    return isinstance(x, torch.nn.Module) and not isinstance(x, (keras.Model, keras.layers.Layer))
+
+def get_model_name(variables, model = None, threshold = 0.6):
     if model is not None and hasattr(model, 'name'): return model.name
-    if not sep: sep = _get_layer_name_sep(vars_mapping)
     
     parts = {}
-    for name in vars_mapping:
-        candidate = name.split(sep)[0]
+    for name in variables:
+        candidate = name.split('/')[0]
         parts.setdefault(candidate, 0)
         parts[candidate] += 1
     
     for cand, n in parts.items():
-        if n > len(vars_mapping) * threshold: return cand
+        if n > len(variables) * threshold: return cand
     warnings.warn('Unable to determine the root based on candidates : {}'.format(parts))
     return ''
 
-def _get_layer_name(name, vars_mapping, skip_root = False, sep = None, root = None,
-                    model = None, ** kwargs):
+def remove_model_name(variables, ** kwargs):
+    model_name = get_model_name(variables, ** kwargs)
+    if model_name:
+        variables = {
+            k[len(model_name) + 1 :] if k.startswith(model_name) else k : v
+            for k, v in variables.items()
+        }
+    
+    return variables
+
+def variable_to_numpy(var):
+    if isinstance(var, dict): return {k : variable_to_numpy(v) for k, v in var.items()}
+    if isinstance(var, list): return [variable_to_numpy(v) for v in var]
+    
+    for attr in ('detach', 'cpu', 'numpy'):
+        if hasattr(var, attr): var = getattr(var, attr)()
+    return var
+
+def normalize_var_name(name):
+    if isinstance(name, dict): return {normalize_var_name(k) : v for k, v in name.items()}
+    return name.replace('.', '/').replace('-', '/')
+
+def get_var_name(var):
+    return var.path if hasattr(var, 'path') else var.name
+
+def get_var_mapping(model):
+    """ Returns a dict {var_name : var} """
+    if hasattr(model, 'state_dict'):    model = model.state_dict()
+    elif hasattr(model, 'weights'):     model = model.weights
+    if isinstance(model, dict): return model
+
+    mapping = collections.OrderedDict()
+    for v in model: mapping[get_var_name(v)] = v
+    return mapping
+
+def get_variables(model):
+    return list(get_var_mapping(model).values())
+
+def get_weights(model):
+    if hasattr(model, 'get_weights'): return model.get_weights()
+    return [variable_to_numpy(v) for v in get_variables(model)]
+
+def get_layer_name(name):
     """ Returns the layer's name based on variable's name `name` """
-    def _get_root_index(parts, root):
-        if not root: root = _get_root_name(vars_mapping, model = model)
-        return parts.index(root) if root in parts else -1
+    if '/' not in name: return name
+    return '/'.join(name.split('/')[:-1])
+
+def get_layers_mapping(model,
+                       
+                       transpose    = False,
+                       to_numpy     = True,
+                       skip_root    = False,
+                       
+                       source   = None,
+                       ** _
+                      ):
+    """
+        Returns a dict {layer_name : list_of_vars}
+        A layer is identified by removing the last part from its name
+        Layer's name parts are identified by splitting the name by `sep` ('/' inf tensorflow and '.' in pytorch's models)
+        
+        Arguments :
+            - model : a valid type for `get_var_mapping` (dict, list, Model, torch.nn.Module)
+            - sep   : either '/' (tensorflow) or '.' (pytorch) (determined based on the 1st variable's name if not provided)
+            - kwargs    : forwarded to `_get_layer_name` to determine the layer's key in the mapping
+    """
+    layers = model
+    if not isinstance(model, dict) or not isinstance(list(model.values())[0], list):
+        variables   = get_var_mapping(model)
+        variables   = normalize_var_name(variables)
+        if skip_root:   variables = remove_model_name(variables, model = model)
+        if to_numpy:    variables = variable_to_numpy(variables)
+        
+        layers  = collections.OrderedDict()
+        for name, var in variables.items():
+            key = get_layer_name(name)
+            layers.setdefault(key, []).append(var)
     
-    if not sep: sep = _get_layer_name_sep(vars_mapping)
-    name_parts  = name.split(sep)
+    if source:      layers = arrange_weights(layers, source, target = 'keras')
+    if transpose:   layers = transpose_weights(layers)
     
-    if len(name_parts) > 1:
-        root_index  = _get_root_index(name_parts, root)
-        if len(name_parts) > 2 or root_index == -1:
-            name_parts = name_parts[:-1]
-            if len(name_parts) >= 3 and name_parts[-2].startswith(('forward_', 'backward_')):
-                name_parts = name_parts[:-2]
-        if skip_root and root_index != -1: name_parts = name_parts[root_index + 1:]
-    
-    return sep.join(name_parts)
+    return layers
+
+get_layers = get_layers_mapping
 
 def print_vars(model, ** kwargs):
     """ Displays all variables of `model` (name with shape) """
     variables = get_var_mapping(model, ** kwargs)
 
-    print("# variables : {}".format(len(variables)))
+    msg = '# variables : {}'.format(len(variables))
     for name, var in variables.items():
-        print('Name : {}\t- Shape : {}'.format(name, tuple(var.shape)))
-    print('\n\n')
+        msg += '\nName : {}\t- Shape : {}'.format(name, tuple(var.shape))
+    msg += '\n\n'
+    print(msg)
+
 
 def transpose_weights(weights):
     """ Returns the transposed version of `weights` (for pt / tf convertion) """
+    if isinstance(weights, dict):
+        return {k : transpose_weights(v) for k, v in weights.items()}
+    
+    if isinstance(weights, list):
+        return [transpose_weights(w) for w in weights]
+    
     if len(weights.shape) <= 1:
         return weights
     elif len(weights.shape) == 2:
@@ -154,68 +228,90 @@ def transpose_weights(weights):
     else:
         raise ValueError("Unknown weights shape : {}".format(weights.shape))
 
-def get_layers(model, ** kwargs):
-    """ Equivalent to `get_layers_mapping` """
-    return get_layers_mapping(model, ** kwargs)
-
-def get_var_mapping(model):
-    """ Returns a dict {var_name : var} """
-    if hasattr(model, 'state_dict'):    model = model.state_dict()
-    if hasattr(model, 'variables'):     model = model.variables
-    return {v.name : v for v in model} if isinstance(model, list) else model
-
-def get_layers_mapping(model, sep = None, convert_to = None, to_numpy = True, ** kwargs):
-    """
-        Returns a dict {layer_name : list_of_vars}
-        A layer is identified by removing the last part from its name
-        Layer's name parts are identified by splitting the name by `sep` ('/' inf tensorflow and '.' in pytorch's models)
-        
-        Arguments :
-            - model : a valid type for `get_var_mapping` (dict, list, tf.keras.Model, torch.nn.Module)
-            - sep   : either '/' (tensorflow) or '.' (pytorch) (determined based on the 1st variable's name if not provided)
-            - kwargs    : forwarded to `_get_layer_name` to determine the layer's key in the mapping
-    """
-    assert convert_to in (None, 'tf', 'tensorflow', 'pt', 'pytorch')
+def arrange_weights(weights, source, target = 'keras'):
+    if source == target: return weights
     
-    layers = model
-    if not isinstance(model, dict) or not isinstance(list(model.values())[0], list):
-        variables   = get_var_mapping(model)
-        if not sep: sep = _get_layer_name_sep(variables)
-        
-        layers  = collections.OrderedDict()
-        for name, var in variables.items():
-            key = _get_layer_name(name, variables, sep = sep, model = model, ** kwargs)
+    if isinstance(weights, dict):
+        rearranged = {}
+        for k, w in weights.items():
+            new_v = arrange_weights(w, source, target)
+            if not isinstance(new_v, dict):
+                rearranged[k] = new_v
+            else:
+                rearranged.update({'{}-{}'.format(k, ki) : vi for ki, vi in new_v.items()})
 
-            if hasattr(var, 'cpu'):     var = var.cpu()
-            #if hasattr(var, 'float'):   var = var.float()
-            layers.setdefault(key, []).append(var.numpy() if to_numpy else var)
-    elif not sep:
-        sep = _get_layer_name_sep(layers)
+        return rearranged
     
-    if convert_to in ('tf', 'tensorflow') and sep == '.':
-        layers = {
-            k.replace('.', '/') : pt_convert_layer_weights(w, name = k)
-            for k, w in layers.items()
-        }
-    elif convert_to in ('pt', 'pytorch') and sep == '/':
-        layers = {
-            k.replace('/', '.') : tf_convert_layer_weights(w, name = k)
-            for k, w in layers.items()
-        }
-        
-    return layers
+    if target == 'torch':
+        if source == 'saved_model':
+            weights = arrange_saved_model_weights(weights)
+        return arrange_keras_weights(weights)
+    elif target == 'keras':
+        if source == 'torch':
+            return arrange_torch_weights(weights)
+        elif source == 'saved_model':
+            return arrange_saved_model_weights(weights)
+    else:
+        raise ValueError('Unsupported target format : {}'.format(target))
 
-def find_layers_mapping(tf_model,
-                        pt_model,
+def arrange_torch_weights(weights, expand_bidirectional = True):
+    if len(weights) == 2:
+        weights = sorted(weights, key = lambda w: len(w.shape), reverse = True)
+    elif len(weights) < 4:
+        pass
+    elif len(weights) == 4:
+        weights = weights[:2] + [weights[2] + weights[3]]
+    elif len(weights) == 5:
+        weights = weights[:4]
+    elif len(weights) == 8:
+        if expand_bidirectional:
+            return {
+                'forward'   : weights[:2] + [weights[2] + weights[3]],
+                'backward'  : weights[4:6] + [weights[6] + weights[7]]
+            }
+        else:
+            weights = weights[:2] + [weights[2] + weights[3]] + weights[4:6] + [weights[6] + weights[7]]
+    else:
+        raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(
+            len(weights), [tuple(v.shape) for v in weights]
+        ))
+    
+    return weights
+
+def arrange_keras_weights(weights):
+    if len(weights) < 3 or len(weights) == 4:
+        pass
+    elif len(weights) == 3:
+        weights = weights[:2] + [weights[2] / 2., weights[2] / 2.]
+    else:
+        raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(
+            len(weights), [tuple(v.shape) for v in weights]
+        ))
+    
+    return weights
+
+def arrange_saved_model_weights(weights):
+    if len(weights) < 4:
+        return sorted(weights, key = lambda w: len(w.shape), reverse = True)
+    elif len(weights) == 4:
+        return [weights[1], weights[0]] + weights[2:]
+    raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(
+        len(weights), [tuple(v.shape) for v in weights]
+    ))
+
+def find_layers_mapping(model,
+                        pretrained,
+                        *,
+                        
                         patterns    = {},
                         transforms  = {},
                         skip_layers = None,
                         
+                        source  = None,
+                        transpose   = False,
                         partial     = False,
                         
-                        skip_root   = True,
-                        convert_to  = 'tf',
-                        
+                        replacement_cost    = _int_distance,
                         default_replace_cost    = 1.5,
                         
                         tqdm = lambda x: x,
@@ -251,151 +347,102 @@ def find_layers_mapping(tf_model,
     
     shape_fn  = sorted if not partial else len
     
-    tf_layers = get_layers(tf_model, to_numpy = False)
-    tf_layers = {
+    model_layers    = get_layers(model, to_numpy = False)
+    model_layers    = {
         k : [shape_fn(tuple([s for s in vi.shape if s > 1])) for vi in v]
-        for k, v in tf_layers.items()
+        for k, v in model_layers.items()
     }
-    logger.debug('# tf layers : {}'.format(len(tf_layers)))
-    pt_layers = get_layers(pt_model, convert_to = convert_to, skip_root = skip_root).copy()
-    logger.debug('# pt layers : {}'.format(len(pt_layers)))
+    logger.debug('# model layers      : {}'.format(len(model_layers)))
+    pretrained_layers = get_layers(
+        pretrained, transpose = transpose, source = source, ** kwargs
+    ).copy()
+    logger.debug('# pretrained layers : {}'.format(len(pretrained_layers)))
 
     if patterns:
         for pat, repl in patterns.items():
-            pt_layers = {re.sub(pat, repl, k) : v for k, v in pt_layers.items()}
+            pretrained_layers = {re.sub(pat, repl, k) : v for k, v in pretrained_layers.items()}
     
     if transforms:
         for pat, trans in transforms.items():
-            for k in list(pt_layers.keys()):
+            for k in list(pretrained_layers.keys()):
                 if re.search(pat, k):
                     logger.debug('Applying transform {} on {} (shapes : {})'.format(
-                        pat, k, [tuple(vi.shape) for vi in pt_layers[k]]
+                        pat, k, [tuple(vi.shape) for vi in pretrained_layers[k]]
                     ))
-                    pt_layers.update(trans(k, pt_layers.pop(k)))
-    
-    not_mapped = set(pt_layers.keys())
-    pt_shapes  = {
+                    pretrained_layers.update(trans(k, pretrained_layers.pop(k)))
+
+    not_mapped = set(pretrained_layers.keys())
+    pretrained_shapes  = {
         k : [shape_fn(np.squeeze(vi).shape) for vi in v if len(vi.shape)]
-        for k, v in pt_layers.items()
+        for k, v in pretrained_layers.items()
     }
 
+    def _remove_candidate(name):
+        not_mapped.remove(name)
+        for l in _layers[:i]:
+            if len(mapping.get(l, [])) > 1 and name in mapping[l]:
+                mapping[l].remove(name)
+                if len(mapping[l]) == 1: _remove_candidate(mapping[l][0])
+    
+    _layers = list(model_layers.keys())
     mapping = {}
-    for l1, shape in tqdm(tf_layers.items()):
-        bests, score = [], float('inf')
-        if not skip_layers or all(re.search(s, l1) is None for s in skip_layers):
-            for l2 in not_mapped:
-                if shape != pt_shapes[l2]: continue
+    for i, l1 in enumerate(tqdm(_layers)):
+        shape = model_layers[l1]
+        if skip_layers and any(re.search(s, l1) is not None for s in skip_layers):
+            continue
+        
+        if l1 in not_mapped:
+            mapping[l1] = [l1]
+            _remove_candidate(l1)
+            continue
 
-                s = edit_distance(l1, l2, normalize = False, default_replace_cost = default_replace_cost)
-                if s == score:
-                    bests.append(l2)
-                    score = s
-                elif s < score:
-                    bests = [l2]
-                    score = s
+        bests, score = [], float('inf')
+        
+        for l2 in not_mapped:
+            if shape != pretrained_shapes[l2]: continue
+
+            s = edit_distance(
+                l1, l2,
+                normalize   = False,
+                replacement_cost    = replacement_cost,
+                default_replace_cost    = default_replace_cost,
+                ** kwargs
+            )
+            if s == score:
+                bests.append(l2)
+            elif s < score:
+                bests = [l2]
+                score = s
         
         mapping[l1] = bests
-        if len(bests) == 1:
-            not_mapped.remove(bests[0])
+        if len(bests) == 1: _remove_candidate(bests[0])
+
+    return mapping, pretrained_layers
+
+def load_saved_model_variables(path):
+    import tensorflow as tf
     
-    return mapping, pt_layers
+    if os.path.isdir(path): path = tf.train.latest_checkpoint(path)
+    names   = tf.train.list_variables(path)
+    weights = {n : tf.train.load_variable(path, n) for n, _ in names}
+    weights = {k : v for k, v in weights.items() if isinstance(v, np.ndarray) and v.ndim > 0}
+    logger.info('Loaded {} variables from {}'.format(len(weights), path))
+    return {
+        k.replace('/.ATTRIBUTES/VARIABLE_VALUE', '') : v for k, v in weights.items()
+    }
 
-""" Pytorch to Tensorflow convertion """
-
-def get_pt_layers(pt_model, ** kwargs):
-    return get_layers_mapping(pt_model, sep = '.', ** kwargs)
-
-def pt_convert_layer_weights(layer_weights, name):
-    new_weights = []
-    if len(layer_weights) == 2:
-        new_weights = sorted(layer_weights, key = lambda w: len(w.shape), reverse = True)
-    elif len(layer_weights) < 4:
-        new_weights = layer_weights
-    elif len(layer_weights) == 4:
-        new_weights = layer_weights[:2] + [layer_weights[2] + layer_weights[3]]
-    elif len(layer_weights) == 5:
-        new_weights = layer_weights[:4]
-    elif len(layer_weights) == 8:
-        new_weights = layer_weights[:2] + [layer_weights[2] + layer_weights[3]]
-        new_weights += layer_weights[4:6] + [layer_weights[6] + layer_weights[7]]
-    else:
-        raise ValueError("Unknown weights length for variable {} : {}\n  Shapes : {}".format(
-            name, len(layer_weights), [tuple(v.shape) for v in layer_weights]
-        ))
-    
-    return [transpose_weights(w) for w in new_weights]
-
-def get_pt_variables(pt_model, verbose = False):
-    pt_layers = get_pt_layers(pt_model) if not isinstance(pt_model, dict) else pt_model
-    converted_weights = []
-    for layer_name, layer_variables in pt_layers.items():
-        converted_variables = pt_convert_layer_weights(layer_variables, layer_name) if 'embedding' not in layer_name else layer_variables
-        converted_weights += converted_variables
-        
-        logger.log(logging.INFO if verbose else logging.DEBUG, "Layer : {} \t {} \t {}".format(
-            layer_name, 
-            [tuple(v.shape) for v in layer_variables],
-            [tuple(v.shape) for v in converted_variables],
-        ))
-    return converted_weights
-
-def pt_convert_model_weights(pt_model, tf_model, verbose = False):
-    converted_weights = get_pt_variables(pt_model, verbose = verbose)
-    
-    partial_transfer_learning(tf_model, converted_weights, verbose = verbose)
-    logger.info("Weights converted successfully !")
-    
-    
-""" Tensorflow to Pytorch converter """
-
-def get_tf_layers(tf_model, ** kwargs):
-    return get_layers_mapping(tf_model, sep = '/', ** kwargs)
-
-def tf_convert_layer_weights(layer_weights, name = None):
-    new_weights = []
-    if len(layer_weights) < 3 or len(layer_weights) == 4:
-        new_weights = layer_weights
-    elif len(layer_weights) == 3:
-        new_weights = layer_weights[:2] + [layer_weights[2] / 2., layer_weights[2] / 2.]
-    else:
-        raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(len(layer_weights), [tuple(v.shape) for v in layer_weights]))
-    
-    return [transpose_weights(w) for w in new_weights]
-
-
-def tf_convert_model_weights(tf_model, pt_model, verbose = False):
-    import torch
-    
-    pt_layers = pt_model.state_dict()
-    tf_layers = get_tf_layers(tf_model)
-    converted_weights = []
-    for layer_name, layer_variables in tf_layers.items():
-        converted_variables = tf_convert_layer_weights(layer_variables) if 'embedding' not in layer_name else layer_variables
-        converted_weights += converted_variables
-        
-        logger.log(logging.INFO if verbose else logging.DEBUG, "Layer : {} \t {} \t {}".format(
-            layer_name, 
-            [tuple(v.shape) for v in layer_variables],
-            [tuple(v.shape) for v in converted_variables],
-        ))
-    
-    tf_idx = 0
-    for i, (pt_name, pt_weights) in enumerate(pt_layers.items()):
-        if len(pt_weights.shape) == 0: continue
-        
-        pt_weights.data = torch.from_numpy(converted_weights[tf_idx])
-        tf_idx += 1
-    
-    pt_model.load_state_dict(pt_layers)
-    logger.info("Weights converted successfully !")
-
-""" Partial transfer learning """
 
 def name_based_partial_transfer_learning(target_model,
                                          pretrained_model,
+                                         
+                                         source = None,
+                                         transpose  = 'auto',
+                                         
                                          partial_transfer      = True,
                                          partial_initializer   = 'zeros',
+                                         
                                          sampling_mode  = None,
+                                         
                                          tqdm   = lambda x: x,
                                          verbose    = False,
                                          ** kwargs
@@ -406,7 +453,7 @@ def name_based_partial_transfer_learning(target_model,
             - different shapes (and same number of layers)
             
         Arguments : 
-            - target_model  : tf.keras.Model instance (model where weights will be transfered to)
+            - target_model  : Model instance (model where weights will be transfered to)
             - pretrained_model  : pretrained model to transfer weights from
             - partial_transfer  : whether to perform partial transfer for layers with different shapes
             - partial_initializer   : how to initialize weights when shapes differ
@@ -477,18 +524,24 @@ def name_based_partial_transfer_learning(target_model,
     sampling_mode   = get_enum_item(str(sampling_mode), PartialSampling)
     partial_initializer = get_enum_item(str(partial_initializer), PartialInitializer)
     
+    if source is None:      source = 'torch' if _is_torch_module(pretrained_model) else 'keras'
+    if transpose == 'auto': transpose  = source == 'torch'
+    
     mapping, pretrained_layers = find_layers_mapping(
-        target_model, pretrained_model, partial = True, tqdm = tqdm, ** kwargs
+        target_model,
+        pretrained_model,
+        source  = source,
+        transpose   = transpose,
+        partial     = True,
+        tqdm    = tqdm,
+        ** kwargs
     )
     pretrained_layers   = {k : v for k, v in pretrained_layers.items() if len(v) > 0}
     layer_var_idx = {k : 0 for k in pretrained_layers.keys()}
-    
-    target_variables = target_model.variables
-    all_var_names    = [v.name for v in target_variables]
-    
+
     no_map      = [k for k, v in mapping.items() if len(v) == 0]
     multi_map   = [k for k, v in mapping.items() if len(v) > 1]
-    
+
     if no_map or multi_map:
         if no_map and not partial_transfer:
             raise ValueError('Some layers do not have any mapping !\n  Layers : {}'.format(no_map))
@@ -499,18 +552,20 @@ def name_based_partial_transfer_learning(target_model,
                 '\n'.join('- {} : {}'.format(k, [vi.shape for vi in v]) for k, v in pretrained_layers.items())
             ))
     
-    mapping_infos   = {}
+    target_variables    = get_var_mapping(target_model)
+    all_var_names       = list(target_variables.keys())
     
-    new_weights = []
-    for i, v in enumerate(target_variables):
-        var_layer   = _get_layer_name(v.name, all_var_names)
+    mapping_infos   = {}
+    new_weights     = []
+    for i, (name, v) in enumerate(target_variables.items()):
+        var_layer   = normalize_var_name(get_layer_name(name))
 
-        mapping_infos[v.name] = {'layer' : var_layer, 'shape' : tuple(v.shape)}
+        mapping_infos[name] = {'layer' : var_layer, 'shape' : tuple(v.shape)}
 
-        map_layer   = mapping.get(var_layer, mapping.get(v.name, []))
+        map_layer   = mapping.get(var_layer, mapping.get(name, []))
         if len(map_layer) == 0:
-            logger.info('Variable {} from layer {} does not have any mapping : re-using its current weights'.format(v.name, var_layer))
-            new_weights.append(v.numpy())
+            logger.info('Variable {} from layer {} does not have any mapping : re-using its current weights'.format(name, var_layer))
+            new_weights.append(variable_to_numpy(v))
             continue
         
         map_layer   = map_layer[0]
@@ -524,14 +579,14 @@ def name_based_partial_transfer_learning(target_model,
         map_weight  = pretrained_layers[map_layer][layer_var_idx[map_layer]]
         layer_var_idx[map_layer] += 1
         
-        mapping_infos[v.name].update({
+        mapping_infos[name].update({
             'Map layer' : map_layer, 'Map shape' : tuple(map_weight.shape)
         })
         
         new_weight  = partial_weight_transfer(v, map_weight)
         if isinstance(new_weight, tuple):
             new_weight, info = new_weight
-            mapping_infos[v.name].update(info)
+            mapping_infos[name].update(info)
         new_weights.append(new_weight)
     
     if any(w_idx not in (0, len(pretrained_layers[k])) for k, w_idx in layer_var_idx.items()):
@@ -562,8 +617,8 @@ def partial_transfer_learning(target_model,
             - different shapes (and same number of layers)
             
         Arguments : 
-            - target_model  : tf.keras.Model instance (model where weights will be transfered to)
-            - pretrained_model  : tf.keras.Model or list of weights (pretrained)
+            - target_model  : Model instance (model where weights will be transfered to)
+            - pretrained_model  : Model or list of weights (pretrained)
             - partial_transfer : whether to do partial transfer for layers with different shapes (only relevant if 2 models have same number of layers)
     """
     assert partial_initializer in (None, 'zeros', 'ones', 'normal', 'normal_conditionned')

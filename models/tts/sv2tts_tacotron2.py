@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,10 +11,10 @@
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
+from .tacotron2 import Tacotron2
+from utils.keras_utils import ops
 from utils import select_embedding
-from models.tts.tacotron2 import Tacotron2
 from models.interfaces.base_embedding_model import BaseEmbeddingModel
 
 class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
@@ -59,8 +58,8 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         if should_update: self.save_config()
     
-    def _build_model(self, **kwargs):
-        super()._build_model(
+    def build(self, ** kwargs):
+        super().build(
             encoder_speaker_embedding_dim   = self.embedding_dim, ** kwargs
         )
     
@@ -89,20 +88,20 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         if not isinstance(text, (list, tuple)):
             if isinstance(text, str):
-                text    = tf.expand_dims(self.encode_text(text), axis = 0)
-            elif len(tf.shape(text)) == 1:
-                text    = tf.expand_dims(text, axis = 0)
+                text    = ops.expand_dims(self.encode_text(text), axis = 0)
+            elif len(ops.shape(text)) == 1:
+                text    = ops.expand_dims(text, axis = 0)
         
-        if len(tf.shape(spk_embedding)) == 1:
-            spk_embedding = tf.expand_dims(spk_embedding, axis = 0)
-        if tf.shape(spk_embedding)[0] < tf.shape(text)[0]:
-            spk_embedding = tf.tile(spk_embedding, [tf.shape(text)[0], 1])
+        if len(ops.shape(spk_embedding)) == 1:
+            spk_embedding = ops.expand_dims(spk_embedding, axis = 0)
+        if ops.shape(spk_embedding)[0] < ops.shape(text)[0]:
+            spk_embedding = ops.tile(spk_embedding, [ops.shape(text)[0], 1])
         
         return super().infer([text, spk_embedding], ** kwargs)
     
     def select_embedding(self, embeddings = None, mode = None):
         # load embeddings if needed
-        if isinstance(embeddings, (np.ndarray, pd.DataFrame, tf.Tensor)):
+        if isinstance(embeddings, (np.ndarray, pd.DataFrame)) or ops.is_tensor(embeddings):
             self.set_embeddings(embeddings)
         elif self.embeddings is None:
             if embeddings is not None: embeddings, mode = None, embeddings
@@ -112,17 +111,17 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         if not isinstance(mode, dict):  mode = {'mode' : mode}
         
         selected_embedding = select_embedding(self.embeddings, ** mode)
-        selected_embedding = tf.expand_dims(
-            tf.cast(selected_embedding, tf.float32), axis = 0
+        selected_embedding = ops.expand_dims(
+            ops.cast(selected_embedding, 'float32'), axis = 0
         )
         return selected_embedding
     
     def get_speaker_embedding(self, data):
-        """ This function is used in `encode_data` and returns a single embedding """
+        """ This function is used in `prepare_data` and returns a single embedding """
         return self.get_embedding(data, label_embedding_key = 'speaker_embedding')
         
-    def encode_data(self, data):
-        inputs, outputs = super().encode_data(data)
+    def prepare_data(self, data):
+        inputs, outputs = super().prepare_data(data)
         
         embedded_speaker = self.get_speaker_embedding(data)
         
@@ -135,13 +134,12 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         return inputs[:-3] + (embedded_speaker, ) + inputs[-2:], outputs
         
-    def get_dataset_config(self, ** kwargs):
-        config = super().get_dataset_config(** kwargs)
-        config['pad_kwargs']    = {
-            'padding_values'    : (
-                (self.blank_token_idx, 0., self.pad_mel_value, 0), (self.pad_mel_value, 1.)
-            )
-        }
+    def get_dataset_config(self, * args, ** kwargs):
+        config = super().get_dataset_config(* args, ** kwargs)
+        inp, out = config['pad_kwargs']['padding_values']
+        config['pad_kwargs']['padding_values'] = (
+            inp[:-2] + (0., ) + inp[-2:], out
+        )
         
         return config
             

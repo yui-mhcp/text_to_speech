@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,11 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
-import librosa
 import numpy as np
-import tensorflow as tf
+import random as py_random
 
+from utils.keras_utils import ops
 from utils.audio.audio_io import load_audio
 
 def silence(duration, rate):
@@ -34,7 +32,7 @@ def pad(audio, left_time, right_time, rate = 22050, **kwargs):
 def merge(* list_audios, rate = 22050, overlap = [-1., 1.], intensite = 1.):
     if isinstance(overlap, (int, float)): overlap = [overlap, overlap]
     def random_overlap():
-        return random.random() * (overlap[1] - overlap[0]) + overlap[0]
+        return py_random.random() * (overlap[1] - overlap[0]) + overlap[0]
     
     audios = []
     for audio in list_audios:
@@ -74,16 +72,14 @@ def merge(* list_audios, rate = 22050, overlap = [-1., 1.], intensite = 1.):
     return merged, infos
 
 def random_shift(audio, min_shift = 0, max_shift = 0.5, min_length = None):
-    length = tf.shape(audio)[0]
+    length = len(audio)
     
     if min_length: max_shift = length - min_length - min_shift
-    elif max_shift < 1.: max_shift = tf.cast(max_shift * length)
+    elif max_shift < 1.: max_shift = ops.cast(max_shift * length, 'int32')
     
     if max_shift > 0:
-        shift = tf.random.uniform(
-            (), minval = min_shift, 
-            maxval = max_shift,
-            dtype = tf.int32
+        shift = ops.random.randint(
+            (), minval = min_shift,  maxval = max_shift
         )
         
         audio = audio[shift :]
@@ -91,47 +87,30 @@ def random_shift(audio, min_shift = 0, max_shift = 0.5, min_length = None):
     return audio
 
 def random_pad(audio, max_length):
-    maxval = max_length - tf.shape(audio)[0]
+    maxval = max_length - len(audio)
     if maxval > 0:
-        padding_left = tf.random.uniform(
-            (), minval = 0, 
-            maxval = maxval,
-            dtype = tf.int32
+        padding_left = ops.random.randint(
+            (), minval = 0, maxval = maxval
         )
-            
-        if maxval - padding_left > 0:
-            padding_right = tf.random.uniform(
-                (), minval = 0, 
-                maxval = maxval - padding_left,
-                dtype = tf.int32
-            )
-        else:
-            padding_right = 0
         
-        if len(tf.shape(audio)) == 2:
+        padding_right   = ops.cond(
+            maxval - padding_left > 0,
+            lambda: ops.random.randint((), minval = 0, maxval = maxval - padding_left),
+            lambda: ops.convert_to_tensor(0, 'int32')
+        )
+        
+        if len(ops.shape(audio)) == 2:
             padding = [(padding_left, padding_right), (0, 0)]
         else:
             padding = [(padding_left, padding_right)]
             
-            audio = tf.pad(audio, padding)
+        audio = ops.pad(audio, padding)
             
     return audio
 
-def random_noise(audio, intensite = -1, max_intensite = 0.2):
-    if intensite < 0:
-        intensite = tf.random.uniform(
-            (), minval = 0,
-            maxval = max_intensite,
-            dtype = tf.float32
-        )
+def random_noise(audio, intensity = None, max_intensity = 0.2):
+    if intensity is None:
+        intensity = ops.random.uniform((), minval = 0., maxval = max_intensity)
     
-    if intensite == 0: return audio
-    
-    noise = tf.random.uniform(
-        tf.shape(audio), 
-        minval = tf.reduce_min(audio),
-        maxval = tf.reduce_max(audio),
-        dtype = audio.dtype
-    )
-
-    return audio * (1. - intensite) + noise * intensite
+    noize = ops.random.uniform(ops.shape(audio), minval = ops.min(audio), maxval = ops.max(audio))
+    return audio * (1. - intensity) + noise * intensity

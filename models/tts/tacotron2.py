@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -15,13 +15,12 @@ import time
 import logging
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 from loggers import timer, time_logger
 from custom_architectures import get_architecture
 from models.interfaces.base_text_model import BaseTextModel
 from models.interfaces.base_audio_model import BaseAudioModel
-from models.weights_converter import pt_convert_model_weights
+from utils.keras_utils import TensorSpec, ops
 from utils import time_to_string, load_json, dump_json, convert_to_str, should_predict, plot_spectrogram, pad_batch
 from utils.audio import write_audio, load_audio, display_audio, play_audio
 from utils.text import default_english_encoder, split_text
@@ -39,7 +38,10 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         This class inherits from `BaseTextModel` and `BaseAudioModel` as it combines both types of data (text and audio). It means that it handles all the features available in those 2 interfaces.
     """
     
-    get_input   = BaseTextModel.tf_encode_text
+    _default_loss   = 'TacotronLoss'
+    _default_metrics    = []
+    
+    prepare_input   = BaseTextModel.encode_text
     
     def __init__(self,
                  lang,
@@ -58,9 +60,6 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         self.max_output_length  = max_output_length
 
         super().__init__(** kwargs)
-        
-        if hasattr(self.tts_model, '_build'):   self.tts_model._build()
-        if hasattr(self.tts_model, 'set_step'): self.tts_model.set_step(self.steps)
     
     def init_train_config(self, ** kwargs):
         super().init_train_config(** kwargs)
@@ -72,30 +71,30 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         if not self.trim_mel: self.trim_mel_method = None
         
-    def _build_model(self, **kwargs):
-        super()._build_model(
+    def build(self, tts_model = None, ** kwargs):
+        if not tts_model:
             tts_model = {
-                'architecture_name' : kwargs.pop('architecture_name', 'tacotron2'),
+                'architecture'  : kwargs.pop('architecture', 'tacotron2'),
                 'pad_token'     : self.blank_token_idx,
                 'vocab_size'        : self.vocab_size,
                 'n_mel_channels'    : self.n_mel_channels,
                 'init_step'     : self.steps,
                 ** kwargs
             }
-        )
+        return super().build(tts_model = tts_model)
     
     @property
     def input_signature(self):
         return (
             self.text_signature,
             self.audio_signature,
-            tf.TensorSpec(shape = (None, ), dtype = tf.int32)
+            TensorSpec(shape = (None, ), dtype = 'int32')
         )
     
     @property
     def output_signature(self):
         return (
-            self.audio_signature, tf.TensorSpec(shape = (None, None), dtype = tf.float32)
+            self.audio_signature, TensorSpec(shape = (None, None), dtype = 'float32')
         )
         
     @property
@@ -111,13 +110,13 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     
     @property
     def go_frame(self):
-        return tf.zeros((1, self.n_mel_channels), dtype = tf.float32)
+        return ops.zeros((1, self.n_mel_channels), dtype = 'float32')
     
     def __str__(self):
         return super().__str__() + self._str_text() + self._str_audio()
     
-    def call(self, inputs, training = False, **kwargs):
-        pred = self.tts_model(inputs, training = training, **kwargs)
+    def call(self, inputs, training = False, ** kwargs):
+        pred = self.tts_model(inputs, training = training, ** kwargs)
         return pred if len(pred) != 2 else pred[0]
     
     @timer(name = 'inference')
@@ -125,7 +124,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
               text,
               * args,
               
-              attn_mask_win_len = -1,
+              attn_mask_win_len = None,
 
               max_length    = -1,
               early_stopping    = True,
@@ -143,97 +142,89 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         if not isinstance(text, (list, tuple)):
             if isinstance(text, str):
-                text    = tf.expand_dims(self.encode_text(text), axis = 0)
-            elif len(tf.shape(text)) == 1:
-                text    = tf.expand_dims(text, axis = 0)
+                text    = ops.expand_dims(self.encode_text(text), axis = 0)
+            elif len(ops.shape(text)) == 1:
+                text    = ops.expand_dims(text, axis = 0)
         
         seq_len = text.shape[1] if not isinstance(text, (list, tuple)) else text[0].shape[1]
-        if isinstance(max_length, float):
-            max_length = int(max_length * seq_len)
-        
-        max_length  = tf.cast(max_length, tf.int32)
-        attn_mask_win_len   = tf.cast(attn_mask_win_len, tf.int32)
         
         trial = 0
         while trial < max_trial:
-            _, mels, gates, attentions = self.tts_model.infer(
+            outputs = self.tts_model.infer(
                 text,
                 attn_mask_win_len   = attn_mask_win_len,
             
                 max_length  = max_length,
                 early_stopping  = early_stopping,
                 initial_state   = initial_state,
-                return_state    = return_state
+                return_state    = return_state,
+                ** kwargs
             )
             
-            ratio = mels.shape[1] / seq_len
-            if (min_fpt_ratio != -1 or ratio > min_fpt_ratio) and (max_fpt_ratio > 0 and ratio < max_fpt_ratio):
+            ratio = ops.max(outputs.lengths) / seq_len
+            if (min_fpt_ratio == -1 or ratio > min_fpt_ratio) and (max_fpt_ratio == -1 or ratio < max_fpt_ratio):
+                logger.debug('Inference succeeded with a ratio of {:.2f}'.format(ratio))
                 break
             
             trial += 1
             if trial == max_trial:
                 logger.warning('Inference failed too much time ! Result is probably not perfect')
             else:
-                logger.info('Inference failed (shape : {}, frape / token ratio : {:.2f}), re-executing it !'.format(mels.shape, ratio))
+                logger.info('Inference failed (lengths : {}, frape / token ratio : {:.2f}), re-executing it !'.format(outputs.lengths, ratio))
         
-        return mels, gates, attentions
+        return outputs.mel, outputs.lengths, outputs.stop_tokens, outputs.attention_weights
     
-    def compile(self, loss = 'tacotronloss', metrics = [], ** kwargs):
-        super().compile(loss = loss, metrics = metrics, ** kwargs)
-    
-    def get_mel_gate(self, data):
+    def prepare_output(self, data):
         mel = self.get_audio(data)
         
-        mel = tf.concat([self.go_frame, mel], axis = 0)
+        mel = ops.concatenate([self.go_frame, mel], axis = 0)
 
-        gate = tf.zeros((tf.shape(mel)[0] - 1,), dtype = tf.float32)
-        gate = tf.concat([gate, tf.ones((1,), dtype = tf.float32)], axis = 0)
+        gate = ops.zeros((ops.shape(mel)[0] - 1,), dtype = 'float32')
+        gate = ops.concatenate([gate, ops.ones((1,), dtype = 'float32')], axis = 0)
         
         return mel, gate
     
-    def encode_data(self, data):
-        encoded_text = self.get_input(data)
+    def prepare_data(self, data):
+        encoded_text = self.prepare_input(data)
         
-        mel, gate = self.get_mel_gate(data)
+        mel, gate = self.prepare_output(data)
         
         return (encoded_text, mel[:-1], len(mel) - 1), (mel[1:], gate[1:])
         
     def filter_data(self, inputs, outputs):
         if self.max_train_frames > 0: return True
-        return tf.logical_and(
-            tf.shape(inputs[0])[-1] <= self.max_input_length, 
+        return ops.logical_and(
+            ops.shape(inputs[0])[-1] <= self.max_input_length, 
             inputs[-1] <= self.max_output_length
         )
     
-    def augment_data(self, inputs, outputs):
+    def augment_input(self, inputs):
         mel_input, mel_length = inputs[-2:]
         mel_input = self.augment_audio(mel_input)
         
-        return inputs[:-2] + (mel_input, mel_length), outputs
+        return inputs[:-2] + (mel_input, mel_length)
     
-    def preprocess_data(self, inputs, outputs):
+    def _process_data(self, inputs, outputs):
         mel_input, mel_length   = inputs[-2:]
         mel_output, gate        = outputs
         
         if self.pad_to_multiple and self.max_train_frames > 0:
-            to_pad  = tf.shape(gate)[1] % self.max_train_frames
+            to_pad  = ops.shape(gate)[1] % self.max_train_frames
             padding = self.max_train_frames - to_pad + 1
             
             if padding > 0:
-                mel_input   = tf.pad(
+                mel_input   = ops.pad(
                     mel_input, [(0, 0), (0, padding), (0, 0)], constant_values = self.pad_mel_value
                 )
-                mel_output  = tf.pad(
+                mel_output  = ops.pad(
                     mel_output, [(0, 0), (0, padding), (0, 0)], constant_values = self.pad_mel_value
                 )
-                gate        = tf.pad(gate, [(0, 0), (0, padding)], constant_values = 1.)
+                gate        = ops.pad(gate, [(0, 0), (0, padding)], constant_values = 1.)
         
         return inputs[:-2] + (mel_input, mel_length), (mel_output, gate)
     
-    def get_dataset_config(self, ** kwargs):
+    def get_dataset_config(self, * args, ** kwargs):
         kwargs.update({
-            'batch_before_map'  : True,
-            'padded_batch'  : True,
             'pad_kwargs'    : {
                 'padding_values'    : (
                     (self.blank_token_idx, self.pad_mel_value, 0), (self.pad_mel_value, 1.)
@@ -241,7 +232,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             }
         })
         
-        return super().get_dataset_config(**kwargs)
+        return super().get_dataset_config(* args, ** kwargs)
     
     def predict_with_target(self, batch, step, prefix, directory = None, 
                             max_pred = 4, **kwargs):
@@ -337,6 +328,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                 play    = False,
                 show_plot   = False,
                 silence_time    = 0.15,
+                vocoder_config  = {},
                 
                 save    = None,
                 save_mel    = None,
@@ -425,7 +417,8 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             now = time.time()
 
             if isinstance(texts, pd.DataFrame): texts = texts.to_dict('record')
-            elif not isinstance(texts, (list, tuple, np.ndarray, tf.Tensor)): texts = [texts]
+            elif not isinstance(texts, (list, tuple, np.ndarray)) or ops.is_tensor(texts):
+                texts = [texts]
 
             if not required_key:    required_key    = 'mel' if vocoder is None else 'audio'
 
@@ -521,13 +514,13 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                 all_outputs = {'mels' : [], 'attentions' : [], 'audios' : []}
                 for s in range(0, len(encoded), batch_size):
                     batch = encoded[s : s + batch_size]
-                    batch = tf.expand_dims(batch[0], axis = 0) if len(batch) <= 1 else tf.cast(
-                        pad_batch(batch, pad_value = self.blank_token_idx), tf.int32
+                    batch = ops.expand_dims(batch[0], axis = 0) if len(batch) <= 1 else ops.cast(
+                        pad_batch(batch, pad_value = self.blank_token_idx), 'int32'
                     )
 
                     start_synth_infer_time = time.time()
                     
-                    mels, gates, attentions = self.infer(
+                    mels, lengths, gates, attentions = self.infer(
                         batch,
                         max_length  = max_length,
                         min_fpt_ratio   = min_fpt_ratio,
@@ -536,28 +529,20 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                     )
                     
                     synth_gen_time   += time.time() - start_synth_infer_time
-                    
-                    gates, attentions = gates.numpy(), attentions.numpy()
                     for idx in range(len(batch)):
-                        mel, gate, attn = mels[idx], gates[idx], attentions[idx]
-                        
-                        if len(batch) > 1:
-                            stop_gate    = np.where(gate > 0.5)[0]
-                            if len(stop_gate) > 0:
-                                mel, attn = mel[: stop_gate[0]], attn[: stop_gate[0]]
+                        mel, attn = mels[idx, : lengths[idx]], attentions[idx, : lengths[idx]]
                         
                         audio = None
                         if vocoder is not None:
                             start_vocoder_time = time.time()
                             
-                            audio = vocoder(mel, ** kwargs)
-                            if hasattr(audio, 'numpy'): audio = audio.numpy()
-                            if audio.ndim == 2: audio = audio[0]
+                            audio = vocoder(mel, ** {** kwargs, ** vocoder_config})
+                            if len(audio.shape) == 2: audio = audio[0]
                             all_outputs['audios'].append(audio)
                             
                             vocoder_gen_time += time.time() - start_vocoder_time
                         
-                        all_outputs['mels'].append(mel.numpy())
+                        all_outputs['mels'].append(mel)
                         all_outputs['attentions'].append(attn)
                         
                         if part_post_processing is not None:
@@ -647,8 +632,8 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         return results
 
-    def get_config(self, * args, ** kwargs):
-        config = super(Tacotron2, self).get_config(* args, ** kwargs)
+    def get_config(self):
+        config = super().get_config()
         config.update({
             ** self.get_config_text(),
             ** self.get_config_audio(),
@@ -660,14 +645,14 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return config
     
     @classmethod
-    def from_nvidia_pretrained(cls, nom = 'pretrained_tacotron2', ** kwargs):
+    def from_nvidia_pretrained(cls, name = 'pretrained_tacotron2', ** kwargs):
         kwargs.update({'audio_format' : 'mel', 'audio_rate' : 22050})
         kwargs.setdefault('lang', 'en')
         kwargs.setdefault('text_encoder', default_english_encoder())
         
-        with tf.device('cpu') as device:
+        with keras.device('cpu') as device:
             instance = cls(
-                nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_tacotron2', ** kwargs
+                name = name, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_tacotron2', ** kwargs
             )
         
         nvidia_model = get_architecture('nvidia_tacotron', to_gpu = False)

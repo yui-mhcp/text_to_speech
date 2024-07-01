@@ -1,5 +1,5 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -21,13 +21,16 @@ import argparse
 import importlib
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import keras.ops as K
+
+from keras import tree
 
 logger = logging.getLogger(__name__)
 
 def time_to_string(seconds):
     """ Returns a string representation of a time (given in seconds) """
     if seconds < 0.001: return '{} \u03BCs'.format(int(seconds * 1000000))
+    if seconds < 0.01:  return '{:.3f} ms'.format(seconds * 1000)
     if seconds < 1.:    return '{} ms'.format(int(seconds * 1000))
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -42,9 +45,9 @@ def time_to_string(seconds):
 def convert_to_str(x):
     """ Convert different string formats (bytes, tf.Tensor, ...) to regular `str` object """
     if isinstance(x, str) or x is None: return x
-    elif isinstance(x, tf.Tensor):
-        if x.dtype != tf.string: return x
+    elif hasattr(x, 'dtype') and x.dtype.name == 'string':
         x = x.numpy()
+    elif K.is_tensor(x): return x # non-tensorflow Tensors do not support string type
     elif isinstance(x, np.ndarray) and np.issubdtype(x.dtype, np.number): return x
     
     if isinstance(x, np.ndarray) and x.ndim == 0: x = x.item()
@@ -61,7 +64,7 @@ def to_json(data):
     """ Converts a given data to json-serializable (if possible) """
     if data is None: return data
     if isinstance(data, enum.Enum): data = data.value
-    if isinstance(data, (tf.Tensor, tf.Variable)):  data = data.numpy()
+    if K.is_tensor(data):           data = K.convert_to_numpy(data)
     if isinstance(data, bytes): data = data.decode('utf-8')
     if isinstance(data, np.ndarray) and len(data.shape) == 0: data = data.item()
     
@@ -92,7 +95,7 @@ def var_from_str(v):
 
 def to_lower_keys(data):
     """ Returns the same dict with lowercased keys"""
-    return {k.lower() : v for k, v in data.items()}
+    return {k.lower() : v for k, v in data.items() if k.lower() not in data}
 
 def normalize_key(key, mapping):
     normalized  = [k for k, alt in mapping.items() if key in alt]
@@ -111,6 +114,14 @@ def is_object(o):
 def is_function(f):
     return f.__class__.__name__ == 'function'
 
+def get_annotations(fn):
+    if hasattr(inspect, 'get_annotations'):
+        return inspect.get_annotations(fn)
+    elif hasattr(fn, '__annotations__'):
+        return fn.__annotations__
+    else:
+        return {}
+
 def get_args(fn, include_args = True, ** kwargs):
     """ Returns a `list` of the positional argument names (even if they have default values) """
     kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -127,6 +138,18 @@ def get_kwargs(fn, ** kwargs):
         if param.default is not inspect._empty
     }
 
+def has_args(fn, ** kwargs):
+    return any(
+        param.kind == inspect.Parameter.VAR_POSITIONAL
+        for param in inspect.signature(fn, ** kwargs).parameters.values()
+    )
+
+def has_kwargs(fn, ** kwargs):
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in inspect.signature(fn, ** kwargs).parameters.values()
+    )
+
 def signature_to_str(fn, add_doc = False, ** kwargs):
     return '{}{}{}'.format(
         fn.__name__,
@@ -134,26 +157,87 @@ def signature_to_str(fn, add_doc = False, ** kwargs):
         '\n{}'.format(fn.__doc__) if add_doc else ''
     )
 
-def import_objects(modules, filters = None, types = None, exclude = (), fn = None):
+def import_objects(modules,
+                   exclude  = (),
+                   filters  = None,
+                   classes  = None,
+                   types    = None,
+                   allow_modules    = False,
+                   allow_functions  = True,
+                   signature    = None,
+                   fn   = None
+                  ):
     if fn is None: fn = lambda v: v
-    if types is not None: filters = lambda name, val: isinstance(val, types)
-    elif filters is None: filters = lambda name, val: True
-    if isinstance(modules, str) and os.path.isdir(modules): modules = glob.glob(modules + '/*.py')
-    elif not isinstance(modules, list): modules = [modules]
+    def is_valid(name, val, module):
+        if not hasattr(val, '__module__'):
+            if not allow_modules or not val.__package__.startswith(module): return False
+            return True
 
-    objects = {}
+        if filters is not None and not filters(name, val): return False
+        if not isinstance(val, type):
+            if types is not None and isinstance(val, types): return True
+            
+            if not val.__module__.startswith(module): return False
+            if allow_functions and callable(val):
+                if signature:
+                    return get_args(val)[:len(signature)] == signature
+                return True
+            return False
+        if not val.__module__.startswith(module): return False
+        if classes is not None and not issubclass(val, classes):
+            return False
+        return True
+            
+    if types is not None:
+        if not isinstance(types, (list, tuple)): types = (types, )
+        if type in types: allow_functions = False
+    
+    if signature: signature = list(signature)
+    if isinstance(exclude, str):        exclude = [exclude]
+    if not isinstance(modules, list): modules = [modules]
+    
+    all_modules = []
     for module in modules:
         if isinstance(module, str):
+            all_modules.extend(_expand_path(module))
+        else:
+            all_modules.append(module)
+
+    objects = {}
+    for module in all_modules:
+        if isinstance(module, str):
             if module.endswith(('__init__.py', '_old.py')): continue
-            module = importlib.import_module(module.replace(os.path.sep, '.')[:-3])
+            elif os.path.basename(module).startswith(('.', '_')): continue
+            try:
+                module = module.replace(os.path.sep, '.')[:-3]
+                module = importlib.import_module(module)
+            except Exception as e:
+                logger.debug('Import of module {} failed due to {}'.format(module, str(e)))
+                continue
         
+        root_module = module.__name__.split('.')[0]
         objects.update({
-            k : fn(v) for k, v in vars(module).items()
-            if not k.startswith('_') and not k in exclude and filters(k, v)
+            k : fn(v) for k, v in vars(module).items() if (
+                (hasattr(v, '__module__') or hasattr(v, '__package__'))
+                and not k.startswith('_')
+                and not k in exclude
+                and is_valid(k, v, root_module)
+            )
         })
     
     return objects
-    
+
+def _expand_path(path):
+    expanded = []
+    for f in os.listdir(path):
+        if f.startswith(('.', '_')): continue
+        f = os.path.join(path, f)
+        if os.path.isdir(f):
+            expanded.extend(_expand_path(f))
+        else:
+            expanded.append(f)
+    return expanded
+
 def print_objects(objects, print_name = 'objects', _logger = logger):
     """ Displays the list of available objects (i.e. simply prints `objects.keys()` :D ) """
     _logger.info("Available {} : {}".format(print_name, sorted(list(objects.keys()))))
@@ -161,7 +245,7 @@ def print_objects(objects, print_name = 'objects', _logger = logger):
 def get_object(objects,
                obj,
                * args,
-               err  = False,
+               err  = True,
                types    = (type, ),
                print_name   = 'object',
                function_wrapper = None,
@@ -197,11 +281,22 @@ def get_object(objects,
                 objects, n, * args, print_name = print_name,  err = err, types = types, ** kwargs
             ) for n, args in obj.items()]
         
-        obj, args, kwargs = obj['class_name'], (), obj.get('config', {})
+        obj, args, kwargs = obj['class_name'], (), obj.get(
+            'config', {k : v for k, v in obj.items() if k != 'class_name'}
+        )
     
-    _lower_objects = to_lower_keys(objects)
-    if isinstance(obj, str) and obj.lower() in _lower_objects:
-        obj = _lower_objects[obj.lower()]
+    if isinstance(obj, str):
+        _lower_objects = to_lower_keys(objects)
+        if obj in objects:
+            obj = objects[obj]
+        elif obj.lower() in _lower_objects:
+            obj = _lower_objects[obj.lower()]
+        elif ''.join([c for c in obj.lower() if c.isalnum()]) in _lower_objects:
+            obj = _lower_objects[''.join([c for c in obj.lower() if c.isalnum()])]
+        elif err:
+            raise ValueError("{} is not available !\n  Accepted : {}\n  Got : {}".format(
+                print_name, tuple(objects.keys()), obj
+            ))
     elif types is not None and isinstance(obj, types) or callable(obj):
         pass
     elif err:
@@ -287,9 +382,9 @@ def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = Fa
 
         if not isinstance(inp, tuple): inp = (inp, )
         def _g():
-            if force_gpu_sync: one = tf.ones(())
+            if force_gpu_sync: one = K.ones(())
             f(* inp)
-            if force_gpu_sync: one = one.numpy()
+            if force_gpu_sync: one = K.convert_to_numpy(one)
         
         _g() # warmup 
         t = timeit.timeit(_g, number = number)
@@ -309,7 +404,7 @@ def get_metric_names(obj, default_if_not_list = None):
     if isinstance(obj, (list, tuple)):
         if not isinstance(default_if_not_list, (list, tuple)):
             default_if_not_list = [default_if_not_list] * len(obj)
-        return tf.nest.flatten(tf.nest.map_structure(
+        return tree.flatten(tree.map_structure(
             get_metric_names, obj, default_if_not_list
         ))
     if hasattr(obj, 'metric_names'):
@@ -326,8 +421,6 @@ def get_metric_names(obj, default_if_not_list = None):
         return obj.__class__.__name__
     else:
         raise ValueError("Cannot extract name from {} !".format(obj))
-
-flatten = tf.nest.flatten
 
 def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
     """

@@ -1,5 +1,5 @@
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,19 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Inspired from https://github.com/keithito/tacotron """
-
 import os
 import re
 import unicodedata
 
 from unidecode import unidecode
 
-from utils import get_timer
 from utils.wrapper_utils import partial
 from utils.text.numbers import normalize_numbers
 
-timer, time_logger, _ = get_timer()
 
 _special_symbols    = {
     '='     : {'fr' : 'égal',       'en' : 'equal'},
@@ -143,14 +139,12 @@ def lstrip(text, ** kwargs):
 def rstrip(text, ** kwargs):
     return text.rstrip()
 
-@timer
 def replace_patterns(text, patterns, ** kwargs):
     """ Replaces a `dict` of `{pattern : replacement}` """
     for pattern, repl in patterns.items():
         text = re.sub(pattern, repl, text)
     return text
 
-@timer
 def replace_words(text,
                   words,
                   pattern_format = r'\b({})\b',
@@ -172,7 +166,6 @@ def replace_words(text,
     
     return re.sub(regex, getter, text)
 
-@timer
 def expand_abreviations(text, abreviations = None, lang = None, ** kwargs):
     assert abreviations is not None or lang is not None
     
@@ -185,7 +178,6 @@ def expand_abreviations(text, abreviations = None, lang = None, ** kwargs):
         getter  = lambda ab: abreviations[ab.group(0).lower().rstrip('.')]
     )
 
-@timer
 def expand_special_symbols(text, lang = None, symbols = None, ** kwargs):
     assert lang is not None or symbols is not None
     
@@ -205,7 +197,6 @@ def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
     return ' '.join([extensions.get(c.lower(), {}).get(lang, c) for c in text])
 
-@timer
 def expand_acronym(text, lang, ** kwargs):
     """ Expand all words composed of uppercases """
     return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
@@ -277,7 +268,6 @@ def transliteration_cleaners(text, ** kwargs):
     text = collapse_whitespace(text, ** kwargs)
     return text
 
-@timer
 def complete_cleaners(text,
                       lang,
                       to_lowercase  = True,

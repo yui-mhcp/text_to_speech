@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,6 +12,9 @@
 import os
 import numpy as np
 import pandas as pd
+import keras.ops as K
+
+from keras import tree
 
 def is_in(target, value, nested_test = False, ** kwargs):
     if nested_test:
@@ -56,8 +58,12 @@ def is_diff(target, value, ** kwargs):
     
 def compare(target, value, ** kwargs):
     """ Compare 2 items and raises an AssertionError if their value differ """
-    if hasattr(target, 'numpy'): target = target.numpy()
-    if hasattr(value, 'numpy'): value = value.numpy()
+    target = tree.map_structure(
+        lambda v: K.convert_to_numpy(v) if K.is_tensor(v) else v, target
+    )
+    value = tree.map_structure(
+        lambda v: K.convert_to_numpy(v) if K.is_tensor(v) else v, value
+    )
     
     for t, compare_fn in _comparisons.items():
         if isinstance(target, t):
@@ -90,7 +96,7 @@ def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
     """
     try:
         from models.model_utils import is_model_name
-    except ImportError:
+    except:
         is_model_name = lambda n: False
 
     if raw_compare_if_filename or len(target) >= 512:
@@ -116,15 +122,15 @@ def compare_list(target, value, nested_test = False, ** kwargs):
     )
     
     try:
-        if target == value: return
+        if len(target) == 0 or target == value: return
     except ValueError as e:
         pass
     
     cmp         = [is_equal(it1, it2, ** kwargs) for it1, it2 in zip(target, value)]
     invalids    = [(i, msg) for i, (eq, msg) in enumerate(cmp) if not eq]
 
-    assert len(invalids) == 0, "Invalid items ({}) :{}{}".format(
-        len(invalids), '\n' if len(invalids) > 1 else ' ',
+    assert len(invalids) == 0, "Invalid items ({}/{}) :{}{}".format(
+        len(invalids), len(target), '\n' if len(invalids) > 1 else ' ',
         '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
     )
     
@@ -158,13 +164,12 @@ def compare_dict(target, value, keys = None, skip_keys = None, skip_missing_keys
     cmp         = {k : is_equal(target[k], value[k], ** kwargs) for k in target}
     invalids    = {k : msg for k, (eq, msg) in cmp.items() if not eq}
     
-    assert len(invalids) == 0, "Invalid items ({}) :{}{}".format(
-        len(invalids), '\n' if len(invalids) > 1 else ' ',
+    assert len(invalids) == 0, "Invalid items ({}/{}) :{}{}".format(
+        len(invalids), len(target), '\n' if len(invalids) > 1 else ' ',
         '\n'.join(['Key {} : {}'.format(k, msg) for k, msg in invalids.items()])
     )
 
-def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = False,
-                  normalize = False, ** kwargs):
+def compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = False, ** kwargs):
     """
         Compare 2 arrays with some tolerance (`max_err`) on the error's sum / mean / max / min depending `err_mode`
         `squeeze` allows to skip `1`-dimensions
@@ -186,25 +191,18 @@ def compare_array(target, value, max_err = 1e-6, err_mode = 'abs', squeeze = Fal
             target.dtype, np.sum(target != value), np.prod(target.shape), np.mean(target != value)
         )
     else:
-        err = np.abs(target - value)
-        
-        if err_mode == 'norm': err_mode, normalize = 'abs', True
-        
         if normalize:
-            abs_target = np.abs(target)
-            err = (err / abs_target) * (abs_target > 1e-3).astype(np.float32)
-        
-        if err_mode in ('sum', 'total'):
-            valid = np.max(err) <= max_err
-        elif err_mode in ('abs', 'all'):
-            valid = np.all(err <= max_err)
-        elif err_mode in ('min', 'max', 'mean'):
-            valid = getattr(err, err_mode) <= max_err
+            valids = np.isclose(value, target, rtol = max_err)
         else:
-            raise ValueError('Unknown error mode : {}'.format(err_mode))
+            valids = np.isclose(value, target, atol = max_err)
+        
+        valid = np.all(valids)
+        if valid: return
+        
+        err = np.where(valids, 0., np.abs(target - value))
         
         assert valid, "Values differ ({} / {} diff, {:.3f}%) : max {} - mean {} - min {}".format(
-            np.sum(err > max_err), np.prod(err.shape), np.mean(err > max_err), np.max(err), np.mean(err), np.min(err)
+            np.sum(~valids), np.prod(err.shape), np.mean(~valids), np.max(err), np.mean(err), np.min(err)
         )
 
 def compare_dataframe(target, value, ignore_index = True, ** kwargs):

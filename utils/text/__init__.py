@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,8 +11,6 @@
 
 import os
 import logging
-
-from utils.text import cmudict
 
 from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
 from utils.text.text_encoder import TextEncoder
@@ -39,7 +37,17 @@ _mini_punctuation   = ' \',.?!'
 _mini_accents       = 'éèç'
 
 #Prepend "@" to ARPAbet symbols to ensure uniqueness (some are the same as uppercase letters):
-_arpabet = ['@' + s for s in cmudict.valid_symbols]
+_cmudict_symbols = [
+  'AA', 'AA0', 'AA1', 'AA2', 'AE', 'AE0', 'AE1', 'AE2', 'AH', 'AH0', 'AH1', 'AH2',
+  'AO', 'AO0', 'AO1', 'AO2', 'AW', 'AW0', 'AW1', 'AW2', 'AY', 'AY0', 'AY1', 'AY2',
+  'B', 'CH', 'D', 'DH', 'EH', 'EH0', 'EH1', 'EH2', 'ER', 'ER0', 'ER1', 'ER2', 'EY',
+  'EY0', 'EY1', 'EY2', 'F', 'G', 'HH', 'IH', 'IH0', 'IH1', 'IH2', 'IY', 'IY0', 'IY1',
+  'IY2', 'JH', 'K', 'L', 'M', 'N', 'NG', 'OW', 'OW0', 'OW1', 'OW2', 'OY', 'OY0',
+  'OY1', 'OY2', 'P', 'R', 'S', 'SH', 'T', 'TH', 'UH', 'UH0', 'UH1', 'UH2', 'UW',
+  'UW0', 'UW1', 'UW2', 'V', 'W', 'Y', 'Z', 'ZH'
+]
+
+_arpabet = ['@' + s for s in _cmudict_symbols]
 
 # Export all symbols:
 en_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + _arpabet
@@ -76,10 +84,8 @@ def get_encoder(lang = None, text_encoder = None, ** kwargs):
         
     elif isinstance(text_encoder, str):
         try:
-            from models import _pretrained_models_folder
-            model_encoder_file = os.path.join(
-                _pretrained_models_folder, text_encoder, 'saving', 'text_encoder.json'
-            )
+            from models import get_model_dir
+            model_encoder_file = get_model_dir(text_encoder, 'saving', 'text_encoder.json')
         except:
             model_encoder_file = None
         

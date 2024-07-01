@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,10 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
 import logging
 import numpy as np
-import tensorflow as tf
 
+from utils.keras_utils import TensorSpec, graph_compile, ops
+from utils.sequence_utils import pad_batch
 from utils.generic_utils import convert_to_str
 
 logger  = logging.getLogger(__name__)
@@ -26,59 +27,53 @@ def get_pairs(text, n = 2):
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
 def build_masking_filter(indices):
-    indices = tf.reshape(tf.cast(indices, tf.int32), [-1])
-    return tf.function(
-        lambda logits, tokens, t: remove_batch_tokens(logits, indices),
-        input_signature = [
-            tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-            tf.TensorSpec(shape = (None, None), dtype = tf.int32),
-            tf.TensorSpec(shape = (), dtype = tf.int32)
-        ]
-    )
+    indices = ops.reshape(ops.convert_to_tensor(indices, 'int32'), [-1])
+    return lambda scores, ** _: remove_batch_tokens(scores, indices)
 
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, 2),    dtype = tf.int32),
-    tf.TensorSpec(shape = (),           dtype = tf.float32)
-])
-def remove_tokens(logits, indices, value = tf.float32.min):
+@graph_compile()
+def remove_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'float'),
+                  indices   : TensorSpec(shape = (None, 2), dtype = 'int32'),
+                  value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
+                 ):
     """ Equivalent to `logits[indices] = value` compatible with `tensorflow graph` """
-    return tf.tensor_scatter_nd_update(
-        logits, indices, tf.fill((tf.shape(indices)[0], ), value)
+    return ops.scatter_update(
+        logits, indices, ops.full((ops.shape(indices)[0], ), value)
     )
 
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, ),     dtype = tf.int32),
-    tf.TensorSpec(shape = (),           dtype = tf.float32)
-])
-def remove_batch_tokens(logits, indices, value = tf.float32.min):
+@graph_compile()
+def remove_batch_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'float'),
+                        indices   : TensorSpec(shape = (None, ), dtype = 'int32'),
+                        value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
+                       ):
+
     """ Equivalent to `logits[:, indices] = value` compatible with `tensorflow graph` """
-    indices = tf.stack([
-        tf.repeat(tf.range(tf.shape(logits)[0]), tf.shape(indices)[0]),
-        tf.tile(indices, [tf.shape(logits)[0]])
+    indices = ops.stack([
+        ops.repeat(ops.arange(ops.shape(logits)[0]), ops.shape(indices)[0]),
+        ops.tile(indices, [ops.shape(logits)[0]])
     ], axis = 1)
     return remove_tokens(logits, indices, value)
 
-@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (),           dtype = tf.int32),
-    tf.TensorSpec(shape = (),           dtype = tf.bool),
-    tf.TensorSpec(shape = (),           dtype = tf.float32)
-])
-def remove_slice_tokens(logits, index, remove_after, value = tf.float32.min):
+@graph_compile(support_xla = False)
+def remove_slice_tokens(logits  : TensorSpec(shape = (None, None), dtype = 'float'),
+                        index   : TensorSpec(shape = (), dtype = 'int32'),
+                        remove_after    : TensorSpec(shape = (), dtype = 'bool'),
+                        value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
+                       ):
     """
         Equivalent to :
         - `logits[:, :index] = value` (`remove_after = False`)
         - `logits[:, index:] = value` (`remove_after = True`)
         compatible in `tensorflow graph`
     """
-    indices = tf.cond(
+    start_idx, length   = ops.cond(
         remove_after,
-        lambda: tf.range(index, tf.shape(logits)[-1]),
-        lambda: tf.range(0, index)
+        lambda: (index, ops.shape(logits)[1] - index),
+        lambda: (0, index)
     )
-    return remove_batch_tokens(logits, indices, value)
+    update = ops.full((ops.shape(logits)[0], length), value, dtype = logits.dtype)
+    return ops.slice_update(
+        logits, ops.array([0, 1], dtype = 'int32') * start_idx, update
+    )
 
 def filter_texts(encoded_texts,
                  lengths,
@@ -106,7 +101,7 @@ def filter_texts(encoded_texts,
     ####################
     
     required_idx    = int(required_idx)
-    lengths     = np.array(lengths, dtype = np.int32)
+    lengths     = pad_batch(lengths, dtype = np.int32, pad_value = 0)
     is_multi    = lengths.ndim == 2
     text_lengths    = lengths if not is_multi else np.sum(lengths, axis = -1)
     

@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -18,16 +17,15 @@ import threading
 import collections
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
 from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
 from utils.audio import audio_processing
+from utils.keras_utils import TensorSpec, execute_eagerly, ops
 from utils.generic_utils import convert_to_str
 from utils.wrapper_utils import dispatch_wrapper
-from utils.tensorflow_utils import execute_eagerly
-from utils.thread_utils import StoppedException, Consumer
+from utils.threading import StoppedException, Consumer
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +47,13 @@ def load_audio(data, rate, ** kwargs):
     """
         Load audio from different type of data :
             - str : filename of the audio file
-            - np.ndarray / tf.Tensor    : raw audio
+            - np.ndarray / Tensor    : raw audio
             - dict / pd.Series : 
                 'audio' : raw audio
                 'wavs_{rate}'   : filename for audio of correct rate
                 'filename'      : filename for audio (resample if needed)
         Return :
-            - audio : `np.ndarray` or `tf.Tensor` with shape [n_samples]
+            - audio : `np.ndarray` or `Tensor` with shape [n_samples]
     """
     if isinstance(data, (dict, pd.Series)):
         if 'audio' in data: return data['audio']
@@ -66,7 +64,7 @@ def load_audio(data, rate, ** kwargs):
         
         data = data[audio_key]
     
-    if not isinstance(data, (str, np.ndarray, tf.Tensor)):
+    if not isinstance(data, (str, np.ndarray)) and not ops.is_tensor(data):
         raise ValueError("Unknown audio type : {}\n{}".format(type(data), data))
 
     _, audio = read_audio(data, target_rate = rate, rate = rate, ** kwargs)
@@ -80,20 +78,20 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
                 'mel'   : raw mel
                 stft.dir_name   : filename of mel
             - other : call load_audio(data) and apply stft_fn on audio
-        Return : mel spectrogram (as 2D tf.Tensor)
+        Return : mel spectrogram (as 2D Tensor)
     """
     if isinstance(data, (dict, pd.Series)) and 'mel' in data:
         mel = data['mel']
     elif isinstance(data, (dict, pd.Series)) and stft_fn.dir_name in data:
         mel = load_mel_npy(
-            data[stft_fn.dir_name], shape = tf.TensorShape((None, stft_fn.n_mel_channels))
+            data[stft_fn.dir_name], shape = (None, stft_fn.n_mel_channels)
         )
-    elif isinstance(data, (np.ndarray, tf.Tensor)) and len(data.shape) >= 2:
+    elif hasattr(data, 'shape') and len(data.shape) >= 2:
         mel = data
     else:
         mel = stft_fn(load_audio(data, stft_fn.rate, ** kwargs))
     
-    if len(mel.shape) == 3: mel = tf.squeeze(mel, 0)
+    if len(mel.shape) == 3: mel = mel[0]
     
     if trim_mode is not None:
         kwargs.update({'method' : trim_mode, 'rate' : stft_fn.rate})
@@ -101,7 +99,7 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
     
     return mel
 
-@execute_eagerly(signature = tf.TensorSpec(shape = (None, None), dtype = tf.float32), numpy = True)
+@execute_eagerly(signature = TensorSpec(shape = (None, None), dtype = 'float32'), numpy = True)
 def load_mel_npy(file):
     return np.load(convert_to_str(file))
 
@@ -160,7 +158,7 @@ def get_audio_player(create = False):
     with _player_lock:
         if create and (_audio_player is None or _audio_player.stopped):
             _audio_player = Consumer(
-                _play, daemon = True, stop_listeners = _finalize
+                _play, daemon = True, stop_listener = _finalize
             ).start()
         
         return _audio_player
@@ -195,8 +193,8 @@ def display_audio(filename, rate = None, play = False, ** kwargs):
 
 @dispatch_wrapper(_load_fn, 'File extension')
 @execute_eagerly(signature = [
-    tf.TensorSpec(shape = (),       dtype = tf.int32),
-    tf.TensorSpec(shape = (None, ), dtype = tf.float32)
+    TensorSpec(shape = (),       dtype = 'int32'),
+    TensorSpec(shape = (None, ), dtype = 'float32')
 ], numpy = True)
 def read_audio(filename,
                target_rate  = None,

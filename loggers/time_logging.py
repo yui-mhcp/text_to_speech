@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -17,12 +16,7 @@ import collections
 
 from functools import wraps
 
-try:
-    from tensorflow import executing_eagerly
-except ImportError:
-    executing_eagerly = lambda: True
-
-from loggers.utils import ContextManager, time_to_string
+from .utils import ContextManager, time_to_string, executing_eagerly
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +214,7 @@ def stop_timer(self, name, * args, level = -1, debug = False, ** kwargs):
     self._timer.stop_timer(name)
 
 def log_time(self, names = None, * args, level = -1, debug = False, ** kwargs):
+    if not executing_eagerly(): return
     if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
     if not self.isEnabledFor(level): return
     if not hasattr(self, 'timer'): self._timer = RootTimer(self.name)

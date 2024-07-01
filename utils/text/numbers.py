@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,17 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" inspired from https://github.com/keithito/tacotron """
-
 import re
 
 from functools import cache
 from num2words import num2words as _num2words
-
-from utils import get_timer
-
-timer, time_logger, _ = get_timer()
-timer_fn = lambda name: time_logger.timer(name, debug = True)
 
 _lang = 'en'
 
@@ -172,21 +165,19 @@ def _expand_number(m, lang = None, decimal_as_individual = None):
     if decimal_as_individual: decimal_as_individual = lang == 'en'
     
     num = m.group(0)
-    with timer_fn('num2words'):
-        if '.' not in num or decimal_as_individual:
+    if '.' not in num or decimal_as_individual:
+        words = num2words(num, lang = lang)
+    else:
+        ent, dec = num.split('.')
+
+        if dec.count('0') == len(dec):
             words = num2words(num, lang = lang)
         else:
-            ent, dec = num.split('.')
-
-            if dec.count('0') == len(dec):
-                words = num2words(num, lang = lang)
-            else:
-                words = '{} {} {}'.format(
-                    num2words(ent, lang = lang), _comma_extended.get(lang, ''), _extend_with_zeros(dec, lang = lang)
-                )
+            words = '{} {} {}'.format(
+                num2words(ent, lang = lang), _comma_extended.get(lang, ''), _extend_with_zeros(dec, lang = lang)
+            )
     return words
 
-@timer
 def normalize_numbers(text, lang = None, expand_symbols = False, ** kwargs):
     global _lang
     if lang is None:
@@ -196,18 +187,16 @@ def normalize_numbers(text, lang = None, expand_symbols = False, ** kwargs):
     
     if expand_symbols:
         text = re.sub(_math_symbol_re,  _expand_math_symbols, text)
-    with timer_fn('_time_re'): text = re.sub(_time_re,         _expand_time, text)
-    with timer_fn('_comma_re'): text = re.sub(_comma_number_re, _remove_commas, text)
-    with timer_fn('_tiret_re'): text = re.sub(_tiret_number_re, _expand_tiret, text)
-    with timer_fn('_space_re'): text = re.sub(_space_number_re, _remove_space, text)
-    with timer_fn('_pound_re'): text = re.sub(_pounds_re,       r'\1 pounds', text)
-    with timer_fn('_dollar_re'): text = re.sub(_dollars_re,      _expand_dollars, text)
-    with timer_fn('_decimal_re'): text = re.sub(_decimal_number_re,   _expand_number, text)
+    text = re.sub(_time_re,         _expand_time, text)
+    text = re.sub(_comma_number_re, _remove_commas, text)
+    text = re.sub(_tiret_number_re, _expand_tiret, text)
+    text = re.sub(_space_number_re, _remove_space, text)
+    text = re.sub(_pounds_re,       r'\1 pounds', text)
+    text = re.sub(_dollars_re,      _expand_dollars, text)
+    text = re.sub(_decimal_number_re,   _expand_number, text)
     
     if lang in _ordinal_re:
-        with timer_fn('_ordinal_re'):
-            text = re.sub(_ordinal_re[lang],    _expand_ordinal, text)
+        text = re.sub(_ordinal_re[lang],    _expand_ordinal, text)
     
-    with timer_fn('_numbers_re'):
-        text = re.sub(_number_re,       _expand_number, text)
+    text = re.sub(_number_re,       _expand_number, text)
     return text

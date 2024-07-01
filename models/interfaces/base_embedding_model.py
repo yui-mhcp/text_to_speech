@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -14,23 +13,26 @@ import os
 import logging
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
-from hparams import HParams
-from models.interfaces.base_model import BaseModel
+from .base_model import BaseModel
+from utils.hparams import HParams
+from utils.keras_utils import TensorSpec, ops, execute_eagerly
 from utils import convert_to_str, load_embedding, save_embeddings, select_embedding, sample_df
 
 logger  = logging.getLogger(__name__)
 
 _default_embeddings_filename = 'default_embeddings'
 
+@execute_eagerly(numpy = True, signature = [TensorSpec(shape = (None, ), dtype = 'float32')])
+def _load_np_embedding(filename):
+    filename = convert_to_str(filename)
+    return np.load(filename)
+
 class BaseEmbeddingModel(BaseModel):
     def _init_embedding(self,
                         encoder_name,
                         embedding_dim,
-                        * args,
                         use_label_embedding = True,
-                        ** kwargs
                        ):
         """
             Initializes the embedding-related variables
@@ -46,17 +48,13 @@ class BaseEmbeddingModel(BaseModel):
         self.embedding_dim  = embedding_dim
         self.use_label_embedding    = use_label_embedding
     
-    def _init_folders(self):
-        super(BaseEmbeddingModel, self)._init_folders()
-        os.makedirs(self.embedding_dir, exist_ok = True)
-    
     @property
     def embedding_dir(self):
-        return os.path.join(self.folder, 'embeddings')
+        return os.path.join(self.directory, 'embeddings')
     
     @property
     def has_default_embedding(self):
-        return len(os.listdir(self.embedding_dir)) > 0
+        return os.path.exists(self.embedding_dir) and len(os.listdir(self.embedding_dir)) > 0
     
     @property
     def default_embedding_file(self):
@@ -64,7 +62,7 @@ class BaseEmbeddingModel(BaseModel):
     
     @property
     def embedding_signature(self):
-        return tf.TensorSpec(shape = (None, self.embedding_dim), dtype = tf.float32)
+        return TensorSpec(shape = (None, self.embedding_dim), dtype = 'float32')
     
     @property
     def training_hparams_embedding(self):
@@ -82,13 +80,13 @@ class BaseEmbeddingModel(BaseModel):
         if self.__encoder is None:
             from models import get_pretrained
             self.__encoder = get_pretrained(self.encoder_name)
-            self.__encoder.get_model().trainable = False
+            self.__encoder.model.trainable = False
         return self.__encoder
     
     def _str_embedding(self):
         des = "- Embedding's dim : {}\n".format(self.embedding_dim)
         if self.encoder_name is not None:
-            des += "- Encoder's name : {}\n".format(self.encoder_name)
+            des += "- Encoder name : {}\n".format(self.encoder_name)
         return des
     
     def pred_similarity(self, y_true, y_pred):
@@ -148,14 +146,10 @@ class BaseEmbeddingModel(BaseModel):
     def get_embedding(self, data, label_embedding_key = 'label_embedding', key = 'embedding',
                       embed_if_not_exist = True, ** kwargs):
         """ This function is used in `encode_data` and must return a single embedding """
-        def load_np(filename):
-            filename = convert_to_str(filename)
-            return np.load(filename)
-        
         if isinstance(data, list):
-            return tf.stack([self.get_embedding(d) for d in data], axis = 0)
+            return ops.stack([self.get_embedding(d) for d in data], axis = 0)
         elif isinstance(data, pd.DataFrame):
-            return tf.stack([self.get_embedding(row) for _, row in data.iterrows()], axis = 0)
+            return ops.stack([self.get_embedding(row) for _, row in data.iterrows()], axis = 0)
         
         embedding = data
         if isinstance(data, (dict, pd.Series)):
@@ -171,12 +165,9 @@ class BaseEmbeddingModel(BaseModel):
                 logger.error('Embedding key {} is not present in data and `embed_if_not_exist = False`'.format(key))
                 return None
         
-        elif isinstance(embedding, tf.Tensor) and embedding.dtype == tf.string:
-            embedding = tf.py_function(load_np, [embedding], Tout = tf.float32)
-            embedding.set_shape([self.embedding_dim])
-        elif isinstance(embedding, str) and embedding.endswith('.npy'):
-            embedding = np.load(embedding)
-        elif not isinstance(embedding, (tf.Tensor, np.ndarray)):
+        elif ops.is_string(embedding):
+            embedding = _load_np_embedding(embedding, shape = [self.embedding_dim])
+        elif not ops.is_array(embedding):
             if embed_if_not_exist:
                 logger.info('Embedding key {} is not in data, embedding it !'.format(key))
                 embedding = self.embed(data)
@@ -188,18 +179,12 @@ class BaseEmbeddingModel(BaseModel):
         
     def maybe_augment_embedding(self, embedding):
         if self.augment_embedding:
-            embedding = tf.cond(
-                self.augment_embedding and tf.random.uniform(()) < self.augment_prct,
-                lambda: embedding + tf.random.normal(tf.shape(embedding), stddev = 0.025),
+            return ops.cond(
+                ops.random.uniform(()) < self.augment_prct,
+                lambda: embedding + ops.random.normal(ops.shape(embedding), stddev = 0.025),
                 lambda: embedding
             )
         return embedding
-        
-    def train(self, x, * args, ** kwargs):
-        if isinstance(x, pd.DataFrame) and not self.has_default_embedding:
-            self.set_default_embeddings(sample_df(x, n = 50, n_sample = 10))
-        
-        return super().train(x, * args, ** kwargs)
     
     def get_config_embedding(self):
         return {

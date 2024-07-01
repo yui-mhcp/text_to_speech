@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,11 +10,15 @@
 # limitations under the License.
 
 import os
+import enum
+import keras
 
-from hparams import HParams
-from utils.generic_utils import import_objects
-from custom_layers.custom_activations import *
+from .custom_activations import get_activation
+from .custom_rnn_dropout_cell import CustomRNNDropoutCell
+from utils import HParams, import_objects
 
-globals().update(
-    import_objects(__package__.replace('.', os.path.sep), types = (type, HParams))
-)
+globals().update(import_objects(
+    __package__.replace('.', os.path.sep),
+    classes = (keras.layers.Layer, enum.Enum),
+    types   = (type, HParams)
+))

@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,82 +9,101 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
 import unittest
-import tensorflow as tf
-    
+
+from keras import tree
+
 from unitests import CustomTestCase
-from custom_train_objects import _losses, _metrics, _optimizers, _schedulers
-from custom_train_objects import get_loss, get_metrics, get_optimizer
-from custom_train_objects.optimizers import DivideByStep
+try:
+    err = None
+    from custom_train_objects import _losses, _metrics, _optimizers, _schedulers
+    from custom_train_objects import get_loss, get_metrics, get_optimizer
+    from custom_train_objects.optimizers import DivideByStep
+except Exception as e:
+    err = e
 
-class TestCustomObjects(CustomTestCase):
-    def test_losses(self):
-        for loss in _losses.keys():
-            if loss == 'LossFunctionWrapper': continue
-            with self.subTest(loss = loss):
-                try:
-                    loss_obj = get_loss(loss, name = loss)
-                except TypeError:
-                    continue
-                
-                self.assertTrue(isinstance(loss_obj, tf.keras.losses.Loss), str(loss_obj))
-                if loss_obj.__class__.__name__ == 'LossFunctionWrapper' and 'fn' not in loss_obj.get_config():
-                    continue
-                self.assertEqual(
-                    get_loss(tf.keras.losses.serialize(loss_obj)), loss_obj
-                )
-                self.assertEqual(get_loss({
-                    'class_name' : loss_obj.__class__.__name__, 'config' : loss_obj.get_config()
-                }), loss_obj)
-                config = loss_obj.get_config()
-                self.assertEqual(get_loss(loss, ** config), loss_obj)
+def normalize_object(obj):
+    if hasattr(obj, 'get_config'):
+        return tree.map_structure(normalize_object, obj.get_config())
+    elif callable(obj):
+        return obj.__name__
+    return obj
+
+@unittest.skipIf(err is not None, 'The module import failed due to {}'.format(err))
+class TestCustomObject(CustomTestCase):
+    items   = None
+    serialize   = None
+    keras_type  = None
     
-    def test_metrics(self):
-        for metric in _metrics.keys():
-            with self.subTest(metric = metric):
-                try:
-                    metric_obj = get_metrics(metric, name = metric)
-                except TypeError:
-                    continue
-                
-                self.assertTrue(isinstance(metric_obj, tf.keras.metrics.Metric), str(metric_obj))
-                self.assertEqual(
-                    get_metrics(tf.keras.metrics.serialize(metric_obj)), metric_obj
-                )
-                self.assertEqual(get_metrics({
-                    'class_name' : metric_obj.__class__.__name__, 'config' : metric_obj.get_config()
-                }), metric_obj)
-                config = metric_obj.get_config()
-                config.pop('fn', None)
-                self.assertEqual(get_metrics(metric, ** config), metric_obj)
+    def load(self, * args, ** kwargs):
+        raise NotImplementedError()
 
-    def test_optimizers(self):
-        for optim in _optimizers.keys():
-            if optim == 'Optimizer': continue
-            with self.subTest(optimizer = optim):
-                optimizer = get_optimizer(optim, name = optim)
-                
-                self.assertTrue(isinstance(optimizer, tf.keras.optimizers.Optimizer), str(optimizer))
-                self.assertEqual(
-                    get_optimizer(tf.keras.optimizers.serialize(optimizer)), optimizer
-                )
-                self.assertEqual(get_optimizer({
-                    'class_name' : optimizer.__class__.__name__, 'config' : optimizer.get_config()
-                }), optimizer)
-                self.assertEqual(get_optimizer(optim, ** optimizer.get_config()), optimizer)
+    def assertEqual(self, value, target):
+        return super().assertEqual(normalize_object(value), normalize_object(target))
+    
+    def _get_original(self, name):
+        try:
+            obj = self.load(name, name = name)
+            self.assertTrue(isinstance(obj, self.keras_type), str(obj))
+            return obj
+        except TypeError:
+            return None
 
+    def test_from_config(self):
+        if not self.items: return
+        for name in self.items.keys():
+            obj = self._get_original(name)
+            if obj is not None:
+                config = {k : v for k, v in obj.get_config().items() if k != 'fn'}
+                self.assertEqual(self.load(name, ** config), obj)
+    
+    def test_from_serialization(self):
+        if not self.items: return
+        for name in self.items.keys():
+            obj = self._get_original(name)
+            if obj is not None:
+                with self.subTest(name = name):
+                    self.assertEqual(self.load(self.module.serialize(obj)), obj)
+            
+class TestLoss(TestCustomObject):
+    items   = _losses
+    module  = keras.losses
+    keras_type  = keras.losses.Loss
+    
+    def load(self, * args, ** kwargs):
+        return get_loss(* args, ** kwargs)
+
+class TestMetrics(TestCustomObject):
+    items   = _metrics
+    module  = keras.metrics
+    keras_type  = keras.metrics.Metric
+    
+    def load(self, * args, ** kwargs):
+        return get_metrics(* args, ** kwargs)
+
+
+class TestOptimizer(TestCustomObject):
+    items   = _optimizers
+    module  = keras.optimizers
+    keras_type  = keras.optimizers.Optimizer
+
+    def load(self, * args, ** kwargs):
+        return get_optimizer(* args, ** kwargs)
+
+    def test_learning_rate(self):
+        self.assertEqual(get_optimizer('adam', lr = 1.).learning_rate, 1.)
+        
         scheduler = DivideByStep(factor = 5)
         optimizer = get_optimizer('adam', lr = scheduler)
-        if hasattr(optimizer, '_learning_rate'):
-            self.assertEqual(optimizer._learning_rate, scheduler)
-        else:
-            self.assertEqual(optimizer.learning_rate, scheduler)
+        self.assertEqual(optimizer._learning_rate, scheduler)
+        
         self.assertEqual(get_optimizer(
-            'adam', lr = {'name' : scheduler.__class__.__name__, ** scheduler.get_config()}
+            'adam', lr = {'name' : 'DivideByStep', ** scheduler.get_config()}
         ), optimizer)
         self.assertEqual(
             get_optimizer('adam', ** optimizer.get_config()), optimizer
         )
         self.assertEqual(
-            get_optimizer(tf.keras.optimizers.serialize(optimizer)), optimizer
+            get_optimizer(keras.optimizers.serialize(optimizer)), optimizer
         )

@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,31 +9,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
+import inspect
 import logging
-import tensorflow as tf
+import importlib
 
-from tensorflow.keras.layers import *
+from keras import tree
+from keras import layers
+
 from custom_layers import get_activation
-from custom_layers.masked_1d import *
 
 logger  = logging.getLogger(__name__)
 
-_flatten_type   = (None, 'max', 'mean', 'avg', 'average', 'lstm', 'gru', 'bi_lstm', 'bilstm', 'bi_gru', 'bigru')
-_concat_type    = (True, 'add', 'mul', 'concat')
-_pool_type      = (None, False, 'none', 'max', 'avg', 'average', 'up', 'upsampling')
-_residual_type  = (None, 'none', False) + _concat_type
+_use_cudnn_lstm = False
 
-_str_layers     = {
-    'dense'     : Dense,
-    'conv1d'    : Conv1D,
-    'masked_conv1d' : MaskedConv1D,
-    'conv2d'    : Conv2D,
-    'conv3d'    : Conv3D,
-    'lstm'      : LSTM,
-    'gru'       : GRU,
-    'bi_lstm'   : lambda * args, ** kwargs: Bidirectional(LSTM(* args, ** kwargs)),
-    'bi_gru'    : lambda * args, ** kwargs: Bidirectional(GRU(* args, ** kwargs))
-}
+_keras_layers   = {k : v for k, v in vars(keras.layers).items() if isinstance(v, type)}
+logger.debug('Found {} layers in `keras.layers`'.format(len(_keras_layers)))
+
+_keras_layers_lower = {k.lower() : v for k, v in _keras_layers.items()}
+
+_conv_layers    = {k : v for k, v in _keras_layers.items() if 'Conv' in k}
+
+_merging_layers = {k : v for k, v in _keras_layers_lower.items() if 'merging' in v.__module__}
+_pooling_layers = {k : v for k, v in _keras_layers_lower.items() if 'pooling' in v.__module__}
+
+_flatten_type   = {None, 'none', 'max', 'avg', 'average', 'lstm', 'gru', 'bilstm', 'bigru'}
+
+def _load_masked_layers():
+    for module in ('masked_1d', 'masked_2d', 'masked_3d'):
+        try:
+            module = importlib.import_module('custom_layers.' + module)
+        except:
+            continue
+
+        masked_layers = {k : v for k, v in vars(module).items() if isinstance(v, type)}
+        
+        logger.debug('Layers {} loaded from {}'.format(tuple(masked_layers.keys()), module))
+        
+        _keras_layers.update(masked_layers)
+        _conv_layers.update({k : v for k, v in masked_layers.items() if 'Conv' in k})
+        _pooling_layers.update({k.lower() : v for k, v in masked_layers.items() if 'Pooling' in k})
+        
+_load_masked_layers()
 
 def _get_var(_vars, i, key = None):
     if callable(_vars) and _vars.__class__.__name__ == 'function':
@@ -48,34 +64,74 @@ def _get_layer_dim(layer_class_name):
     elif '3D' in layer_class_name:  return '3D'
     raise ValueError('Unable to determine dimension for {}'.format(layer_class_name))
 
-def _add_layer(model, layer):
+def add_layer(model, layer):
     """
         Add `layer` to `model` and return it
-            If model is a Sequential    : add it with .add()
-            else    : add it by calling the layer on the `model` (which is the output of the previous layer)
+            If model is a `Sequential`  : calls the `model.add` method
+            else    : add it by calling the layer on the `model` (which is expected to be the output of the previous layer)
         
         If `layer` is a list, call _add_layer on all layer in the list
-            If model is Sequential  : add them sequentially and return the model
+            If model is `Sequential`  : add them sequentially and return the model
             else : add all layer in parallel (all having `model` as input) and return the list of outputs
     """
-    if isinstance(model, tf.keras.Sequential):
+    if isinstance(model, keras.Sequential):
         if not isinstance(layer, (list, tuple)): layer = [layer]
         for l in layer: model.add(l)
         return model
-    elif isinstance(layer, (list, tuple)):
-        return [l(model) for l in layer]
+    
+    elif isinstance(layer, (list, tuple)): return [l(model) for l in layer]
     return layer(model)
 
-def _get_concat_layer(concat_type, ** kwargs):
-    assert concat_type in _concat_type, 'Invalid concat layer !\n  Accepted : {}\n  Got {}'.format(
-        _concat_type, concat_type
-    )
+def get_merging_layer(name, ** kwargs):
+    if name is True: name = 'add'
     
-    if concat_type in (True, 'add'):  return Add(** kwargs)
-    elif concat_type == 'mul':     return Multiply(** kwargs)
-    elif concat_type == 'concat':     return Concatenate(** kwargs)
+    name = name.lower()
+    if name == 'concat': name = 'concatenate'
+    if name not in _merging_layers:
+        raise ValueError('Unknown merging layer !\n  Accepted : {}\n  Got : {}'.format(
+            tuple(_merging_layers.keys()), name
+        ))
+    
+    return _merging_layers[name](** kwargs)
 
-def _get_flatten_layer(flatten_type, dim, ** kwargs):
+def get_pooling_layer(pool_type,
+                      input_dim,
+                      * args,
+                      use_mask  = None,
+                      global_pooling    = False,
+                      ** kwargs
+                     ):
+    """ Returns a pooling layer : `{Max / Average}Pooling{dim}` or `UpSampling{dim}` """
+    if isinstance(pool_type, (list, tuple)):
+        return [
+            get_pooling_layer(pool, input_dim, * args, global_pooling = global_pooling, ** kwargs)
+            for pool in pool_type
+        ]
+    
+    if pool_type in (None, False, 'none'): return None
+    
+    input_dim = input_dim.lower()
+    assert input_dim in ('1d', '2d', '3d'), 'Invalid dimension {}'.format(input_dim)
+    
+    layer_name = pool_type.lower() + 'pooling' + input_dim
+    if global_pooling: layer_name = 'global' + layer_name
+    
+    if use_mask:
+        if 'masked' + layer_name not in _pooling_layers:
+            logger.warning('The masked pooling layer {} does not exist, fallback to regular pooling'.format(layer_name))
+        else:
+            layer_name = 'masked' + layer_name
+    
+    if layer_name not in _pooling_layers:
+        raise ValueError('Unknown pooling layer !\n  Accepted : {}\n  Got : {}'.format(
+            tuple(_pooling_layers.keys()), layer_name
+        ))
+    
+    layer  = _pooling_layers[layer_name]
+    kwargs = {k : v for k, v in kwargs.items() if k in inspect.signature(layer).parameters}
+    return layer(* args, ** kwargs)
+
+def get_flatten_layer(flatten_type, dim, use_cudnn = _use_cudnn_lstm, ** kwargs):
     """
         Returns a global flattening layer
         
@@ -89,93 +145,59 @@ def _get_flatten_layer(flatten_type, dim, ** kwargs):
         Returns :
             - layer : the flattening layer
     """
-    dim = dim.lower()
-    assert dim in ('1d', '2d', '3d'), 'Invalid dimension {}'.format(dim)
-    assert flatten_type in _flatten_type, 'Invalid flatten layers !\n  Accepted : {}\n  Got {}'.format(
+    if isinstance(flatten_type, str):
+        flatten_type = ''.join(c for c in flatten_type if c.isalnum())
+    assert flatten_type in _flatten_type, 'Invalid flatten layers !\n  Accepted : {}\n  Got : {}'.format(
         _flatten_type, flatten_type
     )
     
-    if flatten_type in (None, 'none'):  return Flatten(** kwargs)
-    elif flatten_type == 'max':
-        if dim == '1d':     return GlobalMaxPooling1D(** kwargs)
-        elif dim == '2d':   return GlobalMaxPooling2D(** kwargs)
-        elif dim == '3d':   return GlobalMaxPooling3D(** kwargs)
-    elif flatten_type in ('mean', 'avg', 'average'):
-        if dim == '1d':     return GlobalAveragePooling1D(** kwargs)
-        elif dim == '2d':   return GlobalAveragePooling2D(** kwargs)
-        elif dim == '3d':   return GlobalAveragePooling3D(** kwargs)
+    if flatten_type in (None, 'none'):
+        return layers.Flatten(** kwargs)
+    elif flatten_type in ('max', 'avg', 'average'):
+        return get_pooling_layer(flatten_type, dim, global_pooling = True, ** kwargs)
     else: # GRU / LSTM
-        layer = LSTM(** kwargs) if 'lstm' in flatten_type else GRU(** kwargs)
-        
-        if 'bi' in flatten_type: layer = Bidirectional(layer)
+        layer = layers.LSTM(** kwargs) if 'lstm' in flatten_type else layers.GRU(** kwargs)
+        if 'bi' in flatten_type:
+            layer = layers.Bidirectional(layer)
+        set_cudnn_lstm(layer, ** kwargs)
         
         return layer
 
-def _get_pooling_layer(pool_type, dim, * args, global_pooling = False, use_mask = None, ** kwargs):
-    """ Returns a pooling layer : `{Max / Average}Pooling{dim}` or `UpSampling{dim}` """
-    if isinstance(pool_type, (list, tuple)):
-        return [
-            _get_pooling_layer(pool, dim, * args, global_pooling = global_pooling, ** kwargs)
-            for pool in pool_type
-        ]
+def set_cudnn_lstm(layer, use_cudnn = _use_cudnn_lstm, ** _):
+    if isinstance(layer, keras.Model):
+        _layers = layer._flatten_layers()
+    elif isinstance(layer, layers.Bidirectional):
+        _layers = (layer.forward_layer, layer.backward_layer)
+    else:
+        _layers = layer
     
-    dim = dim.lower()
-    assert dim in ('1d', '2d', '3d'), 'Invalid dimension {}'.format(dim)
-    assert pool_type in _pool_type, 'Invalid pooling layers !\n  Accepted : {}\n  Got {}'.format(
-        _pool_type, pool_type
-    )
-    
-    if pool_type in (None, False, 'none'): return None
-    elif pool_type == 'max':
-        if global_pooling:
-            if dim == '1d':     pool_class = GlobalMaxPooling1D
-            elif dim == '2d':   pool_class = GlobalMaxPooling2D
-            elif dim == '3d':   pool_class = GlobalMaxPooling3D
-        else:
-            if dim == '1d':     pool_class = MaxPooling1D if not use_mask else MaskedMaxPooling1D
-            elif dim == '2d':   pool_class = MaxPooling2D
-            elif dim == '3d':   pool_class = MaxPooling3D
-    
-    elif pool_type in ('mean', 'avg', 'average'):
-        if global_pooling:
-            if dim == '1d':     pool_class = GlobalAveragePooling1D
-            elif dim == '2d':   pool_class = GlobalAveragePooling2D
-            elif dim == '3d':   pool_class = GlobalAveragePooling3D
-        else:
-            if dim == '1d':     pool_class = AveragePooling1D if not use_mask else MaskedAveragePooling1D
-            elif dim == '2d':   pool_class = AveragePooling2D
-            elif dim == '3d':   pool_class = AveragePooling3D
-    
-    elif pool_type in ('up', 'upsampling'):
-        if global_pooling: raise ValueError("Upsampling does not exist in global pooling mode !")
-        
-        if dim == '1d':     pool_class = UpSampling1D
-        elif dim == '2d':   pool_class = UpSampling2D
-        elif dim == '3d':   pool_class = UpSampling3D
-    
-    return pool_class(* args, ** kwargs)
+    for l in _layers:
+        if hasattr(l, 'use_cudnn'):
+            l.use_cudnn = use_cudnn
+            if not use_cudnn: l.supports_jit = True
 
-def _get_padding_layer(kernel_size, dim, * args, dilation_rate = 1, use_mask = None, ** kwargs):
-    if isinstance(kernel_size, (list, tuple)): kernel_size = kernel_size[0]
+def get_padding_layer(kernel_size, dim, *, dilation_rate = 1, use_mask = None, ** kwargs):
+    if isinstance(kernel_size, (list, tuple)):
+        if len(kernel_size) > 1:
+            raise NotImplementedError('not supported when `kernel_size` is a tuple')
+        kernel_size = kernel_size[0]
     if dilation_rate > 1:
         raise NotImplementedError('not supported when `dilation_rate > 1`')
     if kernel_size % 2 == 0:
         raise NotImplementedError('not supported when `kernel_size % 2 == 0`')
     
-    padding_half =  kernel_size // 2   
+    padding_half =  kernel_size // 2
     if padding_half < 1: return None
     
     padding = (padding_half, padding_half)
     
-    dim = dim.lower()
-    assert dim in ('1d', '2d')
+    dim  = int(dim[0])
+    name = '{}ZeroPadding{}D'.format('Masked' if use_mask else '', dim)
+    if name not in _keras_layers:
+        raise NotImplementedError('the layer `{}` is not available'.format(name))
     
-    if dim == '2d':
-        if use_mask:
-            raise NotImplementedError('Padding + mask is not supported for 2D yet')
-        return ZeroPadding2D((padding, padding))
-    else:
-        return ZeroPadding1D(padding) if not use_mask else MaskedZeroPadding1D(padding)
+    if dim > 1: dim = tuple([padding] * dim)
+    return _keras_layers[name](padding)
 
 def _get_layer(layer_name, * args, ** kwargs):
     if isinstance(layer_name, (list, tuple)):
@@ -188,7 +210,11 @@ def _get_layer(layer_name, * args, ** kwargs):
     
     return _str_layers[layer_name](* args, ** kwargs)
 
-def _layer_bn(model, layer_type, n, * args, 
+def _layer_bn(layer_class,
+              model,
+              * args,
+              
+              n = 1,
               use_manual_padding    = False,
               
               bnorm     = 'after',
@@ -211,17 +237,17 @@ def _layer_bn(model, layer_type, n, * args,
               residual_kwargs   = {},
               residual_tensor   = None,
               
-              name  = None, 
+              name  = None,
               ** kwargs
              ):
     """
-        Adds `n` times `layer_type` to `model` with `kwargs`, and possibly adds additional layers
+        Adds `n` times `layer_class` to `model` with `kwargs`, and possibly adds additional layers
         
         Arguments :
-            - model         : either `tf.Tensor` (for the Functional API) either `Sequential` instance
-            - layer_type    : the layer's class to add
-            - n             : the number of `layer_type` to add consecutively
-            - args / kwargs : configuration for the `layer_type`
+            - model         : either `Tensor` (for the Functional API) either `Sequential` instance
+            - layer_class    : the layer's class to add
+            - n             : the number of `layer_class` to add consecutively
+            - args / kwargs : configuration for the `layer_class`
             
             - use_mask      : whether to use `Masking` in the `ZeroPadding` / pooling layers
             - use_manual_padding    : whether to add a `ZeroPadding{n}D` to override the `padding = 'same'` argument of convolutional layers. This may be useful for masking (`use_mask = True`)
@@ -241,25 +267,25 @@ def _layer_bn(model, layer_type, n, * args,
                 If `residual = True`, the default layer is the `Add()` layer
             - residual_kwargs   : the kwargs for the residual layer
             
-            - name  : the name to use for the `layer_type`
-        Returns : the updated `model` (if Sequential API) or the new `tf.Tensor`
+            - name  : the name to use for the `layer_class`
+        Returns : the updated `model` (if Sequential API) or the new `Tensor`
     """
     assert bnorm in ('before', 'after_all', 'after', 'never'), 'Invalid `bnorm` : {}'.format(bnorm)
-    assert pooling in _pool_type, 'Invalid `pooling` : {}'.format(pooling)
-    assert residual in _residual_type, 'Invalid `residual` : {}'.format(residual)
     
-    if residual and isinstance(model, tf.keras.Sequential):
-        raise ValueError('When `residual` is not `None / False`, `model` cannot be a `Sequential` !')
+    if residual and isinstance(model, keras.Sequential):
+        raise ValueError('Residual connections are not supported in `Sequential` models')
+    
+    if n > 1:
+        if name and '{}' not in name: name = name + '_{}'
+        if bn_name and bnorm == 'after_all' and '{}' not in bn_name: bn_name = bn_name + '_{}'
+
     
     x = model
     
     if bnorm == 'before':
-        x = _add_layer(x, BatchNormalization(
+        x = add_layer(x, layers.BatchNormalization(
             momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
-    
-    if n > 1 and name and '{}' not in name: name = name + '_{}'
-    if n > 1 and bn_name and bnorm == 'after_all' and '{}' not in bn_name: bn_name = bn_name + '_{}'
 
     for i in range(n):
         args_i      = [_get_var(a, i) for a in args]
@@ -269,125 +295,80 @@ def _layer_bn(model, layer_type, n, * args,
         if i > 0: kwargs_i.pop('input_shape', None)
         
         if use_manual_padding and kwargs_i.get('padding', None) == 'same':
-            dim = _get_layer_dim(layer_type.__name__)
+            dim = _get_layer_dim(layer_class.__name__)
             try:
-                pad_layer = _get_padding_layer(
-                    kwargs_i['kernel_size'], dim, use_mask = use_mask,
+                pad_layer = get_padding_layer(
+                    kwargs_i['kernel_size'],
+                    dim,
+                    use_mask = use_mask,
                     dilation_rate = kwargs_i.get('dilation_rate', 1)
                 )
-                if pad_layer is not None: x = _add_layer(x, pad_layer)
+                if pad_layer is not None: x = add_layer(x, pad_layer)
                 kwargs_i['padding'] = 'valid'
             except NotImplementedError as e:
                 logger.warning('manual padding is not supported for {} (reason : {})'.format(
                     kwargs_i['name'], e
                 ))
         
-        x = _add_layer(x, layer_type(* args_i, ** kwargs_i))
+        x = add_layer(x, layer_class(* args_i, ** kwargs_i))
         
         if bnorm == 'after_all':
             bn_name_i = bn_name.format(i + 1) if n > 1 else bn_name
-            x = _add_layer(x, BatchNormalization(
+            x = add_layer(x, layers.BatchNormalization(
                 momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name_i
             ))
 
         if activation and i < n - 1:
-            x = _add_layer(x, get_activation(activation, ** activation_kwargs))
+            x = add_layer(x, get_activation(activation, ** activation_kwargs))
     
     if bnorm == 'after':
-        x = _add_layer(x, BatchNormalization(
+        x = add_layer(x, layers.BatchNormalization(
             momentum = momentum, epsilon = epsilon, axis = bn_axis, name = bn_name
         ))
     
     if residual:
         if residual_tensor is None: residual_tensor = model
         if tuple(x.shape) == tuple(residual_tensor.shape):
-            x = _get_concat_layer(residual, ** residual_kwargs)([x, residual_tensor])
+            x = get_merging_layer(residual, ** residual_kwargs)([x, residual_tensor])
         else:
             logger.warning("Skip connection failed : shape mismatch ({} vs {})".format(
                 model.shape, x.shape
             ))
     
     if activation:
-        x = _add_layer(x, get_activation(activation, ** activation_kwargs))
+        x = add_layer(x, get_activation(activation, ** activation_kwargs))
     
-    if pooling not in (None, False, 'none') and 'Conv' in layer_type.__name__:
+    if pooling and 'Conv' in layer_class.__name__:
         if pool_size is None and pool_strides is None: pool_size = 2
         if pool_size is None:       pool_size = pool_strides
         if pool_strides is None:    pool_strides = pool_size
         
-        dim = _get_layer_dim(layer_type.__name__)
-        x   = _add_layer(x, _get_pooling_layer(
-            pooling, dim, pool_size = pool_size, strides = pool_strides,
-            padding = pool_padding, use_mask = use_mask
+        dim = _get_layer_dim(layer_class.__name__)
+        x   = add_layer(x, get_pooling_layer(
+            pooling,
+            input_dim   = dim,
+            pool_size   = pool_size,
+            strides     = pool_strides,
+            padding     = pool_padding,
+            use_mask    = use_mask
         ))
     
-    if drop_rate > 0.: x = _add_layer(x, Dropout(drop_rate))
+    if drop_rate > 0.: x = add_layer(x, layers.Dropout(drop_rate))
     
     return x
 
+
 def DenseBN(x, units, * args, ** kwargs):
-    return _layer_bn(
-        x, Dense, len(units) if isinstance(units, (list, tuple)) else 1, * args, units = units, ** kwargs
-    )
+    n = len(units) if isinstance(units, (list, tuple)) else 1
+    return _layer_bn(layers.Dense, x, units, * args, n = n, ** kwargs)
 
-def Conv1DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv1D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
+def _build_conv_bn(layer):
+    def conv_bn(x, filters, * args, ** kwargs):
+        n = len(filters) if isinstance(filters, (list, tuple)) else 1
+        return _layer_bn(layer, x, filters, * args, n = n, ** kwargs)
+    return conv_bn
 
-def Conv2DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv2D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
+globals().update({
+    '{}BN'.format(k) : _build_conv_bn(v) for k, v in _conv_layers.items()
+})
 
-def Conv3DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv3D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def MaskedConv1DBN(x, filters, * args, ** kwargs):
-    kwargs.setdefault('use_mask', True)
-    return _layer_bn(
-        x, MaskedConv1D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def SeparableConv1DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, SeparableConv1D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def SeparableConv2DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, SeparableConv2D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def SeparableConv3DBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, SeparableConv3D, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-
-def Conv1DTransposeBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv1DTranspose, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def Conv2DTransposeBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv2DTranspose, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )
-
-def Conv3DTransposeBN(x, filters, * args, ** kwargs):
-    return _layer_bn(
-        x, Conv3DTranspose, len(filters) if isinstance(filters, (list, tuple)) else 1, * args,
-        filters = filters, ** kwargs
-    )

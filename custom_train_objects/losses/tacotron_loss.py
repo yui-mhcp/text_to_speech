@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,9 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import tensorflow as tf
+import keras
+import keras.ops as K
 
-class TacotronLoss(tf.keras.losses.Loss):
+from .loss_with_multiple_outputs import LossWithMultipleOutputs
+
+@keras.saving.register_keras_serializable('tacotron2')
+class TacotronLoss(LossWithMultipleOutputs):
     def __init__(self,
                  from_logits        = False, 
                  label_smoothing    = 0,
@@ -24,9 +27,8 @@ class TacotronLoss(tf.keras.losses.Loss):
                  finish_weight      = 1.,
                  not_finish_weight  = 1.,
                  
-                 reduction  = 'none', 
                  name   = 'tacotron_loss',
-                 **kwargs
+                 ** kwargs
                 ):
         """
             Loss for the Tacotron-2 model architecture
@@ -38,7 +40,7 @@ class TacotronLoss(tf.keras.losses.Loss):
                 - finish_weight     : weight of binary_crossentropy loss for 1-gate
                 - not_finish_weight : weight of binary_crossentropy loss for 0-gate
         """
-        super().__init__(name = name, reduction = 'none', **kwargs)
+        super().__init__(name = name, ** kwargs)
         self.mask_mel_padding   = mask_mel_padding
         self.label_smoothing    = label_smoothing
         self.from_logits        = from_logits
@@ -46,9 +48,9 @@ class TacotronLoss(tf.keras.losses.Loss):
         self.not_finish_weight  = not_finish_weight
         self.mel_loss   = mel_loss
         self.similarity_function    = similarity_function
-        
+    
     @property
-    def loss_names(self):
+    def output_names(self):
         loss_fn_names = self.mel_loss
         if not isinstance(loss_fn_names, (list, tuple)): loss_fn_names = [loss_fn_names]
 
@@ -73,30 +75,42 @@ class TacotronLoss(tf.keras.losses.Loss):
         if isinstance(loss, (list, tuple)):
             return [self.compute_mel_loss(y_true, y_pred, l, mask = mask) for l in loss]
         
-        if mask is not None: mask = tf.cast(mask, y_pred.dtype)
-        
         if loss == 'similarity':
             if mask is not None: y_pred *= mask
-            similarity = self.similarity_function(tf.stop_gradient(y_true), y_pred)
-            return tf.reshape(tf.keras.losses.binary_crossentropy(
-                tf.ones_like(similarity), similarity
+            similarity = self.similarity_function(y_true, y_pred)
+            return K.reshape(K.binary_crossentropy(
+                K.ones_like(similarity), similarity
             ), [-1])
+
+        if isinstance(loss, str):
+            if 'mse' in loss:
+                error   = K.square(y_true - y_pred)
+            elif 'mae' in loss:
+                error   = K.abs(y_true - y_pred)
+            else:
+                raise ValueError("Unknown loss : {}".format(loss))
+            
+            if 'weighted' in loss:
+                weights = y_true - K.min(y_true, keepdims = True, axis = [1, 2]) + 1.
+                weights = weights / K.max(weights, keepdims = True, axis = [1, 2])
+                error   = error * weights
         elif callable(loss):
             error   = loss(y_true, y_pred)
-        elif loss == 'mse':
-            error   = tf.square(y_true - y_pred)
-        elif loss == 'mae':
-            error   = tf.abs(y_true - y_pred)
         else:
             raise ValueError("Unknown loss : {}".format(loss))
         
-        if len(tf.shape(error)) == 3: error = tf.reduce_sum(error, axis = -1)
+        if len(K.shape(error)) == 3: error = K.sum(error, axis = 2)
         
-        n_channels = tf.shape(y_pred)[-1]
         if mask is None:
-            return tf.reduce_sum(error, axis = -1) / tf.cast(tf.shape(y_pred)[1] * n_channels, error.dtype)
+            return K.divide_no_nan(
+                K.sum(error, axis = 1),
+                K.cast(K.shape(y_pred)[1] * K.shape(y_pred)[2], error.dtype)
+            )
         
-        return tf.reduce_sum(error * mask, axis = -1) / (tf.reduce_sum(mask, axis = -1) * tf.cast(n_channels, mask.dtype))
+        return K.divide_no_nan(
+            K.sum(error * mask, axis = 1),
+            K.sum(mask, axis = 1) * K.cast(K.shape(y_pred)[2], error.dtype)
+        )
     
     def call(self, y_true, y_pred):
         """
@@ -122,24 +136,19 @@ class TacotronLoss(tf.keras.losses.Loss):
         #      Compute gate loss     #
         ##############################
         
-        reshaped_gate_target = tf.reshape(gate_target, [-1, 1])
-        reshaped_gate_pred   = tf.reshape(gate_pred, [-1, 1])
-        
-        finish_mask     = reshaped_gate_target * self.finish_weight
-        not_finish_mask = (1 - reshaped_gate_target) * self.not_finish_weight
-        gate_loss = tf.keras.losses.binary_crossentropy(
-            reshaped_gate_target, reshaped_gate_pred, 
-            from_logits = self.from_logits, 
-            label_smoothing = self.label_smoothing
+        gate_mask   = gate_target * self.finish_weight + (
+            (1. - gate_target) * self.not_finish_weight
         )
-        gate_loss = gate_loss * finish_mask + gate_loss * not_finish_mask
-        gate_loss = tf.reduce_mean(tf.reshape(gate_loss, [tf.shape(mel_target)[0], -1]), axis = -1)
+        gate_loss = K.binary_crossentropy(
+            gate_target, gate_pred,  from_logits = self.from_logits,
+        )
+        gate_loss = K.mean(gate_loss * gate_mask, axis = 1)
 
         ####################
         # Compute mel loss #
         ####################
         
-        mask = 1. - gate_target if self.mask_mel_padding else None
+        mask = K.cast(1. - gate_target, mel_pred.dtype) if self.mask_mel_padding else None
         
         mel_loss            = self.compute_mel_loss(mel_target, mel_pred, mask = mask)
         mel_postnet_loss    = self.compute_mel_loss(mel_target, mel_postnet_pred, mask = mask)
@@ -151,17 +160,21 @@ class TacotronLoss(tf.keras.losses.Loss):
         #     Compute final loss     #
         ##############################
         
-        loss  = tf.reduce_sum(mel_loss, 0) + tf.reduce_sum(mel_postnet_loss, 0) + gate_loss
+        loss = gate_loss
+        loss += K.sum(K.stack(mel_loss, axis = 0), axis = 0) if len(mel_loss) > 1 else mel_loss[0]
+        loss += K.sum(K.stack(mel_postnet_loss, axis = 0), axis = 0) if len(mel_postnet_loss) > 1 else mel_postnet_loss[0]
 
-        return tf.stack([loss] + mel_loss + mel_postnet_loss + [gate_loss], 0)
+        return [loss] + mel_loss + mel_postnet_loss + [gate_loss]
     
     def get_config(self):
         config = super().get_config()
-        config['mel_loss']      = self.mel_loss
-        config['mask_mel_padding']  = self.mask_mel_padding
-        config['label_smoothing']   = self.label_smoothing
-        config['finish_weight']     = self.finish_weight
-        config['not_finish_weight'] = self.not_finish_weight
-        config['from_logits']   = self.from_logits
+        config.update({
+            'mask_mel_padding'  : self.mask_mel_padding,
+            'label_smoothing'   : self.label_smoothing,
+            'finish_weight'     : self.finish_weight,
+            'not_finish_weight' : self.not_finish_weight,
+            'from_logits'   : self.from_logits,
+            'mel_loss'  : self.mel_loss if not callable(self.mel_loss) else keras.losses.serialize(self.mel_loss)
+        })
         return config
 

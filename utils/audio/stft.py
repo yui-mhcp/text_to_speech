@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,19 +12,21 @@
 import os
 import json
 import math
+import keras
 import librosa
 import numpy as np
-import tensorflow as tf
-import tensorflow.keras.backend as K
 
+from scipy.linalg import pinv
 from scipy.signal import get_window
 from librosa.util import pad_center, tiny
 from librosa.filters import mel as librosa_mel_fn
 
 from utils import dump_json, load_json
+from utils.keras_utils import TensorSpec, graph_compile, execute_eagerly, ops
 from utils.audio.audio_processing import window_sumsquare
-from utils.audio.audio_processing import dynamic_range_compression
-from utils.audio.audio_processing import dynamic_range_decompression
+from utils.audio.audio_processing import dynamic_range_compression, dynamic_range_decompression
+
+mel_signature   = TensorSpec(shape = (None, None), dtype = 'float32')
 
 class MelSTFT(object):
     def __init__(self, 
@@ -59,9 +60,9 @@ class MelSTFT(object):
                 fmin    = self.mel_fmin, 
                 fmax    = self.mel_fmax
             )
-            self.mel_basis = tf.cast(tf.transpose(mel_basis), tf.float32)
+            self.mel_basis = mel_basis.T.astype(np.float32)
         
-        self.min_length = tf.constant(self.filter_length, dtype = tf.int32)
+        self.min_length = self.filter_length
     
     @property
     def rate(self):
@@ -89,7 +90,7 @@ class MelSTFT(object):
             des += "{}\t: {}\n".format(k, v)
         return des
     
-    def __call__(self, audio):
+    def __call__(self, audio, ** kwargs):
         """
             Compute the mel spectrogram of audio. 
             Arguments : 
@@ -97,25 +98,26 @@ class MelSTFT(object):
             Return :
                 - mel   : the mel spectrogram (shape = [1, mel_length, n_mel_channels])
         """
-        audio = tf.cast(audio, tf.float32)
+        audio = ops.convert_to_tensor(audio, 'float32')
         
-        if len(tf.shape(audio)) == 1: audio = tf.expand_dims(audio, axis = 0)
-        if tf.shape(audio)[1] < self.min_length:
-            audio = tf.pad(audio, [[0,0], [0, self.min_length - tf.shape(audio)[1]]])
+        if len(ops.shape(audio)) == 1: audio = ops.expand_dims(audio, axis = 0)
+        if ops.shape(audio)[1] < self.min_length:
+            audio = ops.pad(audio, [[0,0], [0, self.min_length - ops.shape(audio)[1]]])
         
         if self.pre_emph > 0.:
-            audio = tf.concat([
-                audio[:, :1],
-                audio[:, 1:] - self.pre_emph * audio[:, :-1]
+            audio = ops.concat([
+                audio[:, :1], audio[:, 1:] - self.pre_emph * audio[:, :-1]
             ], axis = 1)
         
-        return self.mel_spectrogram(audio)
+        return self.mel_spectrogram(audio, ** kwargs)
         
     def get_length(self, audio_length):
         """ Return expected mel_length given the audio_length """
-        return tf.cast(tf.math.ceil(
-            tf.maximum(self.filter_length, audio_length) / self.hop_length
-        ), tf.int32)
+        if ops.executing_eagerly():
+            return int(math.ceil(max(self.filter_length, audio_length) / self.hop_length))
+        return ops.cast(ops.ceil(
+            ops.maximum(self.filter_length, audio_length) / self.hop_length
+        ), 'int32')
     
     def get_audio_length(self, mel_length):
         return (mel_length - 1) * self.hop_length
@@ -124,24 +126,18 @@ class MelSTFT(object):
         """
             Computes mel-spectrograms from a batch of waves
             Arguments :
-                - audio : tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
+                - audio : Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
 
             Return :
-                - mel_output : tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
+                - mel_output : Tensor of shape (batch_size, mel_frames, n_mel_channels)
         """
         raise NotImplementedError()
     
     def normalize(self, mel):
-        if self.normalize_mode is None:
-            return mel
-        elif self.normalize_mode == 'per_feature':
-            mean = tf.reduce_mean(mel, axis = 1, keepdims = True)
-            std = tf.math.reduce_std(mel, axis = 1, keepdims = True)
-        elif self.normalize_mode == 'all_feature':
-            mean = tf.reduce_mean(mel)
-            std = tf.math.reduce_std(mel)
-            
-        return (mel - mean) / (std + 1e-5)
+        if self.normalize_mode is None: return mel
+        
+        kwargs = {'axis' : 1, 'keepdims' : True} if self.normalize_mode == 'per_feature' else {}
+        return ops.divide_no_nan(mel - ops.mean(mel, ** kwargs), _std(mel, ** kwargs))
     
     def get_config(self):
         config = {
@@ -204,7 +200,7 @@ class STFT(object):
         self.periodic       = periodic
         
         scale   = self.filter_length / self.hop_length
-        cutoff  = int((self.filter_length / 2 + 1))
+        cutoff  = self.filter_length // 2 + 1
         
         fourier_basis   = np.fft.fft(np.eye(self.filter_length))
 
@@ -213,62 +209,59 @@ class STFT(object):
             np.imag(fourier_basis[:cutoff, :])
         ])
 
-        forward_basis = tf.cast(tf.expand_dims(fourier_basis, 1), dtype = tf.float32)
-        inverse_basis = tf.cast(tf.expand_dims(
-            tf.transpose(tf.linalg.pinv(scale * fourier_basis)), 1
-        ), dtype = tf.float32)
+        forward_basis = np.expand_dims(fourier_basis, 1).astype(np.float32)
+        inverse_basis = np.expand_dims(
+            np.transpose(pinv(scale * fourier_basis)), 1
+        ).astype(np.float32)
 
         if window is not None:
             assert(filter_length >= win_length)
             # get window and zero center pad it to filter_length
             fft_window = get_window(window, win_length, fftbins = periodic)
             fft_window = pad_center(fft_window, size = filter_length)
-            fft_window = tf.cast(fft_window, tf.float32)
+            fft_window = fft_window
 
             # window the bases
             forward_basis *= fft_window
             inverse_basis *= fft_window
             
-        self.forward_basis = tf.transpose(forward_basis, [2, 1, 0])
-        self.inverse_basis = tf.transpose(inverse_basis, [2, 1, 0])
+        self.forward_basis = np.transpose(forward_basis, [2, 1, 0])
+        self.inverse_basis = np.transpose(inverse_basis, [2, 1, 0])
     
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
-    def transform(self, input_data):
+    @graph_compile(input_signature = [TensorSpec(shape = (None, None), dtype = 'float32')])
+    def transform(self, audio):
         """
-            Applyes STFT on input_data
-                - input_data tf.Tensor wit shape (batch_size, num_samples)
+            Applyes STFT on audio
+                - audio Tensor wit shape (batch_size, num_samples)
             Output : (magnitude, phase)
-                - magnitude tf.Tensor with shape : 
+                - magnitude Tensor with shape : 
                     (batch_size, mel_frames, filter_length / 2 + 1)
-                - magnitude tf.Tensor with shape : 
+                - magnitude Tensor with shape : 
                     (batch_size, mel_frames, filter_length / 2 + 1)
         """
-        num_batches = input_data.shape[0]
-        num_samples = input_data.shape[1]
+        num_batches = audio.shape[0]
+        num_samples = audio.shape[1]
 
         # similar to librosa, reflect-pad the input
-        input_data = tf.pad(
-            input_data,
-            [(0,0), (int(self.filter_length / 2), int(self.filter_length / 2))],
-            mode='reflect')
-        input_data = tf.expand_dims(input_data, -1)
+        audio = ops.pad(
+            audio,
+            [(0,0), (self.filter_length // 2, self.filter_length // 2)],
+            mode = 'reflect'
+        )[:, :, None]
 
-        forward_transform = K.conv1d(
-            input_data,
-            self.forward_basis,
-            strides = self.hop_length,
-            padding = 'valid'
+        forward_transform = ops.conv1d(
+            audio, self.forward_basis, self.hop_length, padding = 'valid'
         )
         
-        cutoff = int((self.filter_length / 2) + 1)
+        cutoff = self.filter_length // 2 + 1
         real_part = forward_transform[:, :, :cutoff]
         imag_part = forward_transform[:, :, cutoff:]
         
-        phase = tf.math.atan2(imag_part, real_part)
+        phase = ops.atan2(imag_part, real_part)
         if self.to_magnitude:
-            magnitude = tf.math.sqrt(real_part**2 + imag_part**2)
+            magnitude = ops.sqrt(real_part**2 + imag_part**2)
         else:
-            magnitude = tf.stack([real_part, imag_part], axis = -1)
+            magnitude = ops.stack([real_part, imag_part], axis = -1)
         
         return magnitude, phase
 
@@ -283,15 +276,15 @@ class STFT(object):
         batch_size  = magnitude.shape[0]
         mel_frames  = magnitude.shape[1]
         
-        recombine_magnitude_phase = tf.concat([
-            magnitude * tf.math.cos(phase), magnitude * tf.math.sin(phase)
+        recombine_magnitude_phase = ops.concat([
+            magnitude * ops.cos(phase), magnitude * ops.sin(phase)
         ], axis = -1)
 
         stride = self.hop_length
         out_length = (mel_frames -1) * self.hop_length + self.inverse_basis.shape[0]
         out_shape = (batch_size, out_length, self.inverse_basis.shape[1])
 
-        inverse_transform = tf.nn.conv1d_transpose(
+        inverse_transform = ops.conv1d_transpose(
             recombine_magnitude_phase,
             filters     = self.inverse_basis,
             output_shape    = out_shape,
@@ -320,10 +313,11 @@ class STFT(object):
         inverse_transform = inverse_transform[:, :, int(self.filter_length/2):]
         inverse_transform = inverse_transform[:, :, :-int(self.filter_length/2):]
 
-        return tf.squeeze(inverse_transform, 1)
+        return ops.squeeze(inverse_transform, 1)
 
     def __call__(self, audio):
-        if len(audio.shape) == 1: audio = tf.expand_dims(audio, axis = 0)
+        audio = ops.convert_to_tensor(audio, 'float32')
+        if len(audio.shape) == 1: audio = audio[None, :]
         return self.transform(audio)[0]
 
     def get_config(self):
@@ -344,7 +338,7 @@ class TacotronSTFT(MelSTFT):
             window = window, periodic = periodic
         )
 
-        self.mel_basis = tf.expand_dims(self.mel_basis, 0)
+        self.mel_basis = self.mel_basis[None]
         
     def spectral_normalize(self, magnitudes):
         return dynamic_range_compression(magnitudes)
@@ -352,19 +346,10 @@ class TacotronSTFT(MelSTFT):
     def spectral_de_normalize(self, magnitudes):
         return dynamic_range_decompression(magnitudes)
 
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
-    def mel_spectrogram(self, y):
-        """Computes mel-spectrograms from a batch of waves
-        PARAMS
-        ------
-        y: tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
-
-        RETURNS
-        -------
-        mel_output: tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
-        """
-        magnitudes, phases = self.stft_fn.transform(y)
-        mel_output = tf.matmul(magnitudes, self.mel_basis)
+    @graph_compile(input_signature = [mel_signature])
+    def mel_spectrogram(self, audio):
+        magnitudes, phases = self.stft_fn.transform(audio)
+        mel_output = magnitudes @ ops.convert_to_tensor(self.mel_basis, magnitudes.dtype)
         mel_output = self.spectral_normalize(mel_output)
         return self.normalize(mel_output)
     
@@ -388,27 +373,18 @@ class ConformerSTFT(TacotronSTFT):
         self.log_zero_guard_value   = log_zero_guard_value
         self.mag_power  = mag_power
     
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
-    def mel_spectrogram(self, y):
-        """Computes mel-spectrograms from a batch of waves
-        PARAMS
-        ------
-        y: tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
-
-        RETURNS
-        -------
-        mel_output: tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
-        """
-        magnitudes, phases = self.stft_fn.transform(y)
+    @graph_compile(input_signature = [mel_signature])
+    def mel_spectrogram(self, audio):
+        magnitudes, phases = self.stft_fn.transform(audio)
 
         if self.mag_power != 1.:
-            magnitudes = tf.pow(magnitudes, self.mag_power)
+            magnitudes = magnitudes ** self.mag_power
 
-        mel_output = tf.matmul(magnitudes, self.mel_basis)
+        mel_output = magnitudes @ ops.convert_to_tensor(self.mel_basis, magnitudes.dtype)
         
         if self.log:
             if self.log_zero_guard_type == "add":
-                mel_output = tf.math.log(mel_output + self.log_zero_guard_value)
+                mel_output = ops.log(mel_output + self.log_zero_guard_value)
             elif self.log_zero_guard_type == "clamp":
                 raise NotImplementedError()
             else:
@@ -449,65 +425,60 @@ class WhisperSTFT(TacotronSTFT):
             ** kwargs
         )
 
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
-    def mel_spectrogram(self, y):
-        """Computes mel-spectrograms from a batch of waves
-        PARAMS
-        ------
-        y: tf.Tensor (or ndarray) with shape (batch_size, samples) in range [-1, 1]
-
-        RETURNS
-        -------
-        mel_output: tf.Tensor of shape (batch_size, mel_frames, n_mel_channels)
-        """
-        magnitudes, phases = self.stft_fn.transform(y)
+    @graph_compile(input_signature = [mel_signature])
+    def mel_spectrogram(self, audio):
+        magnitudes, phases = self.stft_fn.transform(audio)
         
-        magnitudes = tf.square(tf.abs(magnitudes[:, :-1]))
+        magnitudes = ops.squeeze(ops.abs(magnitudes[:, :-1]))
         
-        mel_output = tf.matmul(magnitudes, self.mel_basis)
-        mel_output = tf.experimental.numpy.log10(tf.maximum(mel_output, 1e-10))
+        mel_output = ops.matmul(
+            magnitudes, ops.convert_to_tensor(self.mel_basis, magnitudes.dtype)
+        )
+        mel_output = ops.log10(ops.maximum(mel_output, 1e-10))
 
-        mel_output = tf.maximum(mel_output, tf.reduce_max(mel_output) - 8.0)
+        mel_output = ops.maximum(mel_output, ops.max(mel_output) - 8.0)
         mel_output = (mel_output + 4.0) / 4.0
 
         return mel_output
 
 class SpeechNetSTFT(MelSTFT):
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
-    def mel_spectrogram(self, y):
-        stfts = tf.signal.stft(y,
-                               fft_length   = self.filter_length,
-                               frame_step   = self.hop_length,
-                               frame_length = self.win_length,
-                               pad_end      = False
-                              )
-        power_spectrograms = tf.math.real(stfts * tf.math.conj(stfts))
+    @graph_compile(input_signature = [mel_signature])
+    def mel_spectrogram(self, audio):
+        stfts = ops.stft(
+            audio, self.win_length, self.hop_length, self.filter_length, center = False
+        )
+        # the `tf.signal.stft` returns the `complex Tensor`, while `K.stft` returns `(real, imag)` 
+        if isinstance(stfts, (list, tuple)): stfts = ops.complex(* stfts)
+        power_spectrograms = ops.real(stfts * ops.conj(stfts))
         
-        mel_output = tf.tensordot(power_spectrograms, self.mel_basis, 1)
-        mel_output = tf.math.log(mel_output + 1e-6)
+        mel_output = ops.tensordot(
+            power_spectrograms, ops.convert_to_tensor(self.mel_basis, power_spectrograms.dtype), 1
+        )
+        mel_output = ops.log(mel_output + 1e-6)
         return self.normalize(mel_output)
     
 class DeepSpeechSTFT(MelSTFT):
+    @execute_eagerly(
+        signature = TensorSpec(shape = (None, None), dtype = 'float32'), numpy = True
+    )
     def make_features(self, audio):
         import python_speech_features
         
-        audio = np.array(audio.numpy() * np.iinfo(np.int16).max, dtype = np.int16)
+        audio = np.array(audio * np.iinfo(np.int16).max, dtype = np.int16)
         frames = python_speech_features.sigproc.framesig(
             audio, self.win_length, self.hop_length, np.hanning
         )
         mel = python_speech_features.sigproc.logpowspec(
             frames, self.win_length, norm = True
         )
-        mel = mel[:, :self.n_mel_channels]
-        return mel
+        return mel[:, :self.n_mel_channels].astype(np.float32)
         
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
+    @graph_compile(input_signature = [mel_signature], support_xla = False)
     def mel_spectrogram(self, audio):
-        audio = tf.squeeze(audio, 0)
-        audio = audio / (tf.reduce_max(tf.abs(audio)) + 1e-5)
-        mel_output = tf.py_function(self.make_features, [audio], Tout = tf.float32)
-        mel_output.set_shape([None, self.n_mel_channels])
-        mel_output = tf.expand_dims(mel_output, 0)
+        audio = ops.divide_no_nan(audio, ops.max(ops.abs(audio)))
+        mel_output = self.make_features(
+            audio[0], shape = (None, self.n_mel_channels)
+        )[None]
         
         return self.normalize(mel_output)
 
@@ -524,37 +495,42 @@ class JasperSTFT(MelSTFT):
         )
         
     def get_seq_len(self, audio):
-        return tf.cast(tf.math.ceil(tf.shape(audio)[1] / self.hop_length), tf.int32)
+        if ops.executing_eagerly():
+            return int(math.ceil(max(self.filter_length, audio.shape[1]) / self.hop_length))
+        return ops.cast(ops.ceil(ops.shape(audio)[1] / self.hop_length), 'int32')
     
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
+    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
-        
         if self.dither > 0:
-            audio += self.dither * tf.random.normal(tf.shape(audio), dtype = audio.dtype)
+            audio += self.dither * ops.random.normal(ops.shape(audio), dtype = audio.dtype)
         
         if self.preemph is not None:
-            audio = tf.concat([tf.expand_dims(audio[:,0], 1), audio[:, 1:] - self.preemph * audio[:, :-1]], axis = 1)
+            audio = ops.concat([
+                audio[:, :1], audio[:, 1:] - self.preemph * audio[:, :-1]
+            ], axis = 1)
                 
         x = self.stft_fn(audio)
-        x = tf.reduce_sum(tf.square(x), axis = -1)
+        x = ops.reduce_sum(ops.square(x), axis = -1)
         
-        mel_output = tf.matmul(x, self.mel_basis)
+        mel_output = ops.matmul(x, ops.convert_to_tensor(self.mel_basis, x.dtype))
         
         if self.log:
-            mel_output = tf.math.log(mel_output + 1e-20)
+            mel_output = ops.log(mel_output + 1e-20)
         
         mel_output = self.normalize(mel_output)
         
-        mask = tf.range(tf.shape(mel_output)[1]) < self.get_seq_len(audio)
-        mask = tf.cast(tf.reshape(mask, [1, -1, 1]), mel_output.dtype)
+        mask = ops.range(ops.shape(mel_output)[1]) < self.get_seq_len(audio)
+        mask = ops.cast(ops.reshape(mask, [1, -1, 1]), mel_output.dtype)
         mel_output = mel_output * mask
         
         if self.pad_to < 0:
-            mel_output = tf.pad(mel_output, [(0,0), (0, self.max_length - tf.shape(mel_output)[1]), (0,0)])
+            mel_output = ops.pad(
+                mel_output, [(0,0), (0, self.max_length - ops.shape(mel_output)[1]), (0,0)]
+            )
         elif self.pad_to > 0:
-            pad_amt = tf.shape(mel_output)[1] % self.pad_to
+            pad_amt = ops.shape(mel_output)[1] % self.pad_to
             #            if pad_amt != 0:
-            mel_output = tf.pad(mel_output, [(0,0), (0, self.pad_to - pad_amt), (0,0)])
+            mel_output = ops.pad(mel_output, [(0,0), (0, self.pad_to - pad_amt), (0,0)])
         
         return mel_output
     
@@ -567,22 +543,23 @@ class JasperSTFT(MelSTFT):
         return config
     
 class LibrosaSTFT(MelSTFT):
+    @execute_eagerly(signature = TensorSpec(
+        shape = (None, None), dtype = 'float32'
+    ), numpy = True)
     def make_features(self, audio):
         return librosa.feature.melspectrogram(
-            y   = audio.numpy(),
+            y   = audio,
             sr  = self.sampling_rate,
             n_fft   = self.filter_length,
             hop_length  = self.hop_length,
             n_mels  = self.n_mel_channels
         ).astype(np.float32).T
-        
-    @tf.function(input_signature = [tf.TensorSpec(shape = (None, None), dtype = tf.float32)])
+    
+    @graph_compile(input_signature = [mel_signature], support_xla = False)
     def mel_spectrogram(self, audio):
-        audio = tf.squeeze(audio, 0)
-
-        mel_output = tf.py_function(self.make_features, [audio], Tout = tf.float32)
-        mel_output.set_shape([None, self.n_mel_channels])
-        mel_output = tf.expand_dims(mel_output, 0)
+        mel_output = self.make_features(
+            audio[0], shape = (None, self.n_mel_channels)
+        )[None]
         
         return self.normalize(mel_output)
     

@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -16,9 +15,13 @@ import datetime
 import matplotlib
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+
+try:
+    from keras.ops import is_tensor, convert_to_numpy
+except ImportError as e:
+    is_tensor = lambda x: False
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +113,7 @@ def _normalize_colors(colors, cmap = None):
     return colors
 
 def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
-    if lines is None: return
+    if lines is None: return []
     _drawing_method = getattr(ax, 'axvline' if vertical else 'axhline')
     
     config = config.copy()
@@ -120,6 +123,7 @@ def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
     
     if not isinstance(lines, dict): lines = {None : lines}
 
+    _labels = []
     for label, lines in lines.items():
         if not isinstance(lines, _data_iterable): lines = [lines]
         lines_config = config if not label else {
@@ -127,11 +131,14 @@ def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
         }
         if 'color' in lines_config:
             lines_config['color'] = _normalize_colors(lines_config['color'], cmap)
+        
+        if label: _labels.append(label)
         for i, line in enumerate(lines):
             if label: config['label'] = label if i == 0 else None
             _drawing_method(
                 line, ** {k : _get_label_config(label, i, v) for k, v in lines_config.items()}
             )
+        return _labels
 
 def _set_boxplot_colors(im, colors, facecolor, cmap = None):
     colors = _normalize_colors(colors, cmap = cmap) if isinstance(colors, _data_iterable) else [colors] * len(im['boxes'])
@@ -229,6 +236,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     def _plot(ax, p_type, datas, ** kwargs):
         """ Calls the plotting function `p_type` on `ax` with `datas` and `kwargs` """
         try:
+            if 'label' in kwargs: _labels.append(kwargs['label'])
             return getattr(ax, p_type)(* datas, ** kwargs)
         except Exception as e:
             logger.error('Error while calling `{}.{}` with data {}\n  Config : {}'.format(
@@ -243,6 +251,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
             config = legend_kwargs.copy()
             config.setdefault('facecolor', facecolor)
             legend_fontcolor = config.pop('fontcolor', fontcolor)
+            config.setdefault('ncols', int(math.ceil(len(_labels) / 5.)))
             
             leg = ax.legend(fontsize = legend_fontsize, ** config)
             if 'title' in config:        leg.get_title().set_color(legend_fontcolor)
@@ -403,6 +412,8 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         plt.gcf().autofmt_xdate()
     
     
+    _labels = []
+    
     im = None
     if isinstance(y, dict):
         if len(y) > 0: kwargs.pop('color', None)
@@ -420,18 +431,14 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
     else:
         im = _plot_data(ax, x, y, kwargs)
     
-    _plot_lines(
+    _labels.extend(_plot_lines(
         ax, hlines, hlines_kwargs, color, vertical = False, cmap = kwargs.get('cmap', None)
-    )
-    _plot_lines(
+    ))
+    _labels.extend(_plot_lines(
         ax, vlines, vlines_kwargs, color, vertical = True, cmap = kwargs.get('cmap', None)
-    )
+    ))
     
-    if (
-        isinstance(y, dict)
-        or (isinstance(vlines, dict) and any(k for k in vlines))
-        or (isinstance(hlines, dict) and any(k for k in hlines))):
-        _maybe_add_legend()
+    if len(_labels) > 0: _maybe_add_legend()
     
     if with_colorbar and plot_type == 'imshow':
         cb = ax.figure.colorbar(im, orientation = orientation, ax = ax)
@@ -491,7 +498,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
                 - tuple : (name, data)
                 - dict  : with key 'name' or 'label' for the title
                 - pd.DataFrame  : either plot each column or group them on a column (`by` kwarg) or each column in relation with another (`corr` kwarg)
-                - else (list, np.ndarray, tf.Tensor)    : adds it as raw data
+                - else (list, np.ndarray, `Tensor`)    : adds it as raw data
             - x_size / y_size / nrows / ncols   : information related to subplots' size
             - use_subplots  : whether to plot all data in the same plot or not (default False if `imshow`)
             - horizontal    : whether to make subplots horizontal aligned or vertical
@@ -617,7 +624,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
     
     data_names = [
         k for k, v in kwargs.items()
-        if (isinstance(v, (list, dict, np.ndarray, tf.Tensor)) or callable(v))
+        if (isinstance(v, (list, dict, np.ndarray)) or is_tensor(v) or callable(v))
         and k not in _keys_to_propagate
     ]
     datas += [(k, kwargs.pop(k)) for k in data_names]
@@ -732,7 +739,7 @@ def plot_spectrogram(* args, ** kwargs):
         Call plot_multiple() after normalizing spectrograms : making them 2D images and rotate them by 90° to put the time on x-axis (as models usually generate [B, T, F] spectrograms)
     """
     def _normalize_spect(v):
-        if not isinstance(v, (np.ndarray, tf.Tensor)) or len(v.shape) not in (2, 3):
+        if not hasattr(v, 'shape') or len(v.shape) not in (2, 3):
             return v
         
         if len(v.shape) == 3:
@@ -771,6 +778,19 @@ def plot_polygons(poly, * args, labels = None, ** kwargs):
         }, * args, ** kwargs)
     
     return plot(** format_poly(poly), ** kwargs)
+
+def plot_boxes(boxes, source = 'xywh', ** kwargs):
+    from utils.image.bounding_box import convert_box_format
+    if is_tensor(boxes): boxes = convert_to_numpy(boxes)
+    boxes = boxes[np.any(boxes > 0, axis = -1)]
+    boxes = convert_box_format(boxes, source = source, target = 'xyxy')
+    boxes_poly = np.stack([
+        boxes[:, [0, 1]],
+        boxes[:, [0, 3]],
+        boxes[:, [2, 3]],
+        boxes[:, [2, 1]],
+    ], axis = 1)
+    return plot_polygons(boxes_poly, ** kwargs)
 
 def plot_confusion_matrix(cm = None, true = None, pred = None, x = None, labels = None, ** kwargs):
     """
@@ -1005,12 +1025,8 @@ def plot_volume(volume = None,
     if isinstance(strides, int): strides = (strides, strides, strides)
     if volume is None:           volume = x
     
-    if isinstance(volume, tf.sparse.SparseTensor):
-        with tf.device('cpu'):
-            volume = tf.sparse.to_dense(volume).numpy()
-    
-    if hasattr(volume, 'numpy'): volume = volume.numpy()
-    if len(volume.shape) == 4:   volume = np.argmax(volume, axis = -1)
+    if is_tensor(volume):       volume = convert_to_numpy(volume)
+    if len(volume.shape) == 4:  volume = np.argmax(volume, axis = -1)
     
     if any(stride != 1 for stride in strides):
         volume = volume[:: strides[0], :: strides[1], :: strides[2]]

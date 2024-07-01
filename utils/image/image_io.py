@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,32 +11,29 @@
 
 import os
 import cv2
+import PIL
 import sys
 import glob
 import math
 import time
+import inspect
 import logging
 import collections
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 
-from utils import get_timer
-from utils.generic_utils import time_to_string
-from utils.thread_utils import Producer, Consumer
-from utils.tensorflow_utils import convert_to_tensor
+from loggers import timer, time_logger
+from utils.keras_utils import TensorSpec, ops, graph_compile
+from utils import Producer, Consumer, time_to_string
+from utils.threading import Producer, Consumer
 from utils.image.image_utils import resize_image
-
-timer, time_logger, _ = get_timer()
 
 logger  = logging.getLogger(__name__)
 
 DELAY_MS = 8
 DELAY_SEC   = DELAY_MS / 1000.
 
-_resize_kwargs  = (
-    'target_shape', 'target_max_shape', 'target_min_shape', 'target_multiple_shape'
-)
+_resize_kwargs  = set(list(inspect.signature(resize_image).parameters.keys())[1:])
 
 def display_image(image):
     """
@@ -45,25 +41,23 @@ def display_image(image):
         You can also use `utils.plot(image)` or `plot_multiple(...)` to display (multiple) images(s)
     """
     from IPython.display import Image, display
+    if ops.is_tensor(image): image = ops.convert_to_numpy(image)
     display(Image(image))
     
 def get_image_size(image):
     """
         Returns the image size [height, width] (supporting different formats) 
         Arguments :
-            - image : str (filename) or 2, 3 or 4-D `np.ndarray` / `tf.Tensor` (raw image(s))
+            - image : str (filename) or 2, 3 or 4-D `np.ndarray` / `Tensor` (raw image(s))
         Return :
             - [height, width]   : image size
     """
-    if isinstance(image, (np.ndarray, tf.Tensor)):
-        if not tf.executing_eagerly():
-            return tf.shape(image)[-3], tf.shape(image)[-2]
-        elif len(image.shape) in (2, 3):
-            return image.shape[0], image.shape[1]
-        elif len(image.shape) == 4:
-            return image.shape[1], image.shape[2]
+    if hasattr(image, 'shape'):
+        shape = ops.shape(image)
+        if len(shape) == 2:
+            return shape[0], shape[1]
         else:
-            raise ValueError("Unknown image shape : {}\n".format(image.shape, image))
+            return shape[-3], shape[-2]
     elif isinstance(image, str):
         from PIL import Image
         
@@ -73,44 +67,38 @@ def get_image_size(image):
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
 @timer
-def load_image(filename,
-               
-               target_shape = None,
-               target_max_shape = None,
-               target_min_shape = None,
-               target_multiple_shape    = None,
-               preserve_aspect_ratio    = False,
-               resize_kwargs    = {},
+@graph_compile(
+    support_xla = False, cast_kwargs = False, follow_type_hints = None, force_tensorflow = True
+)
+def load_image(filename : TensorSpec(),
 
                channels = 3,
                mode     = None,
-               dtype    = tf.float32,
+               dtype    = 'float32',
+               to_tensor    = True,
                
-               bbox     = None,
-               box_mode = -1,
+               boxes    = None,
                
                ** kwargs
               ):
     """
-        Load an image to a tf.Tensor by supporting different formats / extensions
+        Load an image to a Tensor by supporting different formats / extensions
         
         Arguments :
-            - filename  : either str (filename) or np.ndarray / tf.Tensor (raw image)
+            - filename  : either `str` (filename) either `np.ndarray` / `Tensor` (raw image)
             
             - dtype     : the expected output dtype
-            - target_shape  : reshape the image to this shape (if provided)
-            - preserve_aspect_ratio / resize_kwargs : forwarded to `resize_image`
-            
             - channels  : required kwarg for `tf.image.decode_image`
             - mode      : 'rgb', 'gray' or None, convert the image to the appropriate output type
                 If gray, the last dimension will be 1 and if 'rgb' will be 3. If 'None' the last dimension will be either 1 or 3 depending on the original image format
+            - as_array  : converts the output image to `np.ndarray`
             
-            - bbox      : [x, y, w, h] position to extract
-            - kwargs    : forwarded to `utils.image.box_utils.crop_box` if `bbox` is provided
+            - boxes     : [x, y, w, h] position to extract
+            - kwargs    : forwarded to `utils.image.bounding_box.crop_box` if `bbox` is provided
         Return :
-            - image : 3-D tf.Tensor
+            - image : 3-D `Tensor` if `as_array == False`, `np.ndarray` otherwise
         
-        Note : if a filename is given, it loads the image with `tf.image.decode_image` which supports multiple types (see documentation for supported formats)
+        Note : if a filename is given, it loads the image with `tf.image.decode_image` (if tensorflow backend) or `PIL.Image.load` otherwise
     """
     assert mode in (None, 'rgb', 'gray')
     # Get filename / image from dict (if dict)
@@ -119,48 +107,46 @@ def load_image(filename,
 
     # Convert filename to a Tensor (if necessary)
     # Note : inferring the output type then use `tf.cast` is faster than `tf.convert_to_tensor` and allows some type checking
-    filename = convert_to_tensor(filename)
-    
-    if filename.dtype == tf.string:
-        image = tf.io.read_file(filename)
-        image = tf.image.decode_image(image, channels = channels, expand_animations = False)
+    if ops.is_string(filename):
+        if ops.is_tensorflow_backend() or ops.is_tensorflow_graph():
+            import tensorflow as tf
+            
+            image = tf.io.read_file(filename)
+            image = tf.image.decode_image(image, channels = channels, expand_animations = False)
+        else:
+            image = np.array(PIL.Image.open(filename))
+            if to_tensor: image = ops.convert_to_tensor(image)
     else:
         image = filename
+        if to_tensor: image = ops.convert_to_tensor(image)
+        if len(ops.shape(image)) == 2: image = image[:, :, None]
+
+    if boxes is not None:
+        from utils.image.bounding_box import crop_box
+        _, image = crop_box(image, boxes, ** kwargs)
     
-    if bbox is not None:
-        from utils.image.box_utils import crop_box
-        _, image = crop_box(image, bbox, box_mode = box_mode, extended = False, ** kwargs)
-    
-    if image.dtype != dtype:
-        image = tf.image.convert_image_dtype(image, dtype)
-    
+    if dtype is not None:
+        image = ops.convert_data_dtype(image, dtype = dtype)
+
     if mode == 'gray' and image.shape[2] == 3:
-        image = tf.image.rgb_to_grayscale(image)
+        image = ops.rgb_to_grayscale(image)
     elif mode == 'rgb' and image.shape[2] == 1:
-        image = tf.image.grayscale_to_rgb(image)
-    
-    resize_kwargs   = {
-        'preserve_aspect_ratio' : preserve_aspect_ratio,
-        ** {kw : val for kw, val in zip(
-            _resize_kwargs, (target_shape, target_max_shape, target_min_shape, target_multiple_shape)
-        )},
-        ** resize_kwargs
-    }
-    if any(resize_kwargs[kw] is not None for kw in _resize_kwargs):
-        image = resize_image(image, ** resize_kwargs)
-    
+        image = ops.grayscale_to_rgb(image)
+
+    if any(kwargs.get(k, None) is not None for k in _resize_kwargs):
+        image = resize_image(image, ** kwargs)
+        if (isinstance(kwargs.get('target_shape', None), tuple)
+            and all(s != -1 for s in kwargs['target_shape'])
+            and not ops.executing_eagerly()
+           ):
+            image = ops.ensure_shape(image, kwargs['target_shape'][:2] + (image.shape[-1],))
+
     return image
 
 def convert_to_uint8(image, ** kwargs):
     """ Converts `image` to `np.uint8` format (useful for subsequent `cv2` calls) """
-    if isinstance(image, np.ndarray) and image.dtype in (np.uint8, np.float32, np.float64):
-        if image.dtype != np.uint8: image = (image * 255).astype(np.uint8)
-    else:
-        kwargs['dtype'] = tf.uint8
-        image = load_image(image, ** kwargs).numpy()
+    return load_image(image, dtype = 'uint8', ** kwargs)
 
-    return image
-    
 def save_image(filename, image, ** kwargs):
     """
         Save given `image` to the given `filename`
@@ -175,7 +161,7 @@ def save_image(filename, image, ** kwargs):
         Return :
             - filename  : the image filename (the argument)
     """
-    image = convert_to_uint8(image, ** kwargs)
+    image = load_image(image, dtype = 'uint8', as_array = True, ** kwargs)
     
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
@@ -337,10 +323,9 @@ def stream_camera(cam_id    = 0,
     
     def play_audio_on_first_frame(frame, first = True):
         """ Runs the audio once the first frame has been displayed """
-        if first:
-            from utils.audio import audio_io
-            audio_io.play_audio(cam_id, blocking = False)
-        return None, (False, )
+        from utils.audio import audio_io
+        audio_io.play_audio(cam_id, blocking = False)
+        raise StopIteration()
     
     # variable initialization
     if max_time <= 0:   max_time = None
@@ -383,10 +368,14 @@ def stream_camera(cam_id    = 0,
     
     prod = Producer(frame_generator(
         cap, fps = fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, frames_step = frames_step, frames_offset = frames_offset
-    ), run_main_thread = not multi_threaded, stop_listeners = cap.release)
+    ), run_main_thread = not multi_threaded, stop_listener = cap.release)
     
     transformer = prod.add_consumer(
-        transform_fn, link_stop = True, run_main_thread = not multi_threaded, buffer_size = buffer_size, ** kwargs
+        transform_fn,
+        link_stop   = True,
+        buffer_size = buffer_size,
+        run_main_thread = not multi_threaded,
+        ** kwargs
     ) if transform_fn is not None else prod
     
     if transformer_prod is None: transformer_prod = transformer
@@ -403,8 +392,8 @@ def stream_camera(cam_id    = 0,
         )
         # Creates the video-writer consumer
         writer_cons     = transformer_prod.add_consumer(
-            write_video_frame, link_stop = True, start = True, run_main_thread = not multi_threaded,
-            stop_listeners = video_writer.release
+            write_video_frame, link_stop = True, run_main_thread = not multi_threaded,
+            stop_listener = video_writer.release
         )
         # Adds a listener to copy the video file's audio to the output file (if expected)
         if copy_audio and isinstance(cam_id, str):
@@ -417,15 +406,16 @@ def stream_camera(cam_id    = 0,
     if show:
         cons = transformer_prod.add_consumer(
             show_frame,
-            start = True, link_stop = True, stateful = True,
+            start = True,
+            link_stop = True,
+            stateful = True,
             run_main_thread = not multi_threaded,
-            start_listeners = lambda: cv2.namedWindow(display_name, imshow_flags),
-            stop_listeners  = cv2.destroyAllWindows
+            stop_no_more_listeners  = False,
+            start_listener  = lambda: cv2.namedWindow(display_name, imshow_flags),
+            stop_listener   = cv2.destroyAllWindows
         )
         if play_audio and output_fps != -1 and isinstance(cam_id, str):
-            cons.add_consumer(
-                play_audio_on_first_frame, stateful = True, run_main_thread = True
-            )
+            cons.add_listener(play_audio_on_first_frame)
     
     
     ####################
@@ -519,7 +509,9 @@ def build_sprite(images, image_size = 128, directory = None, filename = 'sprite.
     sprite = np.zeros((n * image_size, n * image_size, 3), dtype = np.uint8)
     
     for i, img in enumerate(images):
-        img = load_image(img, target_shape = (image_size, image_size, 3), dtype = tf.uint8).numpy()
+        img = load_image(
+            img, target_shape = (image_size, image_size, 3), dtype = 'uint8', as_array = True
+        )
         
         row, col = i // n, i % n
         

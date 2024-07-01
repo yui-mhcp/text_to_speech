@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,10 +12,9 @@
 import re
 import logging
 
-from utils import get_timer
-from utils.text.document_parser.parser import parse_document
+from loggers import timer, time_logger
+from .parser import parse_document
 
-timer, time_logger, _ = get_timer()
 logger = logging.getLogger(__name__)
 
 _wiki_cleaner = r'(\[edit\]|\[[0-9]\])'

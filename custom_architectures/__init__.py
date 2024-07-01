@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,56 +12,92 @@
 import os
 import glob
 import json
-import tensorflow as tf
+import keras
+import inspect
 
-from utils import get_object, print_objects, partial
-from custom_layers.custom_activations import _activations
-from custom_architectures.simple_models import classifier
+from utils import import_objects, get_object, print_objects, partial, dispatch_wrapper
+from .simple_models import classifier, perceptron, simple_cnn
 
-def __load():
-    for module_name in os.listdir('custom_architectures'):
-        if module_name.startswith(('__', '.')): continue
-        module_name = 'custom_architectures.' + module_name.replace('.py', '')
+_architectures = {
+    'perceptron'    : perceptron,
+    'simple_cnn'    : simple_cnn,
+    ** import_objects(
+        __package__.replace('.', os.path.sep),
+        filters = lambda name, val: name[0].isupper() and 'current_blocks' not in val.__module__,
+        classes = keras.Model
+    ),
+    ** {
+        k : partial(classifier, v)
+        for k, v in import_objects(keras.applications, types = type).items()
+    }
+}
+globals().update(_architectures)
 
-        module = __import__(
-            module_name, fromlist = ['custom_objects', 'custom_functions']
-        )
-        if hasattr(module, 'custom_objects'):
-            custom_objects.update(module.custom_objects)
-        if hasattr(module, 'custom_functions'):
-            _custom_architectures.update(module.custom_functions)
-
-def get_architecture(architecture_name, * args, ** kwargs):
+@dispatch_wrapper(_architectures, 'architecture')
+def get_architecture(architecture, * args, ** kwargs):
     return get_object(
-        architectures, architecture_name, * args, print_name = 'architecture', err = True, ** kwargs
+        _architectures, architecture, * args, print_name = 'architecture', ** kwargs
     )
 
+def get_custom_objects():
+    import custom_layers
+    
+    return {
+        'Sequential'    : keras.Sequential,
+        'Functional'    : keras.Model,
+        ** _architectures,
+        ** import_objects(custom_layers, classes = keras.layers.Layer),
+        ** import_objects(keras.layers, classes = keras.layers.Layer)
+    }
+
+def deserialize_keras2_model(config, safe_mode = True, replace_lambda_by_l2 = True):
+    _objects = get_custom_objects()
+    if config['class_name'] == 'Sequential':
+        def _update_keras2_config(config):
+            if isinstance(config, list):
+                return [_update_keras2_config(it) for it in config]
+            elif not isinstance(config, dict): return config
+
+            if 'class_name' in config and 'config' in config:
+                if config['class_name'] == 'Lambda':
+                    if replace_lambda_by_l2:
+                        return {
+                            'class_name'    : 'CustomActivation',
+                            'config'    : {'activation' : 'l2_norm'}
+                        }
+                    elif not safe_mode:
+                        keras.config.enable_unsafe_deserialization()
+                    
+
+                config = config.copy()
+                config['config'] = config['config'].copy()
+                if 'batch_input_shape' in config['config']:
+                    config['config']['batch_shape'] = config['config'].pop('batch_input_shape')
+
+                if config['class_name'] in _objects:
+                    params = inspect.signature(_objects[config['class_name']]).parameters
+                    if 'args' not in params:
+                        config['config'] = {
+                            k : v for k, v in config['config'].items() if k in params
+                        }
+
+                for k, v in config['config'].items():
+                    if 'initializer' in k and isinstance(v, dict) and 'class_name' in v:
+                        try:
+                            keras.initializers.get(v)
+                        except:
+                            config['config'][k] = {'class_name' : v['class_name'].lower(), 'config' : v['config']}
+                config['config'] = _update_keras2_config(config['config'])
+                return config
+            else:
+                return {k : _update_keras2_config(v) for k, v in config.items()}
+
+        config['config'] = _update_keras2_config(config['config'])
+
+    json_config = json.dumps(config)
+    with keras.utils.CustomObjectScope(_objects):
+        return keras.models.model_from_json(json_config)
+
 def print_architectures():
-    print_objects(architectures, 'model architectures')
+    print_objects(_architectures, 'model architectures')
 
-custom_objects = _activations.copy()
-_custom_architectures = {}
-
-__load()
-
-_keras_architectures = {
-    'densenet121'       : partial(classifier, tf.keras.applications.DenseNet121),
-    'densenet169'       : partial(classifier, tf.keras.applications.DenseNet169),
-    'densenet201'       : partial(classifier, tf.keras.applications.DenseNet201),
-    'inceptionresnetv2' : partial(classifier, tf.keras.applications.InceptionResNetV2),
-    'inceptionv3'       : partial(classifier, tf.keras.applications.InceptionV3),
-    'mobilenet'         : partial(classifier, tf.keras.applications.MobileNet),
-    'mobilenetv2'       : partial(classifier, tf.keras.applications.MobileNetV2),
-    'nasnetlarge'       : partial(classifier, tf.keras.applications.NASNetLarge),
-    'resnet50'          : partial(classifier, tf.keras.applications.ResNet50),
-    'resnet50v2'        : partial(classifier, tf.keras.applications.ResNet50V2),
-    'resnet101'         : partial(classifier, tf.keras.applications.ResNet101),
-    'resnet101v2'       : partial(classifier, tf.keras.applications.ResNet101V2),
-    'resnet152'         : partial(classifier, tf.keras.applications.ResNet152),
-    'resnet152v2'       : partial(classifier, tf.keras.applications.ResNet152V2),
-    'vgg16'             : partial(classifier, tf.keras.applications.VGG16),
-    'vgg19'             : partial(classifier, tf.keras.applications.VGG19),
-    'xception'          : partial(classifier, tf.keras.applications.Xception)
-}
-
-architectures = {**_keras_architectures, **_custom_architectures}

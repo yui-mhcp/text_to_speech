@@ -5,19 +5,20 @@
         "parts": [
             "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de voix en fran\u00e7ais !"
         ],
-        "timestamp": 1698584040.1002152,
+        "timestamp": 1719747680.9389167,
         "mel": "example_outputs/fr/mels/mel_0.npy",
         "audio": "example_outputs/fr/audios/audio_0.mp3",
-        "time": 4.702040816326531
+        "time": 4.330521541950113
     },
     "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !": {
         "text": "\nBonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement 20 minutes \nd'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !\n",
+        "cleaned": "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !",
         "parts": [
             "Bonjour tout le monde ! J'esp\u00e8re que vous allez aimer cette d\u00e9monstration de mon super mod\u00e8le entrain\u00e9 avec seulement vingt minutes d'audios ! Je ne partagerai pas ce mod\u00e8le, mais je trouvais \u00e7a int\u00e9ressant de montrer ce qu'il \u00e9tait possible de faire !"
         ],
-        "timestamp": 1690618506.6190047,
+        "timestamp": 1719747990.163608,
         "mel": "example_outputs/fr/mels/mel_1.npy",
         "audio": "example_outputs/fr/audios/audio_1.mp3",
-        "time": 10.193560090702947
+        "time": 9.740770975056689
     }
 }

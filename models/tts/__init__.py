@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -15,15 +14,17 @@ import shutil
 import logging
 import numpy as np
 
-from utils import load_json, create_stream
+from loggers import timer
+from utils.keras_utils import ops
+from utils import load_json, create_stream, limit_gpu_memory, set_memory_growth
 from utils.text import parse_document, get_encoder
-from utils.audio import read_audio, write_audio
-from models.model_utils import get_model_dir, get_model_config, is_model_name
+from utils.audio import read_audio, write_audio, get_audio_player
+from models.saving import get_model_dir, get_model_config, is_model_name
 
-from models.tts.waveglow import WaveGlow, PtWaveGlow
-from models.tts.tacotron2 import Tacotron2
-from models.tts.sv2tts_tacotron2 import SV2TTSTacotron2
-from models.tts.vocoder import Vocoder
+from .waveglow import WaveGlow, PtWaveGlow
+from .tacotron2 import Tacotron2
+from .sv2tts_tacotron2 import SV2TTSTacotron2
+from .vocoder import Vocoder
 
 logger  = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ _text_encoders  = {}
 
 _default_vocoder = 'WaveGlow' if is_model_name('WaveGlow') else None
 
+_compiled = set()
 
 def clean_text(text, model = None, lang = None):
     """ Cleans the `text` given a model or language """
@@ -46,7 +48,22 @@ def clean_text(text, model = None, lang = None):
     
     return _text_encoders[model].clean_text(text)
 
-def load_tts_models(model = None, tf_compile = False, ** kwargs):
+@timer
+def compile_vocoder(vocoder, win_len = -1, ** kwargs):
+    if vocoder.name in _compiled: return
+    _compiled.add(vocoder.name)
+    
+    if 'vocoder_config' in kwargs: kwargs = {** kwargs, ** kwargs.pop('vocoder_config')}
+    if win_len > 0:
+        if isinstance(win_len, float):
+            for i in range(1, 3):
+                if win_len * i > kwargs.get('max_win_len', float('inf')): break
+                vocoder.infer(ops.zeros((1, int(win_len * i), vocoder.n_mel_channels)), ** kwargs)
+        else:
+            vocoder.infer(ops.zeros((1, win_len, vocoder.n_mel_channels)), ** kwargs)
+
+@timer
+def load_tts_models(model = None, compile = False, ** kwargs):
     """ Loads all default models (in `_pretrained`) """
     from models import get_pretrained
     
@@ -55,17 +72,19 @@ def load_tts_models(model = None, tf_compile = False, ** kwargs):
     if model is None:                   model = list(_pretrained.values())
     elif not isinstance(model, list):   model = [model]
     
-    vocoder = get_pretrained(_default_vocoder) if isinstance(_default_vocoder, str) else None
-    
+    if compile and isinstance(_default_vocoder, str):
+        compile_vocoder(get_pretrained(_default_vocoder), ** kwargs)
+
     kwargs.update({
         'max_length' : 10, 'max_trial' : 1, 'save' : False, 'play' : False, 'display' : False
     })
     for name in model:
         synthesizer = get_pretrained(name)
-        if tf_compile:
-            logger.debug('Call `predict` to compile the model...')
-            for txt in ('A', 'AB'):
-                synthesizer.infer(txt, vocoder = vocoder, ** kwargs)[1]
+        if compile and name not in _compiled:
+            _compiled.add(name)
+            logger.debug('Call `{}.predict` to compile the model...'.format(name))
+            for txt in ('A', 'AB'): synthesizer.infer(txt, ** kwargs)
+    
 
 def get_model_lang(model):
     """ Returns the language of a model """
@@ -87,7 +106,7 @@ def get_audio_dir(model = None, lang = None, directory = None, add_model_name = 
         directory = get_model_dir(model, 'output')
     elif add_model_name and (lang is not None or model is not None):
         if model is None: model = get_model_name(lang)
-        elif not isinstance(model, str): model = model.nom
+        elif not isinstance(model, str): model = model.name
         directory = os.path.join(directory, model)
     
     return directory
@@ -181,6 +200,10 @@ def fast_tts(text, model = None, lang = None, vocoder = _default_vocoder, ** kwa
     return model.fast_predict(text, ** kwargs)
 
 def tts_stream(stream = None, save = False, display = True, play = True, ** kwargs):
+    if 'gpu_memory' in kwargs:  limit_gpu_memory(kwargs.pop('gpu_memory'))
+    if 'gpu_growth' in kwargs:  set_memory_growth(kwargs.pop('gpu_growth'))
+    
+    if 'model' in kwargs: load_tts_models(tf_compile = True, ** kwargs)
     if stream is None:
         model = get_tts_model(
             lang    = kwargs.pop('lang', None),
@@ -193,14 +216,7 @@ def tts_stream(stream = None, save = False, display = True, play = True, ** kwar
         tts, stream, logger = logger, save = save, display = display, play = play, ** kwargs
     )
 
-_models = {
-    'SV2TTSTacotron2'   : SV2TTSTacotron2,
-    'Tacotron2'     : Tacotron2,
-    'PtWaveGlow'    : PtWaveGlow,
-    'WaveGlow'      : WaveGlow
-}
-
 _pretrained = {
     'en'    : 'pretrained_tacotron2',
-    'fr'    : 'sv2tts_siwis_v2'
+    'fr'    : 'sv2tts_siwis_v3'
 }

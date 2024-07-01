@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,52 +9,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# *****************************************************************************
-#  Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
-#
-#  Redistribution and use in source and binary forms, with or without
-#  modification, are permitted provided that the following conditions are met:
-#      * Redistributions of source code must retain the above copyright
-#        notice, this list of conditions and the following disclaimer.
-#      * Redistributions in binary form must reproduce the above copyright
-#        notice, this list of conditions and the following disclaimer in the
-#        documentation and/or other materials provided with the distribution.
-#      * Neither the name of the NVIDIA CORPORATION nor the
-#        names of its contributors may be used to endorse or promote products
-#        derived from this software without specific prior written permission.
-#
-#  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-#  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-#  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-#  DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
-#  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-#  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-#  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-#  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-#  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-#  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# *****************************************************************************
+import keras
+import keras.ops as K
 
-import logging
-import tensorflow as tf
+from keras import layers
 
 from custom_layers import Invertible1x1Conv
 
-"""@tf.function(input_signature = [
-    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (None, None, None), dtype = tf.float32),
-    tf.TensorSpec(shape = (), dtype = tf.int32)
-], jit_compile = True)
-"""
 def add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
     in_act = input_a + input_b
-    t_act = tf.tanh(in_act[:, :, :n_channels])
-    s_act = tf.sigmoid(in_act[:, :, n_channels:])
+    t_act = K.tanh(in_act[:, :, :n_channels])
+    s_act = K.sigmoid(in_act[:, :, n_channels:])
     acts = t_act * s_act
     return acts
 
-class WaveglowBlock(tf.keras.Model):
+@keras.saving.register_keras_serializable('waveglow')
+class WaveglowBlock(keras.Model):
     """
     This is the WaveNet like layer for the affine coupling.  The primary difference
     from WaveNet is the convolutions need not be causal.  There is also no dilation
@@ -83,31 +52,46 @@ class WaveglowBlock(tf.keras.Model):
         self.res_skip_layers    = []
         self.cond_layers        = []
 
-        self.start = tf.keras.layers.Conv1D(n_channels, 1)
+        self.start = layers.Conv1D(n_channels, 1, name = 'start_conv')
 
         # Initializing last layer to 0 makes the affine coupling layers
         # do nothing at first.  This helps with training stability
-        self.end = tf.keras.layers.Conv1D(
-            2 * n_in_channels, 1, kernel_initializer = 'zeros'
+        self.end = layers.Conv1D(
+            2 * n_in_channels, 1, kernel_initializer = 'zeros', name = 'end_conv'
         )
 
         for i in range(n_layers):
             dilation = 2 ** i
 
-            self.in_layers.append(tf.keras.layers.Conv1D(
-                2 * n_channels, kernel_size, dilation_rate = dilation, padding = 'same'
+            self.in_layers.append(layers.Conv1D(
+                2 * n_channels,
+                kernel_size = kernel_size,
+                padding     = 'same',
+                dilation_rate   = dilation,
+                name    = f'in_conv-{i}'
             ))
 
-            self.cond_layers.append(tf.keras.layers.Conv1D(
-                2 * n_channels, 1
-            ))
+            self.cond_layers.append(layers.Conv1D(2 * n_channels, 1, name = f'cond_layer-{i}'))
 
             # last one is not necessary
             res_skip_channels = 2 * n_channels if i < n_layers - 1 else n_channels
 
-            self.res_skip_layers.append(tf.keras.layers.Conv1D(
-                res_skip_channels, 1
+            self.res_skip_layers.append(layers.Conv1D(
+                res_skip_channels, 1, name = f'res_skip_conv-{i}'
             ))
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        audio_shape, spect_shape = input_shape
+        
+        self.start.build(audio_shape)
+        
+        for i in range(self.n_layers):
+            self.in_layers[i].build((None, None, self.n_channels))
+            self.cond_layers[i].build(spect_shape)
+            self.res_skip_layers[i].build((None, None, self.n_channels))
+        
+        self.end.build((None, None, self.n_channels))
 
     def call(self, forward_input, training = False, mask = None):
         audio, spect = forward_input
@@ -123,8 +107,8 @@ class WaveglowBlock(tf.keras.Model):
 
             res_skip_acts = self.res_skip_layers[i](acts)
             if i < self.n_layers - 1:
-                audio = res_skip_acts[:,:,:self.n_channels] + audio
-                skip_acts = res_skip_acts[:,:,self.n_channels:]
+                audio = res_skip_acts[:, :, : self.n_channels] + audio
+                skip_acts = res_skip_acts[:, :, self.n_channels:]
             else:
                 skip_acts = res_skip_acts
 
@@ -135,6 +119,9 @@ class WaveglowBlock(tf.keras.Model):
         
         return self.end(output)
 
+    def compute_output_shape(self, input_shape):
+        return (None, None, 2 * self.n_in_channels)
+    
     def get_config(self):
         config = {
             'n_in_channels'     : self.n_in_channels,
@@ -145,12 +132,9 @@ class WaveglowBlock(tf.keras.Model):
             'kernel_size'    : self.kernel_size
         }
         return config
-
-    @classmethod
-    def from_config(cls, config, custom_objects = None):
-        return cls(** config)
     
-class WaveGlow(tf.keras.Model):
+@keras.saving.register_keras_serializable('waveglow')
+class WaveGlow(keras.Model):
     """
         This class is a perfect copy of the NVIDIA's WaveGlow implementation
             See https://github.com/NVIDIA/waveglow repository
@@ -182,12 +166,14 @@ class WaveGlow(tf.keras.Model):
         self.n_channels     = n_channels
         self.kernel_size    = kernel_size
 
-        self.upsample = tf.keras.layers.Conv1DTranspose(
-            n_mel_channels, 1024, strides = 256
+        self.seed_generator = keras.random.SeedGenerator()  
+        
+        self.upsample = layers.Conv1DTranspose(
+            n_mel_channels, 1024, strides = 256, name = 'upsample'
         )
         self.blocks     = []
         self.convinv    = []
-
+        
         n_half = int(n_group / 2)
 
         # Set up layers with the right sizes based on how many dimensions
@@ -198,47 +184,64 @@ class WaveGlow(tf.keras.Model):
                 n_half = n_half - int(self.n_early_size / 2)
                 n_remaining_channels = n_remaining_channels - self.n_early_size
             
-            self.convinv.append(Invertible1x1Conv(n_remaining_channels))
+            self.convinv.append(Invertible1x1Conv(
+                n_remaining_channels, name = f'invertible_conv-{k}'
+            ))
             self.blocks.append(WaveglowBlock(
                 n_in_channels   = n_half,
                 n_mel_channels  = n_mel_channels * n_group,
                 n_layers    = n_layers,
                 n_channels  = n_channels,
-                kernel_size = kernel_size
+                kernel_size = kernel_size,
+                name    = f'block-{k}'
             ))
         
         self.n_remaining_channels = n_remaining_channels  # Useful during inference
-
-    @property
-    def dummy_inputs(self):
-        return tf.random.normal((1, 64, self.n_mel_channels))
+        self.build((None, None, self.n_mel_channels))
     
+    def build(self, input_shape):
+        if self.built: return
+        super().build(input_shape)
+        self.upsample.build(input_shape)
+        
+        spect_channels = input_shape[2] * self.n_group
+        channels = self.n_remaining_channels
+        for k in reversed(range(self.n_flows)):
+            self.blocks[k].build([(None, None, channels // 2), (None, None, spect_channels)])
+            self.convinv[k].build((None, None, channels))
+            if k % self.n_early_every == 0 and k > 0:
+                channels += self.n_early_size
+
     def call(self, inputs, training = False):
         return self.infer(inputs)
-        #raise NotImplementedError()
     
-    def infer(self, spect, sigma = 1.0):
+    def infer(self, spect, sigma = 1.0, deterministic = False):
         spect = self.upsample(spect)
-
         # trim conv artifacts. maybe pad spec to kernel multiple
         time_cutoff = self.upsample.kernel_size[0] - self.upsample.strides[0]
         spect = spect[:, :-time_cutoff, :]
 
-        spect = tf.image.extract_patches(
-            tf.expand_dims(spect, -1),
-            sizes   = [1, self.n_group, 1, 1],
-            strides = [1, self.n_group, 1, 1],
-            rates   = [1, 1, 1, 1],
-            padding = 'VALID'
+        spect = keras.ops.image.extract_patches(
+            K.expand_dims(spect, -1),
+            size    = (self.n_group, 1),
+            strides = (self.n_group, 1),
+            dilation_rate   = 1,
+            padding = 'valid'
         )
-        spect = tf.reshape(spect, [tf.shape(spect)[0], tf.shape(spect)[1], -1])
+        spect = K.reshape(spect, [K.shape(spect)[0], K.shape(spect)[1], -1])
         
-        audio = sigma * tf.random.normal([
-            tf.shape(spect)[0], tf.shape(spect)[1], self.n_remaining_channels
-        ])
+        if deterministic:
+            noise = keras.ops.zeros([
+                K.shape(spect)[0], K.shape(spect)[1], self.n_remaining_channels
+            ])
+        else:
+            noise = keras.random.normal([
+                K.shape(spect)[0], K.shape(spect)[1], self.n_remaining_channels
+            ], seed = self.seed_generator)
+        audio = sigma * noise
 
         for i, k in enumerate(reversed(range(self.n_flows))):
-            n_half  = tf.cast(tf.shape(audio)[2] / 2, tf.int32)
+            n_half  = K.shape(audio)[2] // 2
             audio_0 = audio[:, :, :n_half]
             audio_1 = audio[:, :, n_half:]
 
@@ -247,19 +250,28 @@ class WaveGlow(tf.keras.Model):
             s = output[:, :, n_half:]
             b = output[:, :, :n_half]
 
-            audio_1 = (audio_1 - b) / tf.exp(s)
-            audio   = tf.concat([audio_0, audio_1], axis = 2)
+            audio_1 = (audio_1 - b) / K.exp(s)
+            audio   = K.concatenate([audio_0, audio_1], axis = 2)
             
             audio = self.convinv[k](audio, reverse = True)
 
             if k % self.n_early_every == 0 and k > 0:
-                z = tf.random.normal([
-                    tf.shape(spect)[0], tf.shape(spect)[1], self.n_early_size
-                ])
-                audio = tf.concat([sigma*z, audio], axis = 2)
+                if deterministic:
+                    z = keras.ops.zeros([
+                        K.shape(spect)[0], K.shape(spect)[1], self.n_early_size
+                    ])
+                else:
+                    z = keras.random.normal([
+                        K.shape(spect)[0], K.shape(spect)[1], self.n_early_size
+                    ], seed = self.seed_generator)
+                audio = K.concatenate([sigma * z, audio], axis = 2)
         
-        return tf.reshape(audio, [tf.shape(audio)[0], -1])
+        return K.reshape(audio, [K.shape(audio)[0], -1])
     
+    def set_weights(self, weights, ** kwargs):
+        super().set_weights(weights, ** kwargs)
+        for l in self.convinv: l.build_inverse()
+
     def get_config(self):
         config = {
             'n_mel_channels'    : self.n_mel_channels,
@@ -275,10 +287,6 @@ class WaveGlow(tf.keras.Model):
         }
         return config
 
-    @classmethod
-    def from_config(cls, config, custom_objects = None):
-        return cls(** config)
-
 def pytorch_waveglow(to_gpu = True, eval_mode = True):
     import torch
 
@@ -288,15 +296,3 @@ def pytorch_waveglow(to_gpu = True, eval_mode = True):
     if to_gpu: waveglow = waveglow.to('cuda')
     
     return waveglow
-
-custom_functions    = {
-    'nvidia_waveglow'   : pytorch_waveglow,
-
-    'WaveGlow'    : WaveGlow
-}
-
-custom_objects  = {
-    'Invertible1x1Conv' : Invertible1x1Conv,
-    'WaveglowBlock' : WaveglowBlock,
-    'WaveGlow'      : WaveGlow
-}

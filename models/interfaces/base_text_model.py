@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,39 +10,34 @@
 # limitations under the License.
 
 import os
-import tensorflow as tf
 
-from hparams import HParams
+from .base_model import BaseModel
 from utils import copy_methods
+from utils.hparams import HParams
+from utils.keras_utils import TensorSpec, ops
 from utils.text import TextEncoder, get_encoder, random_mask
-from models.interfaces.base_model import BaseModel
 
-_tokens         = ('sos_token', 'eos_token', 'blank_token', 'sep_token', 'mask_token')
+_tokens         = ('sos_token', 'eos_token', 'blank_token', 'ukn_token', 'sep_token', 'mask_token')
 _token_indexes  = [tok_name + '_idx' for tok_name in _tokens]
-_methods        = ('encode', 'decode', 'format', 'split', 'join')
+_methods        = ('encode', 'decode', 'format', 'split', 'join', 'split_and_format')
 _methods        += tuple(['multi_' + m for m in _methods])
+_methods        += ('ctc_decode', )
 
-TextTrainingHParams = HParams(
-    nb_mask   = 1,
-    min_mask_length   = 1,
-    max_mask_length   = 1
-)
+TextTrainingHParams = HParams(nb_mask = 0.1)
 
 @copy_methods(
-    'text_encoder', 'vocab', 'vocab_size', * _tokens, * _token_indexes, 'clean_text',
+    'text_encoder', 'vocab', 'vocab_size', 'template', * _tokens, * _token_indexes, 'clean_text',
     ** {name + '_text' : name for name in _methods},
-    ** {'tf_' + name + '_text' : name for name in _methods},
+    chat_template = 'template', encode_chat = 'encode_template',
     attr_type = TextEncoder
 )
 class BaseTextModel(BaseModel):
-    def _init_text(self, lang, text_encoder = None, text_encoder_config = {}, ** kwargs):
+    def _init_text(self, lang, text_encoder = None, ** kwargs):
         """ Init variables for text-based models """
         self.lang   = lang
         
-        # Initialization of Text Encoder
-        self.text_encoder_config    = text_encoder_config
         self.text_encoder = get_encoder(
-            text_encoder = text_encoder, lang = lang, ** text_encoder_config
+            text_encoder = text_encoder, lang = lang
         )
     
     @property
@@ -52,15 +46,15 @@ class BaseTextModel(BaseModel):
 
     @property
     def is_encoder_decoder(self):
-        return getattr(self.get_model(), 'decoder', None) is not None
+        return getattr(self.model, 'decoder', None) is not None
 
     @property
     def text_signature(self):
-        return tf.TensorSpec(shape = (None, None), dtype = tf.int32)
+        return TensorSpec(shape = (None, None), dtype = 'int32')
 
     @property
     def multi_text_signature(self):
-        return tf.TensorSpec(shape = (None, None, None), dtype = tf.int32)
+        return TensorSpec(shape = (None, None, None), dtype = 'int32')
 
     @property
     def training_hparams_text(self):
@@ -97,12 +91,11 @@ class BaseTextModel(BaseModel):
             Returns :
                 - new_encoder   : the new TextEncoder instance initialized
         """
-        from models import is_model_name, get_pretrained
-        
-        if lang is None: lang = self.lang
-        old_vocab   = self.vocab
+        if not lang: lang = self.lang
+        old_vocab = self.vocab
         
         if isinstance(new_encoder, str):
+            from models import is_model_name, get_pretrained
             if is_model_name(new_encoder):
                 new_encoder = get_pretrained(new_encoder)
             else:
@@ -111,13 +104,11 @@ class BaseTextModel(BaseModel):
         if isinstance(new_encoder, BaseTextModel):
             self.lang   = new_encoder.lang
             self.text_encoder   = new_encoder.text_encoder
-            self.text_encoder_config    = new_encoder.text_encoder_config
         elif isinstance(new_encoder, TextEncoder):
             self.lang   = lang
             self.text_encoder   = new_encoder
-            self.text_encoder_config    = {}
         else:
-            raise ValueError('Unsupported TextEncoder (type {}) : {}'.format(
+            raise ValueError('Unsupported `TextEncoder` (type {}) : {}'.format(
                 type(new_encoder), new_encoder
             ))
         
@@ -129,7 +120,7 @@ class BaseTextModel(BaseModel):
         return self.text_encoder
 
     def update_model_vocab(self, old_vocab, ** kwargs):
-        model = self.get_model()
+        model = self.model
         if self.vocab != old_vocab:
             if hasattr(model, 'change_vocabulary'):
                 model.change_vocabulary(
@@ -145,24 +136,12 @@ class BaseTextModel(BaseModel):
                         self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
                     )
     
-    def augment_text(self, tokens, min_idx = 1, max_idx = -1, nb_mask = None,
-                     min_mask_length = None, max_mask_length = None):
-        if nb_mask is None: nb_mask = self.nb_mask
-        if min_mask_length is None: min_mask_length = self.min_mask_length
-        if max_mask_length is None: max_mask_length = self.max_mask_length
-        
-        tokens = tf.cond(
-            tf.random.uniform(()) < self.augment_prct,
-            lambda: random_mask(
-                tokens, self.mask_token_idx,
-                min_idx = min_idx, max_idx = max_idx,
-                nb_mask = nb_mask,
-                min_mask_length = min_mask_length,
-                max_mask_length = max_mask_length
-            ),
+    def augment_text(self, tokens):
+        return ops.cond(
+            ops.random.uniform(()) < self.augment_prct,
+            lambda: random_mask(tokens, self.blank_token_idx, self.nb_mask),
             lambda: tokens
         )
-        return tokens
 
     def save_text_encoder(self, filename = None, force = False):
         if filename is None: filename = self.text_encoder_file
@@ -171,12 +150,12 @@ class BaseTextModel(BaseModel):
             self.text_encoder.save_to_file(filename)
         return filename
     
-    def get_config_text(self, * args, ** kwargs):
+    def get_config_text(self):
         # Saving text encoder and mel fn (if needed)
         self.save_text_encoder()
         
         return {
-            'lang'      : self.lang,
+            'lang'  : self.lang,
             'text_encoder'  : self.text_encoder_file
         }
         

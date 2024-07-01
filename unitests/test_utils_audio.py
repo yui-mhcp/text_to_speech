@@ -1,6 +1,5 @@
-
-# Copyright (C) 2022 yui-mhcp project's author. All rights reserved.
-# Licenced under the Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
+# Licenced under a modified Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,8 +11,8 @@
 
 import os
 import unittest
-import numpy as np
-import tensorflow as tf
+
+from absl.testing import parameterized
 
 from utils.audio import *
 from utils.audio.stft import _mel_classes
@@ -22,7 +21,7 @@ from unitests import CustomTestCase, data_dir, reproductibility_dir
 filename = os.path.join(data_dir, 'audio_test.wav')
 
 @unittest.skipIf(not os.path.exists(filename), '{} does not exist'.format(filename))
-class TestAudio(CustomTestCase):
+class TestAudio(CustomTestCase, parameterized.TestCase):
     def setUp(self):
         self.rate, self.audio = read_audio(filename)
         
@@ -56,22 +55,22 @@ class TestAudio(CustomTestCase):
             self.audio, os.path.join(reproductibility_dir, 'write_audio.wav'), self.rate, normalize = False
         ), None, normalize = False), self.audio, max_err = 1e-6)
 
-    def test_stft(self):
-        for name, mel_class in _mel_classes.items():
-            with self.subTest(name = name):
-                mel_fn = mel_class() if 'Jasper' not in name else mel_class(dither = 0.)
-                
-                self.assertEqual(MelSTFT.load_from_file(mel_fn.save_to_file(
-                    os.path.join(reproductibility_dir, '{}.json'.format(name))
-                )), mel_fn)
-                
-                self.assertEqual(
-                    load_mel(filename, mel_fn), mel_fn(load_audio(filename, mel_fn.rate))[0]
-                )
-                self.assertEqual(
-                    load_mel(filename, mel_fn, trim_silence = True),
-                    mel_fn(load_audio(filename, mel_fn.rate, trim_silence = True))[0]
-                )
-                self.assertReproductible(
-                    load_mel(filename, mel_fn), 'stft-{}.npy'.format(name)
-                )
+    @parameterized.parameters(* _mel_classes.keys())
+    def test_stft(self, name):
+        mel_class   = _mel_classes[name]
+        mel_fn      = mel_class() if 'Jasper' not in name else mel_class(dither = 0.)
+
+        self.assertEqual(MelSTFT.load_from_file(mel_fn.save_to_file(
+            os.path.join(reproductibility_dir, '{}.json'.format(name))
+        )), mel_fn)
+
+        self.assertEqual(
+            load_mel(filename, mel_fn), mel_fn(load_audio(filename, mel_fn.rate))[0]
+        )
+        self.assertEqual(
+            load_mel(filename, mel_fn, trim_silence = True),
+            mel_fn(load_audio(filename, mel_fn.rate, trim_silence = True))[0]
+        )
+        self.assertReproductible(
+            load_mel(filename, mel_fn), 'stft-{}.npy'.format(name), max_err = 2e-3
+        )

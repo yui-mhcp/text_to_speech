@@ -16,12 +16,13 @@ from custom_layers import get_activation
 from .text_transformer_arch import TextTransformerEncoder, HParamsTextTransformerEncoder
 
 HParamsBaseBERT = HParamsTextTransformerEncoder(
-    use_pooling = True,
-    epsilon     = 1e-6
+    pooler_as_output    = False,
+    pooler_activation   = 'tanh',
+    poolers = -1
 )
 
 HParamsBertMLM  = HParamsBaseBERT(
-    transform_activation    = None
+    transform_activation    = 'gelu'
 )
 
 HParamsBertClassifier   = HParamsBaseBERT(
@@ -41,73 +42,13 @@ HParamsBertClassifier   = HParamsBaseBERT(
 @keras.saving.register_keras_serializable('transformers')
 class BaseBERT(TextTransformerEncoder):
     default_params = HParamsBaseBERT
-    
-    def __init__(self, vocab_size, embedding_dim, ** kwargs):
-        super().__init__(vocab_size = vocab_size, embedding_dim = embedding_dim, ** kwargs)
-
-        self.pooler = keras.layers.Dense(
-            embedding_dim, activation = 'tanh', name = 'pooler'
-        ) if self.hparams.use_pooling else None
-    
-    def build(self, input_shape):
-        super(BaseBERT, self).build(input_shape)
-        if self.pooler is not None: self.pooler.build((None, None, self.embedding_dim))
-            
-    def compute_output(self, output, training = False, mask = None, ** kwargs):
-        output = super().compute_output(
-            output, training = training, mask = mask, ** kwargs
-        )
-        
-        if self.pooler is not None:
-            pooled_output = self.pooler(output[:, 0])
-        else:
-            pooled_output = None
-
-        return (output, pooled_output)
-
-    @classmethod
-    def from_pretrained(cls,
-                        pretrained_name,
-                        pretrained_task = 'base',
-                        pretrained      = None,
-                        ** kwargs
-                       ):
-        if pretrained is None:
-            pretrained = transformers_bert(pretrained_name, pretrained_task)
-
-        config = cls.default_params(
-            vocab_size      = pretrained.config.vocab_size,
-            max_token_types = pretrained.config.type_vocab_size,
-            max_input_length    = pretrained.config.max_position_embeddings,
-            
-            num_layers      = pretrained.config.num_hidden_layers,
-            embedding_dim   = pretrained.config.hidden_size,
-            drop_rate       = pretrained.config.hidden_dropout_prob,
-            epsilon         = pretrained.config.layer_norm_eps,
-            
-            mha_num_heads   = pretrained.config.num_attention_heads,
-            mha_mask_factor = -10000,
-            mha_drop_rate   = pretrained.config.hidden_dropout_prob,
-            mha_epsilon     = pretrained.config.layer_norm_eps,
-            
-            ffn_dim                 = pretrained.config.intermediate_size,
-            ffn_activation          = pretrained.config.hidden_act,
-            transform_activation    = pretrained.config.hidden_act
-        )
-        
-        instance = cls(** config(** kwargs))
-        instance.build((None, None))
-        
-        instance.transfer_weights(pretrained, pretrained_task = pretrained_task)
-        
-        return instance
 
 @keras.saving.register_keras_serializable('transformers')
 class BertMLM(BaseBERT):
     default_params = HParamsBertMLM
 
     def __init__(self, vocab_size, embedding_dim, ** kwargs):
-        kwargs['use_pooling'] = False
+        kwargs['poolers'] = None
         super().__init__(
             vocab_size = vocab_size, embedding_dim = embedding_dim, ** kwargs
         )
@@ -117,15 +58,16 @@ class BertMLM(BaseBERT):
         self.final_norm = keras.layers.LayerNormalization(epsilon = self.hparams.epsilon)
         
     def build(self, input_shape):
-        super(BaseBERT, self).build(input_shape)
+        super().build(input_shape)
         self.dense.build((None, None, self.embedding_dim))
         self.final_norm.build((None, None, self.embedding_dim))
-        self.bias = self.add_weight(
-            shape = [self.hparams.vocab_size], initializer = "zeros", name = "bias"
-        )
+        with keras.name_scope(self.name):
+            self.bias = self.add_weight(
+                shape = [self.hparams.vocab_size], initializer = "zeros", name = "bias"
+            )
     
     def compute_output(self, output, mask = None, training = False, ** kwargs):
-        output, _ = super().compute_output(output, mask = mask, training = training, ** kwargs)
+        output = super().compute_output(output, mask = mask, training = training, ** kwargs)
         
         output = self.dense(output)
         if self.act is not None: output = self.act(output)

@@ -162,6 +162,7 @@ def import_objects(modules,
                    filters  = None,
                    classes  = None,
                    types    = None,
+                   err_mode = 'raise',
                    allow_modules    = False,
                    allow_functions  = True,
                    signature    = None,
@@ -213,6 +214,7 @@ def import_objects(modules,
                 module = importlib.import_module(module)
             except Exception as e:
                 logger.debug('Import of module {} failed due to {}'.format(module, str(e)))
+                if err_mode == 'raise': raise e
                 continue
         
         root_module = module.__name__.split('.')[0]

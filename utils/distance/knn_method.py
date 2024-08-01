@@ -13,7 +13,7 @@ import keras
 import numpy as np
 import pandas as pd
 
-from utils.embeddings import load_embedding, compute_centroids, embeddings_to_np, get_embeddings_with_ids
+from utils.embeddings import load_embeddings, compute_centroids, embeddings_to_np, get_embeddings_with_ids
 from utils.keras_utils import TensorSpec, graph_compile, ops
 from utils.distance.distance_method import distance
 
@@ -45,7 +45,7 @@ class KNN(object):
             
             Arguments : 
                 - embeddings    : the embeddings to use as labelled points
-                    If str  : call `load_embedding()` on it
+                    If str  : call `load_embeddings()` on it
                     If pd.DataFrame : use the 'id' column for `ids` and call `embeddings_to_np` on it
                     Else    : must be a np.ndarray / `Tensor` 2D matrix
                 - ids   : ids of the embeddings (if embeddings is a DataFrame, ids = embeddings['id'].values)
@@ -54,7 +54,7 @@ class KNN(object):
                 - weighted      : whether to use a weighted knn or not
         """
         if isinstance(embeddings, str):
-            embeddings = load_embedding(embeddings)
+            embeddings = load_embeddings(embeddings)
         
         if isinstance(embeddings, pd.DataFrame):
             if ids is None:

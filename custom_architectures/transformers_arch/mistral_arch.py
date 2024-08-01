@@ -38,7 +38,6 @@ HParamsMistral  = HParamsTextTransformerEncoder(
     mha_use_bias    = False,
     mha_mask_factor = -1e9,
     mha_normalize   = False,
-    mha_epsilon = 1e-5,
     
     ffn_dim     = 4.,
     ffn_use_bias    = False,
@@ -116,71 +115,6 @@ class Mistral(TextTransformerEncoder):
 
         return super(Mistral, self).transfer_weights(pretrained, ** kwargs)
     
-    @classmethod
-    def from_pretrained(cls,
-                        pretrained_name = None,
-                        pretrained  = None,
-                        partial     = False,
-                        ** kwargs
-                       ):
-        from utils import load_json, dump_json
-        from models import get_pretrained_weights_dir
-        
-        model_dir   = os.path.join(
-            get_pretrained_weights_dir(), pretrained_name.replace('/', '--')
-        )
-        config_file = os.path.join(model_dir, 'config.json')
-        weights_file    = os.path.join(model_dir, 'model.weights.h5')
-        if not os.path.exists(config_file) or not os.path.exists(weights_file):
-            if pretrained is None: pretrained = _get_pretrained_mistral(pretrained_name, ** kwargs)
-
-            config = cls.default_params(
-                vocab_size       = pretrained.config.vocab_size,
-                embedding_dim    = pretrained.config.hidden_size,
-                num_layers       = pretrained.config.num_hidden_layers,
-                
-                sos_token   = 1,
-                eos_token   = 2,
-                pad_token   = 2,
-                
-                mha_num_heads    = pretrained.config.num_attention_heads,
-                mha_num_kv_heads = pretrained.config.num_key_value_heads,
-        
-                ffn_dim          = pretrained.config.intermediate_size,
-                ffn_activation   = pretrained.config.hidden_act,
-            )
-
-            instance = cls(** config(** kwargs))
-            instance.build((None, None))
-
-            print(instance.transfer_weights(pretrained, ** kwargs))
-            
-            os.makedirs(model_dir, exist_ok = True)
-            dump_json(config_file, instance.get_config(), indent = 4)
-            instance.save_weights(weights_file)
-        else:
-            logger.info('Building model from config file {}'.format(config_file))
-            instance = cls.from_config({** load_json(config_file), ** kwargs})
-            instance.build((None, None))
-
-            logger.info('Loading weights from {}'.format(weights_file))
-            try:
-                instance.load_weights(weights_file)
-            except ValueError as e:
-                if partial:
-                    from models.weights_converter import name_based_partial_transfer_learning
-                    
-                    logger.info('Loading official pretrained model for partial transfer')
-                    original = cls.from_pretrained(pretrained_name, pretrained)
-                    
-                    logger.info('Making partial transfer learning')
-                    name_based_partial_transfer_learning(instance, original, ** kwargs)
-                    del original
-                else:
-                    logger.warning(str(e))
-
-        return instance
-
 def _get_pretrained_mistral(model_name, torch_dtype = 'float16', device = 'cpu', ** _):
     import torch
     

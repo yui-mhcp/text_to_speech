@@ -13,39 +13,39 @@ import os
 import re
 import shutil
 import logging
+import warnings
 import numpy as np
 
 from PIL import Image
 
-from .parser import parse_document, first_page_to_image
+from loggers import timer, time_logger
 
 logger = logging.getLogger(__name__)
 
 _final_punctuation = re.compile(r"[\.\?\!,]\s*$")
 _final_space = re.compile(r'\s+$')
 
-@parse_document.dispatch
-def parse_pdf(filename,
-              pagenos       = None,
-              save_images   = True,
-              img_folder    = None,
+@timer
+def parse_pdfminer(filename,
+                   pagenos       = None,
+                   image_folder  = None,
               
-              add_eol_comma = False, # add comma at the end of a line
-              skip_margin   = 0.05,
-              max_diff_overlap  = 0.01,
+                   add_eol_comma = False, # add comma at the end of a line
+                   skip_margin   = 0.05,
+                   max_diff_overlap  = 0.01,
               
-              tqdm  = lambda x: x,
-              
-              ** kwargs
-             ):
+                   tqdm  = lambda x: x,
+                
+                   ** kwargs
+                  ):
     """
-        Parses `pdf` files
+        Extracts texts and images from `filename` with `pdfminer.six` library
         
         Arguments :
             - filename  : the `.pdf` document filename
             - pagenos   : list of page numbers to parse
-            - save_images   : whether to extract images or not
-            - img_folder    : where to save images
+            - image_folder  : where to store the images (with format `image_{i}.jpg`)
+                              If `None`, the images are skipped
             
             - add_eol_comma : whether to add a comma at the end of lines
             - skip_margin   : the margin to skip
@@ -54,7 +54,15 @@ def parse_pdf(filename,
             - tqdm  : progress bar
             - kwargs    : unused
         Return :
-            - document  : `dict` of pages `{page_index : paragraphs}`
+            - document  : `dict` of pages `{page_index : list_of_paragraphs}`
+            
+            A `paragraph` is a `dict` containing the following keys :
+                Text paragraphs :
+                - text  : the paragraph text
+                Image paragraphs :
+                - image : the image path
+                - height    : the image height
+                - width     : the image width
     """
     from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
     from pdfminer.converter import TextConverter
@@ -65,16 +73,14 @@ def parse_pdf(filename,
     
     logging.getLogger('pdfminer').setLevel(logging.WARNING)
     
-    if not save_images:
-        img_folder = None
-    else:
-        if img_folder is None: img_folder = os.path.splitext(filename)[0] + '_images'
-        if os.path.exists(img_folder): shutil.rmtree(img_folder)
+    if image_folder and not is_pdf2image_available(): image_folder = None
     
     manager         = PDFResourceManager()
     layout_params   = LAParams(all_texts = False, line_margin = 0.001)
     device          = PDFPageAggregator(manager, laparams = layout_params)
     interpreter     = PDFPageInterpreter(manager, device)
+    
+    image_num = 0
     
     pages = {}
     with open(filename, 'rb') as file:
@@ -87,10 +93,6 @@ def parse_pdf(filename,
             
             interpreter.process_page(page)
             page_layout = device.get_result()
-            
-            text = ''
-            paragraphes = []
-            last_layout = None
             
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Page #{} layout : {}".format(page_number, page_layout))
@@ -110,9 +112,11 @@ def parse_pdf(filename,
             ], key = lambda l: l.bbox[1], reverse = True)
             
             cols  = left_col + [None] + right_col
-                
-            logger.debug("\nParagraphs processing")
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("\nParagraphs processing")
             # process each layout in page (beginning by left column)
+            paragraphs, last_layout, text = [], None, ''
             for layout_idx, l in enumerate(cols):
                 # For column change (avoid overlap between last paragraph of left col and 1st paragraph of right col)
                 if l is None:
@@ -136,8 +140,8 @@ def parse_pdf(filename,
                 if (overlap == 0 or isinstance(l, (LTImage, LTFigure))) and len(text) > 0:
                     infos = {'text' : process_paragraph(text)}
                     
-                    paragraphes.append(infos)
-                    text = ""
+                    paragraphs.append(infos)
+                    text = ''
                 
                 if isinstance(l, LTTextBox):
                     next_text = clean_text(l.get_text())
@@ -146,21 +150,26 @@ def parse_pdf(filename,
                     text += next_text
                 
                 elif isinstance(l, (LTImage, LTFigure)):
-                    if img_folder is not None:
-                        os.makedirs(img_folder, exist_ok = True)
+                    if image_folder:
+                        os.makedirs(image_folder, exist_ok = True)
                         
-                        img_name = 'image_{}.jpg'.format(len(os.listdir(img_folder)))
-                        img, (height, width) = extract_lt_image(
-                            filename = filename, 
-                            page_idx  = page_number, 
-                            img_layout    = l, 
-                            page_layout   = page_layout,
-                            save_name = os.path.join(img_folder, img_name)
-                        )
+                        img_name = 'image_{}.jpg'.format(image_num)
+                        try:
+                            img, (height, width) = extract_lt_image(
+                                filename = filename, 
+                                page_idx  = page_number, 
+                                img_layout    = l, 
+                                page_layout   = page_layout,
+                                save_name = os.path.join(img_folder, img_name)
+                            )
+                        except Exception as e:
+                            logger.info('An error occured while extracting the image. Skipping it.')
+                            img = None
+                        
                         if img is not None:
-                            paragraphes.append({
-                                'type'   : 'image',
-                                'name'   : img_name,
+                            image_num += 1
+                            paragraphs.append({
+                                'image' : img_name,
                                 'height' : height,
                                 'width'  : width
                             })
@@ -170,14 +179,15 @@ def parse_pdf(filename,
             if text:
                 infos = {'text' : process_paragraph(text)}
                 
-                paragraphes.append(infos)
+                paragraphs.append(infos)
             
-            pages[page_number] = paragraphes
+            pages[page_number] = paragraphs
 
     device.close()
     
     return pages
 
+@timer
 def add_comma_if_needed(txt, next_text, add_comma = True):
     if _final_punctuation.search(txt) is None:
         end = _final_space.search(txt)
@@ -186,6 +196,7 @@ def add_comma_if_needed(txt, next_text, add_comma = True):
         if add_comma or next_text[0].isupper(): txt += ','
     return txt + '\n'
 
+@timer
 def is_overlap(last, new, page_h, max_diff_overlap = 0.05):
     if isinstance(max_diff_overlap, float): max_diff_overlap = int(max_diff_overlap * page_h)
     _, y0, _, _ = last.bbox
@@ -197,6 +208,7 @@ def is_overlap(last, new, page_h, max_diff_overlap = 0.05):
     ))
     return overlap
 
+@timer
 def is_in_margin(layout, page_h, page_w, skip_margin):
     if not isinstance(skip_margin, (list, tuple)): skip_margin = [skip_margin, skip_margin]
     skip_h, skip_w = skip_margin
@@ -217,6 +229,7 @@ def is_in_margin(layout, page_h, page_w, skip_margin):
 def clean_text(text):
     return text.replace('\n', '').strip()
 
+@timer
 def process_paragraph(text):
     if text.count('.') > 50:
         new_text = []
@@ -228,38 +241,39 @@ def process_paragraph(text):
         
     return text
 
-def extract_lt_image(filename, page_idx, page_layout, img_layout, save_name = None):
+def is_pdf2image_available():
     try:
-        from pdf2image import convert_from_path
+        import pdf2image
+        return True
+    except ImportError:
+        warnings.warm('The `pdf2image` library is not available. Skipping image extraction')
+        return False
+    
+@timer
+def extract_lt_image(filename, page_idx, page_layout, img_layout, save_name = None):
+    from pdf2image import convert_from_path
 
-        image = convert_from_path(filename, first_page = page_idx+1, last_page = page_idx+1)
-        image = np.asarray(image[0])
+    image = convert_from_path(filename, first_page = page_idx+1, last_page = page_idx+1)
+    image = np.asarray(image[0])
 
-        _, _, lt_page_width, lt_page_height = page_layout.bbox
-        image_height, image_width, _ = image.shape
+    _, _, lt_page_width, lt_page_height = page_layout.bbox
+    image_height, image_width, _ = image.shape
 
-        x0, y0, x1, y1 = img_layout.bbox
-        x, y, w, h = x0, lt_page_height - y1, x1 - x0, y1 - y0
+    x0, y0, x1, y1 = img_layout.bbox
+    x, y, w, h = x0, lt_page_height - y1, x1 - x0, y1 - y0
 
-        x = int((x / lt_page_width) * image_width)
-        y = int((y / lt_page_height) * image_height)
-        w = int((w / lt_page_width) * image_width)
-        h = int((h / lt_page_height) * image_height)
+    x = int((x / lt_page_width) * image_width)
+    y = int((y / lt_page_height) * image_height)
+    w = int((w / lt_page_width) * image_width)
+    h = int((h / lt_page_height) * image_height)
 
-        image = image[y : y + h, x : x + w]
+    image = image[y : y + h, x : x + w]
 
-        image = Image.fromarray(image)
-        image.save(save_name)
+    image = Image.fromarray(image)
+    image.save(save_name)
 
-        return image, (image.height, image.width)
-    except ImportError as e:
-        logger.error("Cannot import pdf2image so cannot process LTImage !\n  Error : {}".format(e))
-        return None, (-1, -1)
-    except Exception as e:
-        logger.error("Error while processing image : {}".format(e))
-        return None, (-1, -1)
+    return image, (image.height, image.width)
 
-@first_page_to_image.dispatch
 def save_first_page_as_image_pdf(filename, image_name = 'first_page.jpg'):
     from pdf2image import convert_from_path
     image = convert_from_path(filename, single_file = True, fmt = 'jpg')[0]

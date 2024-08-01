@@ -9,11 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
 import logging
 import functools
 import numpy as np
 
-from utils.keras_utils import TensorSpec, graph_compile, ops
+from utils.sequence_utils import apply_on_batch
+from utils.keras_utils import TensorSpec, ops, graph_compile
 from utils.wrapper_utils import dispatch_wrapper, partial
 
 logger = logging.getLogger(__name__)
@@ -41,39 +43,36 @@ def distance_method_wrapper(fn = None, name = None, is_similarity = False, expan
 
 similarity_method_wrapper = partial(distance_method_wrapper, is_similarity = True)
 
-@graph_compile
-def tf_distance(x : TensorSpec(),
-                y : TensorSpec(),
-                method,
-                as_matrix   = True,
-                max_slice   = None,
-                max_slice_x = None,
-                max_slice_y = None,
-                force_distance  = False,
-                ** kwargs
-               ):
-    return distance(
-        x,
-        y,
-        method,
-        as_matrix   = as_matrix,
-        max_slice   = max_slice,
-        max_slice_x = max_slice_x,
-        max_slice_y = max_slice_y,
-        force_distance  = force_distance,
-        ** kwargs
-    )
+def _propagate_if_matrix(batch_size, kwargs):
+    if kwargs.get('as_matrix', False) and batch_size:
+        kwargs.update({'batch_size_x' : batch_size, 'batch_size_y' : batch_size})
+        batch_size = None
+    return batch_size, kwargs
 
+def _raise_if_not_matrix(batch_size, kwargs):
+    if batch_size and not kwargs.get('as_matrix', False):
+        raise ValueError('When `as_matrix = False`, only the `batch_size` argument can be used')
+    return batch_size, kwargs
+
+@apply_on_batch(batched_arg = ('x', 'y'), cond = _propagate_if_matrix)
+@apply_on_batch(batched_arg = 'x', cond = _raise_if_not_matrix)
+@apply_on_batch(batched_arg = 'y', concat_axis = 1, cond = _raise_if_not_matrix)
+@graph_compile
+def tf_distance(x : TensorSpec(), y : TensorSpec(), method, ** kwargs):
+    return distance(x, y, method, ** kwargs)
+
+@apply_on_batch(batched_arg = ('x', 'y'), cond = _propagate_if_matrix)
+@apply_on_batch(batched_arg = 'x', cond = _raise_if_not_matrix)
+@apply_on_batch(batched_arg = 'y', concat_axis = 1, cond = _raise_if_not_matrix)
 @dispatch_wrapper(_distance_methods, 'method')
 def distance(x,
              y,
              method,
-             force_distance = True,
-
+             *,
+             
+             mode   = None,
              as_matrix  = False,
-             max_slice  = None,
-             max_slice_x    = None,
-             max_slice_y    = None,
+             force_distance = None,
              
              ** kwargs
             ):
@@ -99,6 +98,8 @@ def distance(x,
         Important note : this function returns a **distance** score : the lower the score, the more similar they are ! If the `method` is a similarity metric (such as dot-product), the function returns the inverse (- distances) to keep this property.
         You can avoid this by setting `force_distance = False`
     """
+    if force_distance is True: mode = 'distance'
+    
     distance_fn = method if callable(method) else _distance_methods.get(method, None)
     if distance_fn is None:
         raise ValueError("Distance method is not callable or does not exist !\n  Accepted : {}\n  Got : {}".format(
@@ -113,124 +114,55 @@ def distance(x,
             method, tuple(x.shape), tuple(y.shape)
         ))
     
-    use_numpy   = isinstance(x, np.ndarray) and isinstance(y, np.ndarray)
-    
-    if not use_numpy:
-        if y is not None: ops.convert_to_tensor(y)
-        x = ops.convert_to_tensor(x)
-    
     if len(ops.shape(x)) == 1: x = ops.expand_dims(x, axis = 0)
     if len(ops.shape(y)) == 1: y = ops.expand_dims(y, axis = 0)
 
-    if max_slice is not None:
-        if max_slice_x is None: max_slice_x = max_slice
-        if max_slice_y is None: max_slice_y = max_slice
-    
-    if (max_slice_x is not None and 0 < max_slice_x < len(x)) or \
-    (max_slice_y is not None and 0 < max_slice_y < len(y)):
-        if max_slice_x is None: max_slice_x = len(x)
-        if max_slice_y is None: max_slice_y = len(y)
-        
-        if not as_matrix:
-            if len(x) == 1 and len(y) > 1:
-                x, y, max_slice_x = y, x, max_slice_y
-            
-            if use_numpy:
-                result = np.empty((len(x), ), dtype = np.float32)
-                for i in range(0, len(x), max_slice):
-                    result[i : i + max_slice] = distance_fn(
-                        x[i : i + max_slice], y[i : i + max_slice] if len(y) > 1 else y, ** kwargs
-                    )
-            else:
-                def body(i, res):
-                    res = ops.slice_update(
-                        res,
-                        ops.constant([1], dtype = 'int32') * i,
-                        distance_fn(
-                            x[i : i + max_slice],
-                            y[i : i + max_slice] if len(y) > 1 else y,
-                            as_matrix   = False,
-                            ** kwargs
-                        )
-                    )
-                    return (i + max_slice, res)
-                
-                result = ops.while_loop(
-                    lambda i, state: i < len(x),
-                    body,
-                    (0, ops.empty((len(x), ), dtype = 'float32'))
-                )[1]
-        else:
-            if use_numpy:
-                result = np.empty((len(x), len(y)), dtype = np.float32)
-                for i in range(0, len(x), max_slice_x):
-                    for j in range(0, len(y), max_slice_y):
-                        result[i : i + max_slice_x, j : j + max_slice_y] = distance_fn(
-                            x[i : i + max_slice_x], y[j : j + max_slice_y], as_matrix = True, ** kwargs
-                        )
-            else:
-                def update_body(yi, xi, res):
-                    res = ops.slice_update(
-                        res,
-                        ops.constant([1, 0], dtype = 'int32') * xi + ops.constant([0, 1], dtype = 'int32') * yi,
-                        distance_fn(
-                            x[xi : xi + max_slice_x],
-                            y[yi : yi + max_slice_y],
-                            as_matrix   = True,
-                            ** kwargs
-                        )
-                    )
-                    return (yi + max_slice_y, xi, res)
-                
-                def slice_y_body(xi, res):
-                    return (
-                        xi + max_slice_x,
-                        ops.while_loop(
-                            lambda yi, xi, s: yi < len(y), update_body, (0, xi, res)
-                        )[2]
-                    )
-                
-                result = ops.while_loop(
-                    lambda i, s: i < len(x),
-                    slice_y_body,
-                    (0, ops.empty((len(x), len(y)), dtype = 'float32'))
-                )[1]
-    else:
-        result = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
+    result = distance_fn(x, y, as_matrix = as_matrix, ** kwargs)
 
     if logger.isEnabledFor(logging.DEBUG) and ops.executing_eagerly():
         logger.debug('Result shape : {}'.format(tuple(result.shape)))
     
-    return result if not force_distance or method not in _similarity_methods else 1. - result
+    if mode == 'distance' and method in _similarity_methods:         result = - result
+    elif mode == 'similarity' and method not in _similarity_methods: result = - result
+    return result
 
 @similarity_method_wrapper(expand = False)
 def cosine_similarity(x, y, *, as_matrix = False, ** kwargs):
     return dot_product(
         ops.l2_normalize(x, axis = -1),
-        ops.l2_normalize(x, axis = -1),
+        ops.l2_normalize(y, axis = -1),
         as_matrix   = as_matrix,
         ** kwargs
     )
 
-@similarity_method_wrapper(name = 'dp')
-def dot_product(x, y, ** kwargs):
-    return ops.sum(x * y, axis = -1)
+@similarity_method_wrapper(name = 'dp', expand = False)
+def dot_product(x, y, *, as_matrix = False, ** kwargs):
+    if as_matrix: return ops.einsum('...ik, ...jk -> ...ij', x, y)
+    return ops.einsum('...j, ...j -> ...', x, y)
 
 @distance_method_wrapper
 def l1_distance(x, y, ** kwargs):
-    return ops.abs(x - y)
+    return ops.abs(ops.subtract(x, y))
 
 @distance_method_wrapper
 def l2_distance(x, y, ** kwargs):
-    return ops.square(x - y)
+    return ops.square(ops.subtract(x, y))
 
 @distance_method_wrapper
 def manhattan_distance(x, y, ** kwargs):
-    return ops.sum(ops.abs(x - y), axis = -1)
+    return ops.sum(ops.abs(ops.subtract(x, y)), axis = -1)
 
-@distance_method_wrapper
-def euclidian_distance(x, y, ** kwargs):
-    return ops.sqrt(ops.sum(ops.square(x - y), axis = -1))
+@distance_method_wrapper(expand = False)
+def euclidian_distance(x, y, *, fast = True, as_matrix = False, ** kwargs):
+    if fast:
+        xx = ops.einsum('...i, ...i -> ...', x, x)
+        yy = ops.einsum('...i, ...i -> ...', y, y)
+        xy = dot_product(x, y, as_matrix = as_matrix)
+        if as_matrix: xx, yy = ops.expand_dims(xx, -1), ops.expand_dims(yy, -2)
+        return ops.sqrt(xx - 2 * xy + yy)
+    
+    x, y = _maybe_expand_for_matrix(x, y, as_matrix = as_matrix)
+    return ops.sqrt(ops.sum(ops.square(ops.subtract(x, y)), axis = -1))
 
 @similarity_method_wrapper
 def dice_coeff(x, y, ** kwargs):

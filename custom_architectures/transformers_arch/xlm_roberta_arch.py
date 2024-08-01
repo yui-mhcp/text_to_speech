@@ -18,17 +18,16 @@ HParamxLMRoberta = HParamsTextTransformerEncoder(
     normalize_embeddings    = True,
     normalize_output    = False,
     max_token_types     = 1,
+    positional_offset   = 2,
     
-    epsilon = 1e-5,
     normalize   = 'after',
     
     mha_residual    = True,
     mha_normalize   = True,
     mha_mask_factor = -1e9,
     mha_normalize_input = False,
-    mha_epsilon      = 1e-5,
     
-    ffn_dim          = 4.
+    ffn_dim = 4.
 )
 
 @keras.saving.register_keras_serializable('transformers')
@@ -38,33 +37,22 @@ class XLMRoberta(TextTransformerEncoder):
     def transfer_weights(self, * args, ** kwargs):
         kwargs['patterns'] = {
             'LayerNorm' : 'norm', 'layer/' : 'layer_', 'attention/output' : 'mha', 'mha/dense' : 'mha/output_layer',
-            'attention/self' : 'mha', 'output/dense' : 'dense_2', 'intermediate/dense' : 'dense_1', 'output/norm' : 'norm'
+            'attention/self' : 'mha', 'output/dense' : 'dense_2', 'intermediate/dense' : 'dense_1', 'output/norm' : 'norm',
+            'colbert' : '/pooler/colbert',
+            'sparse' : '/pooler/sparse'
         }
         return super().transfer_weights(* args, ** kwargs)
     
     @classmethod
-    def from_pretrained(cls, pretrained_name, pretrained = None, ** kwargs):
-        if pretrained is None:
-            from transformers import AutoModel
-            pretrained = AutoModel.from_pretrained(pretrained_name)
-
-        config = cls.default_params(
-            vocab_size       = pretrained.config.vocab_size,
-            embedding_dim    = pretrained.config.hidden_size,
-            num_layers       = pretrained.config.num_hidden_layers,
-            max_input_length = pretrained.config.max_position_embeddings - 2,
-            mha_num_heads    = pretrained.config.num_attention_heads,
-            ffn_activation   = pretrained.config.hidden_act,
-            positional_offset   = 2,
-            sos_oken    = 0,
-            pad_token   = 1,
-            eos_token   = 2
-        )
-        
-        instance = cls(** config(** kwargs))
-        instance.build((None, None))
-        
-        instance.transfer_weights(pretrained, ** kwargs)
-        del pretrained
-        return instance 
-
+    def convert_config(cls, config, prefix = None, pretrained = None):
+        from . import convert_hf_config
+            
+        hparams = convert_hf_config(config, cls.default_params, prefix)
+        hparams.max_input_length -= 2
+        if 'bge' in pretrained:
+            hparams.update({
+                'poolers'   : {'dense' : None, 'sparse' : 1, 'colbert' : -1},
+                'pooler_mode'   : {'dense' : 0, 'sparse' : None, 'colbert' : '1:'},
+                'pooler_activation' : {'dense' : 'l2', 'sparse' : 'relu', 'colbert' : 'l2'}
+            })
+        return hparams

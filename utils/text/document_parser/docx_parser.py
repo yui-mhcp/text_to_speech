@@ -10,11 +10,9 @@
 # limitations under the License.
 
 import os
-import logging
+import warnings
 
 from .parser import parse_document
-
-logger = logging.getLogger(__name__)
 
 @parse_document.dispatch
 def parse_docx(filename, ** kwargs):
@@ -22,7 +20,7 @@ def parse_docx(filename, ** kwargs):
     try:
         from docx import Document
     except ImportError as e:
-        logger.error('Exception from .docx parsing : {}'.format(e))
+        warnings.warm('Please install the `docx` library : `pip install python-docx`')
         return []
     
     doc = Document(filename)

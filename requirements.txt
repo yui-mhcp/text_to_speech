@@ -1,6 +1,6 @@
 Unidecode
 ffmpeg_python
-imageio
+keras
 librosa
 matplotlib
 num2words
@@ -13,4 +13,3 @@ requests
 sounddevice
 tqdm
 umap_learn
-keras

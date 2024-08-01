@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import os
+import pandas as pd
 
 from .base_model import BaseModel
 from utils import copy_methods
@@ -136,6 +137,27 @@ class BaseTextModel(BaseModel):
                         self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
                     )
     
+    def prepare_text(self, data, *, format = None, max_length = None, ** kwargs):
+        if isinstance(data, pd.DataFrame): data = data.to_dict('records')
+        if isinstance(data, list):
+            return [
+                self.prepare_text(d, format = format, max_length = max_length, ** kwargs)
+                for d in data
+            ]
+        
+        # Most common case first
+        if not format and not max_length:
+            return self.encode_text(data, ** kwargs)
+        elif format and max_length:
+            if not isinstance(data, dict): data = {'text' : data}
+            split_key = kwargs.pop('split_key', 'text' if len(data) != 1 else list(data.keys())[0])
+            return self.split_and_format_text(format, split_key, max_length, ** data, ** kwargs)
+        elif format:
+            if not isinstance(data, dict): data = {'text' : data}
+            return self.format_text(format, ** data, ** kwargs)
+        else:
+            return self.split_text(data, max_length, ** kwargs)
+        
     def augment_text(self, tokens):
         return ops.cond(
             ops.random.uniform(()) < self.augment_prct,

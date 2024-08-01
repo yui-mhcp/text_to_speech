@@ -17,7 +17,7 @@ from functools import partial
 
 from loggers import timer
 from utils.hparams import HParams
-from custom_layers import CustomEmbedding
+from custom_layers import CustomEmbedding, get_activation
 from utils.keras_utils import TensorSpec, ops, graph_compile
 from custom_architectures.generation_utils import infer as infer_method
 from .transformer_arch import *
@@ -40,6 +40,13 @@ HParamsTransformerTokenEmbedding = HParams(
     drop_rate   = 0.1
 )
 
+HParamsTransformerPooler    = HParams(
+    poolers = None,
+    pooler_mode = 0,
+    pooler_bias = True,
+    pooler_activation   = None
+)
+
 _shared_config = [
     'vocab_size', 'sos_token', 'eos_token', 'pad_token', 'max_input_length',
     'scale_embedding', 'normalize_embeddings', 'positional_offset'
@@ -47,6 +54,8 @@ _shared_config = [
 
 HParamsTextTransformerBlock = HParamsTransformerBlock(
     ** HParamsTransformerTokenEmbedding,
+    ** HParamsTransformerPooler,
+    pooler_as_output    = True,
     sos_token   = -1,
     eos_token   = -1,
     pad_token   = 0
@@ -251,10 +260,82 @@ class TransformerTokenEmbedding(keras.layers.Layer):
         return (self.hparams + super().get_config()).get_config()
 
 @keras.saving.register_keras_serializable('transformers')
+class TransformerPooler(keras.layers.Layer):
+    _attr_to_set = ['poolers', 'pooler_mode', 'pooler_bias', 'pooler_activation']
+    
+    def __init__(self, poolers, embedding_dim, name = 'pooler', ** kwargs):
+        super().__init__(name = name)
+        
+        if not isinstance(poolers, dict): poolers = {'dense' : poolers}
+        self.hparams = HParamsTransformerPooler.extract(kwargs)
+        self.hparams = self.hparams(poolers = poolers, embedding_dim = embedding_dim)
+        
+        for attr_name in self._attr_to_set:
+            setattr(self, attr_name, self.hparams[attr_name])
+        
+        if not isinstance(self.pooler_mode, dict):
+            self.pooler_mode = {k : self.pooler_mode for k in self.poolers.keys()}
+        
+        self._activations = {}
+        for layer_name, dim in self.poolers.items():
+            if dim == -1: dim = embedding_dim
+            use_bias = self.pooler_bias
+            activation  = self.pooler_activation
+            if isinstance(use_bias, dict):      use_bias = use_bias.get(layer_name, None)
+            if isinstance(activation, dict):    activation = activation.get(layer_name, None)
+            
+            self._activations[layer_name] = get_activation(activation, return_layer = False)
+            if dim is not None:
+                setattr(self, '{}_layer'.format(layer_name), keras.layers.Dense(
+                    units   = dim,
+                    use_bias    = use_bias,
+                    name    = layer_name
+                ))
+    
+    def build(self, input_shape):
+        super().build(input_shape)
+        for k, v in self.poolers.items():
+            if v is None: continue
+            getattr(self, '{}_layer'.format(k)).build(input_shape)
+    
+    def _compute_mean_logits(self, out, mask):
+        if mask is None: return K.mean(out, axis = 1)
+        
+        if len(K.shape(mask)) == 4: mask = mask[:, 0, 0, :]
+        count = K.cast(K.count_nonzero(mask, axis = 1)[:, None], out.dtype)
+        
+        return K.divide_no_nan(K.sum(K.where(mask[:, :, None], out, 0.), axis = 1), count)
+        
+    def call(self, inputs, mask = None):
+        outputs = {}
+        for key, dim in self.poolers.items():
+            out  = inputs
+            mode = self.pooler_mode.get(key, None)
+            if isinstance(mode, int):
+                out = out[:, mode, :]
+            elif isinstance(mode, str) and mode[-1] == ':':
+                out = out[:, int(mode[:-1]) :, :]
+            
+            if dim is not None:
+                out = getattr(self, '{}_layer'.format(key))(out)
+            
+            if self._activations.get(key, None) is not None:
+                out = self._activations[key](out)
+            
+            if mode == 'mean':
+                out = self._compute_mean_logits(out, mask)
+            
+            outputs[key] = out
+        
+        return outputs if len(outputs) > 1 else list(outputs.values())[0]
+
+@keras.saving.register_keras_serializable('transformers')
 class TextTransformerBlock(TransformerBlock):
     """ Regular `TransformerBlock` with a `TransformerTokenEmbedding` layer applied on inputs """
     default_params  = HParamsTextTransformerBlock
-    _attr_to_set    = TransformerBlock._attr_to_set + ['vocab_size', 'positional_offset']
+    _attr_to_set    = TransformerBlock._attr_to_set + [
+        'vocab_size', 'positional_offset', 'pooler_as_output'
+    ]
     
     def __init__(self, vocab_size, embedding_dim, max_input_length, ** kwargs):
         super().__init__(
@@ -262,6 +343,8 @@ class TextTransformerBlock(TransformerBlock):
             max_input_length = max_input_length, ** kwargs
         )
 
+        self.pooler = TransformerPooler(** self.hparams) if self.hparams.poolers else None
+        
         self.sos_token  = self.hparams.sos_token
         self.eos_token  = self.hparams.eos_token
         self.pad_token  = self.hparams.pad_token
@@ -286,6 +369,8 @@ class TextTransformerBlock(TransformerBlock):
     def build(self, input_shape):
         super(TextTransformerBlock, self).build((None, None, self.embedding_dim))
         self.embeddings.build((None, None))
+        if self.pooler is not None:
+            self.pooler.build((None, None, self.embedding_dim))
         
     @property
     def max_input_length(self):
@@ -366,7 +451,12 @@ class TextTransformerBlock(TransformerBlock):
         if prefix is not None:
             output = output[:, K.shape(prefix)[1] - 1 :]
         
-        return output
+        if self.pooler is None:
+            return output
+        
+        pooler_output = self.pooler(output, mask = mask)
+        
+        return pooler_output if self.pooler_as_output else (output, pooler_output)
 
     def infer(self, * args, ** kwargs):
         return infer_method(self, * args, is_transformer = True, ** kwargs)

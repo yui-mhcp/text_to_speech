@@ -340,7 +340,9 @@ class BaseModel(metaclass = ModelInstances):
     @property
     def graph_compile_config(self):
         return self._graph_compile_config if self._graph_compile_config is not None else {
-            'prefer_xla' : self.support_xla
+            'prefer_xla'        : self.support_xla,
+            'prepare_for_xla'   : getattr(self, 'prepare_for_xla', None),
+            'prepare_for_graph' : getattr(self, 'prepare_for_graph', None)
         }
     
     @property

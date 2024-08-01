@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .keras_utils.gpu_utils import *
 from .hparams import HParams
 from .distance import *
 from .threading import *
@@ -22,3 +21,4 @@ from .generic_utils import *
 from .sequence_utils import *
 from .comparison_utils import *
 from .wrapper_utils import *
+from .keras_utils.gpu_utils import *

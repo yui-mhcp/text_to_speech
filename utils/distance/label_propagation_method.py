@@ -31,7 +31,7 @@ def _label_propagation(points,
                       ):
     if distance_matrix is None:
         distance_matrix = tf_distance(
-            points, points, distance_metric, as_matrix = True, force_distance = True, ** kwargs
+            points, points, distance_metric, as_matrix = True, mode = 'distance', ** kwargs
         )
     distance_matrix = distance_matrix / ops.max(distance_matrix)
     

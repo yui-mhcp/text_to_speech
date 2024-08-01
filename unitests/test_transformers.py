@@ -16,6 +16,7 @@ try:
     from transformers import AutoTokenizer
 except:
     AutoTokenizer   = None
+from absl.testing import parameterized
     
 from utils.text import *
 from unitests import CustomTestCase
@@ -39,8 +40,19 @@ sentences   = _default_texts + dataset_texts
 sentences   = [' '.join(sent.split()) for sent in sentences]
 
 @unittest.skipIf(AutoTokenizer is None, 'The `transformers` library is unavailable !')
-class TestTokenizers(CustomTestCase):
-    def _test_transformers_encoder(self, model_name, use_sos_and_eos = None):
+class TestTokenizers(CustomTestCase, parameterized.TestCase):
+    @parameterized.named_parameters(
+        ('bart', 'facebook/bart-large'),
+        ('mbart', 'moussaKam/barthez'),
+        ('bert_uncased', 'bert-base-uncased'),
+        ('bert_cased', 'bert-base-cased'),
+        ('gpt2', 'gpt2', False),
+        ('falcon', 'tiiuae/falcon-7b', False),
+        ('flan_t5', 'google/flan-t5-large'),
+        ('xlm_roberta', 'BAAI/bge-m3'),
+        ('mistral', 'bofenghuang/vigostral-7b-chat', True, False)
+    )
+    def test_transformers_encoder(self, model_name, use_sos_and_eos = None, add_eos = None):
         transformers_encoder    = AutoTokenizer.from_pretrained(model_name)
         encoder = TextEncoder.from_transformers_pretrained(model_name)
 
@@ -52,25 +64,7 @@ class TestTokenizers(CustomTestCase):
                 transformers_encoder.tokenize(sent)
             )
             self.assertEqual(
-                encoder.encode(sent),
+                encoder.encode(sent, add_eos = add_eos),
                 transformers_encoder(sent)['input_ids']
             )
 
-    def test_bart_tokenizer(self):
-        self._test_transformers_encoder('facebook/bart-large')
-    
-    def test_barthez_tokenizer(self):
-        self._test_transformers_encoder('moussaKam/barthez')
-
-    def test_bert_tokenizer(self):
-        self._test_transformers_encoder('bert-base-uncased')
-        self._test_transformers_encoder('bert-base-cased')
-
-    def test_gpt2_tokenizer(self):
-        self._test_transformers_encoder('gpt2', use_sos_and_eos = False)
-
-    def test_falcon_tokenizer(self):
-        self._test_transformers_encoder('tiiuae/falcon-7b', use_sos_and_eos = False)
-
-    def test_t5_tokenizer(self):
-        self._test_transformers_encoder('google/flan-t5-large')

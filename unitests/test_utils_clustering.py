@@ -11,8 +11,8 @@
 
 import numpy as np
 import keras.ops as K
-import tensorflow as tf
 
+from absl.testing import parameterized
 from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.datasets import make_blobs, make_moons
 
@@ -20,7 +20,7 @@ from utils.distance import knn, kmeans, evaluate_clustering, find_clusters
 from utils import sample_df, compute_centroids, get_embeddings_with_ids
 from unitests import CustomTestCase, data_dir
 
-class TestClustering(CustomTestCase):
+class TestClustering(CustomTestCase, parameterized.TestCase):
     def setUp(self):
         self.points_x = np.array([
             [1., 1.], [2., 2.], [2., 1.], [1., 2.],
@@ -37,20 +37,6 @@ class TestClustering(CustomTestCase):
             n_samples = 250, random_state = 10
         )
 
-    def test_embeddings(self):
-        points_x, points_y = sklearn_shuffle(self.points_x, self.points_y, random_state = 10)
-        centroid_ids, centroids = compute_centroids(points_x, points_y)
-        
-        self.assertEqual(set(K.convert_to_numpy(centroid_ids).tolist()), set(points_y.tolist()))
-        self.assertEqual(
-            centroids,
-            [np.mean(points_x[points_y == i], axis = 0) for i in K.convert_to_numpy(centroid_ids)]
-        )
-
-        points, ids = get_embeddings_with_ids(self.points_x, self.points_y, [0, 2])
-        self.assertEqual(ids, self.points_y[[yi in [0, 2] for yi in self.points_y]])
-        self.assertEqual(points, self.points_x[[yi in [0, 2] for yi in self.points_y]])
-    
     def test_knn(self):
         points_x, points_y = sklearn_shuffle(self.points_x, self.points_y, random_state = 10)
         for idx, (x, y) in enumerate(zip(points_x, points_y)):
@@ -70,22 +56,36 @@ class TestClustering(CustomTestCase):
                 knn(many_x, sub_x, distance_metric = 'euclidian', ids = sub_y), [y] * len(many_x)
             )
 
-    def test_clustering(self):
+    def test_eval_clustering(self):
         for i in range(4):
             self.assertEqual(
                 evaluate_clustering(self.points_y, np.roll(self.points_y, i * 4))[0], 1.
             )
-        
-        for method in ('kmeans', 'label_propagation'):
-            with self.subTest(method = method):
-                centroids, assignment = find_clusters(
-                    self.blobs_x, method = method, k = range(5, 10)
-                )
-                self.assertEqual(len(centroids), len(np.unique(self.blobs_y)))
-                self.assertEqual(evaluate_clustering(self.blobs_y, assignment)[0], 1.)
-            
-        for method in ('spectral_clustering', 'label_propagation'):
-            with self.subTest(method = method):
-                centroids, assignment = find_clusters(self.moons_x, method = method, k = 2)
-                self.assertEqual(len(centroids), len(np.unique(self.moons_y)))
-                self.assertEqual(evaluate_clustering(self.moons_y, assignment)[0], 1.)
+    
+    @parameterized.named_parameters([
+        (method, method) for method in ('kmeans', 'spectral_clustering')
+    ])
+    def test_blobs_adaptive_clustering(self, method):
+        centroids, assignment = find_clusters(
+            self.blobs_x, method = method, k = range(5, 10)
+        )
+        self.assertEqual(len(centroids), len(np.unique(self.blobs_y)))
+        self.assertEqual(evaluate_clustering(self.blobs_y, assignment)[0], 1.)
+    
+    @parameterized.named_parameters([
+        (method, method) for method in ('kmeans', 'spectral_clustering', 'label_propagation')
+    ])
+    def test_blobs_clustering(self, method):
+        centroids, assignment = find_clusters(
+            self.blobs_x, method = method, k = 7
+        )
+        self.assertEqual(len(centroids), len(np.unique(self.blobs_y)))
+        self.assertEqual(evaluate_clustering(self.blobs_y, assignment)[0], 1.)
+
+    @parameterized.named_parameters([
+        (method, method) for method in ('spectral_clustering', 'label_propagation')
+    ])
+    def test_moon_clustering(self, method):
+        centroids, assignment = find_clusters(self.moons_x, method = method, k = 2)
+        self.assertEqual(len(centroids), len(np.unique(self.moons_y)))
+        self.assertEqual(evaluate_clustering(self.moons_y, assignment)[0], 1.)

@@ -404,7 +404,11 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
         x = np.arange(len(y if not isinstance(y, dict) else list(y.values())[0]))
     
     if plot_type == 'bar' and xtick_labels is not None and xtick_pos is None:
-        xtick_pos = np.arange(len(xtick_labels)) + 0.5
+        if not isinstance(y, dict):
+            kwargs['tick_label'] = xtick_labels
+            xtick_labels = None
+        else:
+            xtick_pos = np.arange(len(xtick_labels)) + 0.5
     
     if x is not None and isinstance(x[0], datetime.datetime):
         formatter = mdates.DateFormatter(date_format)
@@ -962,7 +966,7 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
     if embeddings is None: embeddings = x
 
     if isinstance(embeddings, pd.DataFrame):
-        from utils.embeddings import embeddings_to_np
+        from .embeddings import embeddings_to_np
         
         if 'id' in embeddings and ids is None:
             ids = embeddings['id'].values
@@ -971,6 +975,9 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
         if ids is None: ids = embeddings.get('ids', embeddings.get('label', None))
         embeddings = embeddings['embeddings'] if 'embeddings' in embeddings else embeddings['x']
 
+    if is_tensor(embeddings): embeddings = convert_to_numpy(embeddings)
+    if ids is not None and is_tensor(ids): ids = convert_to_numpy(ids)
+    
     if embeddings.shape[1] > 2:
         reduced_embeddings = reduce_embeddings(embeddings)
     else:

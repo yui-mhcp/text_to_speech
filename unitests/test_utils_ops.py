@@ -16,18 +16,51 @@ import keras.ops as K
 
 from absl.testing import parameterized
 
-from utils.keras_utils import ops
+from utils.keras_utils import TensorSpec, ops
 from unitests import CustomTestCase
 
-class TestCustomOps(CustomTestCase, parameterized.TestCase):
+def _get_finite_shape(shape):
+    if shape is None: return (4, 8)
+    return [(i + 2) * 2 if s is None else s for i, s in enumerate(shape)]
+    
+class TestRandomOps(CustomTestCase, parameterized.TestCase):
+    @parameterized.parameters(
+        ('beta', None, 0., 1.),
+        ('binomial', None, 10, 0.1),
+        ('categorical', (4, 5), TensorSpec(shape = (4, 16)), 5),
+        ('dropout', None, TensorSpec(), 0.5),
+        ('gamma', None, 0.5),
+        ('normal', ),
+        ('randint', None, 5, 100),
+        ('shuffle', None, TensorSpec((None, None)), 0),
+        ('shuffle', None, TensorSpec((None, None)), 1),
+        ('truncated_normal', ),
+        ('uniform', )
+    )
+    def test_random(self, name, target_shape = None, * args):
+        if args and isinstance(args[0], TensorSpec):
+            shape, args = args[0], args[1:]
+            shape = np.random.normal(size = _get_finite_shape(shape.shape))
+        else:
+            shape = (5, 5)
+        
+        if target_shape is None:
+            target_shape = getattr(shape, 'shape', shape)
+        
+        fn = getattr(ops, name)
+        self.assertEqual(fn(shape, * args, seed = 0).shape, target_shape)
+        if keras.backend.backend() != 'torch':
+            self.assertGraphCompatible(fn, shape, * args, target_shape = target_shape, seed = 0)
+        else:
+            self.skipTest('The random operations are not usable in graph mode with `torch` backend')
+    
+class TestCoreOps(CustomTestCase, parameterized.TestCase):
     @parameterized.product(
         operation   = ('array', 'empty', 'zeros', 'ones', 'full'),
         shape       = [(), (5, ), (5, 5), (5, 5, 5)],
         dtype       = ('uint8', 'int32', 'float16', 'float32', 'bool')
     )
     def test_tensor_creation(self, operation, shape, dtype):
-        self.assertTrue(hasattr(ops, operation), 'Operator {} is missing'.format(operation))
-        
         fn = getattr(ops, operation)
         self.assertTrue(getattr(fn, 'numpy_function', None) is None, 'numpy should be disabled')
         
@@ -38,13 +71,17 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         value   = fn(* args, dtype = dtype)
 
         self.assertTensor(value)
+        
+        graph_kwargs = {}
         if operation != 'array':
             self.assertEqual(value.shape, shape)
+            graph_kwargs['target_shape'] = shape
         
         if operation != 'empty' or keras.backend.backend() == 'tensorflow':
             self.assertEqual(value, target)
-            self.assertGraphCompatible(fn, * args, dtype = dtype, target = target)
-                        
+            graph_kwargs['target'] = target
+        
+        self.assertGraphCompatible(fn, * args, dtype = dtype, ** graph_kwargs)
 
     @parameterized.product(
         (
@@ -57,7 +94,6 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         dtype = ('int32', 'float32')
     )
     def test_range(self, start, end = None, step = None, dtype = 'float32'):
-        self.assertTrue(hasattr(ops, 'arange'), 'Operator `arange` is missing')
         self.assertTrue(ops.arange.numpy_function is None, 'numpy should be disabled')
 
         args    = [a for a in (start, end, step) if a is not None]
@@ -67,6 +103,41 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         self.assertTensor(value)
         self.assertEqual(value, target)
         self.assertGraphCompatible(ops.arange, * args, dtype = dtype, target = target)
+
+    @parameterized.parameters('int32', 'bool', 'float32')
+    def test_eye(self, dtype):
+        self.assertTrue(ops.eye.numpy_function is None, 'numpy should be disabled')
+
+        target  = K.eye(5, dtype = dtype)
+        value   = ops.eye(5, dtype = dtype)
+        
+        self.assertTensor(value)
+        self.assertEqual(value, target)
+        self.assertGraphCompatible(ops.eye, 5, dtype = dtype, target = target)
+
+    @parameterized.parameters([
+        (0, 'int32'),
+        (0., 'float32'),
+        (True, 'bool'),
+        ('Hello World !', 'string'),
+        ([0, 1, 2], 'int32'),
+        ([0., 1., 2.], 'float32'),
+        ([0, 1., 2.], 'int32'), # should take the type of the 1st item
+        ([[0], [1]], 'int32'),
+        (np.zeros((5, ), dtype = 'uint8'), 'uint8'),
+        (np.zeros((5, ), dtype = 'int32'), 'int32'),
+        (np.zeros((5, ), dtype = 'int64'), 'int32'),
+        (np.zeros((5, ), dtype = 'float16'), 'float32'),
+        (np.zeros((5, ), dtype = 'float32'), 'float32'),
+        (np.zeros((5, ), dtype = 'bool'), 'bool'),
+        (K.zeros((5, ), dtype = 'uint8'), 'uint8'),
+        (K.zeros((5, ), dtype = 'int32'), 'int32'),
+        (K.zeros((5, ), dtype = 'float16'), 'float16'),
+        (K.zeros((5, ), dtype = 'float32'), 'float32'),
+        (K.zeros((5, ), dtype = 'bool'), 'bool'),
+    ])
+    def test_get_convertion_type(self, data, target):
+        self.assertEqual(ops.get_convertion_dtype(data), target)
 
     @parameterized.named_parameters(
         ('integer', 1, False, False),
@@ -98,23 +169,24 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         if dtype == 'float': dtype = keras.backend.floatx()
         self.assertEqual(ops.dtype_to_str(array_cast.dtype), dtype)
 
-        if keras.backend.backend() == 'jax' and '64' in dtype: return
-        self.assertEqual(ops.dtype_to_str(tensor_cast.dtype), dtype)
+        if keras.backend.backend() != 'jax' or '64' not in dtype:
+            self.assertEqual(ops.dtype_to_str(tensor_cast.dtype), dtype)
         
         if hasattr(np, dtype):
             self.assertEqual(
-                ops.dtype_to_str(ops.cast(tensor, getattr(np, dtype)).dtype), dtype
-            )
-            self.assertEqual(
                 ops.dtype_to_str(ops.cast(array, getattr(np, dtype)).dtype), dtype
             )
+            if keras.backend.backend() != 'jax' or '64' not in dtype:
+                self.assertEqual(
+                    ops.dtype_to_str(ops.cast(tensor, getattr(np, dtype)).dtype), dtype
+                )
 
         if dtype == 'float32':
             self.assertTrue(
-                tensor is tensor_cast, 'The function creates a new instance for same dtype'
+                array is array_cast, 'The function creates a new instance for same dtype'
             )
             self.assertTrue(
-                array is array_cast, 'The function creates a new instance for same dtype'
+                tensor is tensor_cast, 'The function creates a new instance for same dtype'
             )
 
         self.assertEqual(ops.is_int(tensor_cast), 'int' in dtype)
@@ -127,30 +199,8 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         self.assertEqual(ops.is_bool(array_cast), dtype == 'bool')
         self.assertEqual(ops.is_numeric(array_cast), dtype != 'bool')
     
-    @parameterized.parameters([
-        (0, 'int32'),
-        (0., 'float32'),
-        (True, 'bool'),
-        ('Hello World !', 'string'),
-        ([0, 1, 2], 'int32'),
-        ([0., 1., 2.], 'float32'),
-        ([0, 1., 2.], 'int32'), # should take the type of the 1st item
-        ([[0], [1]], 'int32'),
-        (np.zeros((5, ), dtype = 'uint8'), 'uint8'),
-        (np.zeros((5, ), dtype = 'int32'), 'int32'),
-        (np.zeros((5, ), dtype = 'int64'), 'int32'),
-        (np.zeros((5, ), dtype = 'float16'), 'float32'),
-        (np.zeros((5, ), dtype = 'float32'), 'float32'),
-        (np.zeros((5, ), dtype = 'bool'), 'bool'),
-        (K.zeros((5, ), dtype = 'uint8'), 'uint8'),
-        (K.zeros((5, ), dtype = 'int32'), 'int32'),
-        (K.zeros((5, ), dtype = 'float16'), 'float16'),
-        (K.zeros((5, ), dtype = 'float32'), 'float32'),
-        (K.zeros((5, ), dtype = 'bool'), 'bool'),
-    ])
-    def test_get_convertion_type(self, data, target):
-        self.assertEqual(ops.get_convertion_dtype(data), target)
-    
+        self.assertGraphCompatible(ops.cast, array, dtype, target = array_cast)
+
     @parameterized.product(
         data  = (np.ones((5, ), dtype = 'float16'), K.ones((5, ), dtype = 'float16'), (256, 256)),
         dtype = (None, 'int32', 'float', 'float16', 'float32')
@@ -173,14 +223,55 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
         if K.is_tensor(data) and dtype in (None, 'float', 'float16'):
             self.assertTrue(tensor is data, 'the function created a new tensor')
         
+        if not isinstance(data, tuple):
+            self.assertGraphCompatible(ops.convert_to_tensor, data, dtype, target = array)
+            self.assertGraphCompatible(ops.convert_to_numpy, data, dtype, target = array)
+        
         try:
             tf_tensor = ops.convert_to_tf_tensor(data, dtype)
-            self.assertTfTensor(tensor)
+            self.assertTfTensor(tf_tensor)
             if dtype not in (None, 'float'):
-                self.assertTrue(ops.dtype_to_str(tensor.dtype) == dtype)
+                self.assertTrue(ops.dtype_to_str(tf_tensor.dtype) == dtype)
         except ops.TensorflowNotAvailable:
             self.skip('Tensorflow is not available, skipping the convert_to_tf_tensor test')
     
+                    
+
+    @parameterized.named_parameters(
+        ('test_array', np.arange(16).reshape(2, 4, 2).astype('int32')),
+        ('test_tensor', K.reshape(K.arange(16), [2, 4, 2]))
+    )
+    def test_slicing(self, data):
+        self.assertEqual(ops.slice(data, [0, 0, 0], list(data.shape)), data)
+        self.assertEqual(ops.slice(data, [0, 0, 0], [1, 3, 2]), data[: 1, :3, :2])
+        self.assertEqual(ops.slice(data, [1, 2, 0], [1, 1, 2]), data[1:2, 2:3, :])
+        if K.is_tensor(data):
+            self.assertTensor(ops.slice(data, [0, 0, 0], list(data.shape)))
+        else:
+            self.assertArray(ops.slice(data, [0, 0, 0], list(data.shape)))
+        
+
+        self.assertGraphCompatible(
+            ops.slice, data, [0, 0, 0], [1, 3, 2], target = data[: 1, :3, :2]
+        )
+        
+        update  = np.arange(4).reshape(2, 2, 1).astype('int32')
+        updated = ops.update_slice(data, [0, 1, 0], update)
+        
+        self.assertEqual(updated[:2, 1:3, :1], update)
+        
+        if K.is_tensor(data):
+            self.assertTensor(ops.slice(updated, [0, 0, 0], list(data.shape)))
+        else:
+            self.assertArray(ops.slice(updated, [0, 0, 0], list(data.shape)))
+            self.assertTrue(updated is data, 'The numpy slice update should be inplace')
+
+        self.assertGraphCompatible(
+            ops.update_slice, data, [0, 1, 0], update, target = updated
+        )
+
+    
+class TestNumpyOps(CustomTestCase, parameterized.TestCase):
     @parameterized.parameters(([16], ), ([4, 4], ), ([4, 2, 2], ), ([2, 2, 2, 2], ))
     def test_shapes(self, shape):
         tensor  = K.arange(16, dtype = 'int32')
@@ -217,7 +308,7 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
                 for axis in range(-1, len(shape)):
                     unstacked = ops.unstack(reshaped, axis = axis)
                     self.assertEqual(len(unstacked), shape[axis])
-                    self.assertEqual(unstacked, ops.array_ops._np_unstack(target, axis = axis))
+                    self.assertEqual(unstacked, ops.core._np_unstack(target, axis = axis))
                     _assert_valid_type(unstacked, nested = True)
 
                     rebuilt = ops.stack(unstacked, axis = axis)
@@ -248,74 +339,6 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
                     self.assertGraphCompatible(
                         ops.concat, splitted, axis = axis, target = reshaped
                     )
-                    
-
-    @parameterized.named_parameters(
-        ('test_array', np.arange(16).reshape(2, 4, 2).astype('int32')),
-        ('test_tensor', K.reshape(K.arange(16), [2, 4, 2]))
-    )
-    def test_slicing(self, data):
-        self.assertEqual(ops.slice(data, [0, 0, 0], list(data.shape)), data)
-        self.assertEqual(ops.slice(data, [0, 0, 0], [1, 3, 2]), data[: 1, :3, :2])
-        self.assertEqual(ops.slice(data, [1, 2, 0], [1, 1, 2]), data[1:2, 2:3, :])
-        if K.is_tensor(data):
-            self.assertTensor(ops.slice(data, [0, 0, 0], list(data.shape)))
-        else:
-            self.assertArray(ops.slice(data, [0, 0, 0], list(data.shape)))
-        
-
-        self.assertGraphCompatible(
-            ops.slice, data, [0, 0, 0], [1, 3, 2], target = data[: 1, :3, :2]
-        )
-        
-        update  = np.arange(4).reshape(2, 2, 1).astype('int32')
-        updated = ops.update_slice(data, [0, 1, 0], update)
-        
-        self.assertEqual(updated[:2, 1:3, :1], update)
-        
-        if K.is_tensor(data):
-            self.assertTensor(ops.slice(updated, [0, 0, 0], list(data.shape)))
-        else:
-            self.assertArray(ops.slice(updated, [0, 0, 0], list(data.shape)))
-            self.assertTrue(updated is data, 'The numpy slice update should be inplace')
-
-        self.assertGraphCompatible(
-            ops.update_slice, data, [0, 1, 0], update, target = updated
-        )
-
-    @parameterized.product(
-        method  = ('argmin', 'argmax', 'argsort'),
-        shape = [(16, ), (4, 4), (4, 2, 2), (2, 2, 2, 2)],
-        to_tensor   = (True, False)
-    )
-    def test_indexing(self, method, shape, to_tensor):
-        array = np.arange(np.prod(shape))
-        shuffled    = array.copy()
-        np.random.shuffle(shuffled)
-        array, shuffled = array.reshape(shape), shuffled.reshape(shape)
-        if to_tensor:
-            array       = K.convert_to_tensor(array)
-            shuffled    = K.convert_to_tensor(shuffled)
-        
-        dtype = 'int32' if to_tensor else 'int64'
-        for axis in  range(-1, len(shape)):
-            self.assertEqual(
-                getattr(ops, method)(array, axis = axis),
-                K.convert_to_numpy(getattr(K, method)(array, axis = axis)).astype(dtype)
-            )
-            self.assertEqual(
-                getattr(ops, method)(shuffled, axis = axis),
-                K.convert_to_numpy(getattr(K, method)(shuffled, axis = axis)).astype(dtype)
-            )
-
-            if to_tensor:
-                self.assertTensor(getattr(ops, method)(array, axis = axis))
-                self.assertGraphCompatible(
-                    getattr(ops, method), shuffled, axis = axis,
-                    target = getattr(K, method)(shuffled, axis = axis)
-                )
-            else:
-                self.assertArray(getattr(ops, method)(array, axis = axis))
 
     @parameterized.product(
         shape = [(16, ), (4, 4), (4, 2, 2), (2, 2, 2, 2)],
@@ -387,3 +410,77 @@ class TestCustomOps(CustomTestCase, parameterized.TestCase):
                     ops.take_along_axis, x, indices, axis = axis, target = target
                 )
 
+    @parameterized.product(
+        method  = ('argmin', 'argmax', 'argsort'),
+        shape = [(16, ), (4, 4), (4, 2, 2), (2, 2, 2, 2)],
+        to_tensor   = (True, False)
+    )
+    def test_indexing(self, method, shape, to_tensor):
+        array = np.arange(np.prod(shape))
+        shuffled    = array.copy()
+        np.random.shuffle(shuffled)
+        array, shuffled = array.reshape(shape), shuffled.reshape(shape)
+        if to_tensor:
+            array       = K.convert_to_tensor(array)
+            shuffled    = K.convert_to_tensor(shuffled)
+        
+        dtype = 'int32' if to_tensor else 'int64'
+        for axis in  range(-1, len(shape)):
+            self.assertEqual(
+                getattr(ops, method)(array, axis = axis),
+                K.convert_to_numpy(getattr(K, method)(array, axis = axis)).astype(dtype)
+            )
+            self.assertEqual(
+                getattr(ops, method)(shuffled, axis = axis),
+                K.convert_to_numpy(getattr(K, method)(shuffled, axis = axis)).astype(dtype)
+            )
+
+            if to_tensor:
+                self.assertTensor(getattr(ops, method)(array, axis = axis))
+                self.assertGraphCompatible(
+                    getattr(ops, method), shuffled, axis = axis,
+                    target = getattr(K, method)(shuffled, axis = axis)
+                )
+            else:
+                self.assertArray(getattr(ops, method)(array, axis = axis))
+class TestMathOps(CustomTestCase, parameterized.TestCase):
+    @parameterized.named_parameters(
+        * [(op, op) for op in ('sum', 'min', 'max', 'mean', 'argsort')]
+    )
+    def test_segment_op(self, op):
+        segment_op  = 'segment_' + op
+        np_fn = getattr(np, op)
+        
+        data        = np.random.uniform(0., 10., size = (64, 64)).astype('float32')
+        data_t      = K.convert_to_tensor(data, 'float32')
+        segment_ids = np.repeat(np.arange(8), 8).astype('int32')
+        num_segments    = 8
+        
+        for axis in (0, 1):
+            with self.subTest(axis = axis):
+                target = data if axis == 0 else data.T
+                target = [
+                    np_fn(target[segment_ids == id_i], axis = 0)
+                    for id_i in range(num_segments)
+                ]
+                if op == 'argsort':
+                    target = np.concatenate(target, axis = 0).astype('int32')
+                else:
+                    target = np.array(target)
+                if axis == 1: target = target.T
+                
+                array_res = getattr(ops, segment_op)(data, segment_ids, num_segments, axis = axis)
+                self.assertEqual(array_res, target)
+                self.assertArray(array_res)
+                
+                tensor_res = getattr(ops, segment_op)(
+                    data_t, segment_ids, num_segments, axis = axis
+                )
+                self.assertEqual(tensor_res, target)
+                self.assertTensor(tensor_res)
+                
+                self.assertGraphCompatible(
+                    getattr(ops, segment_op), data_t, segment_ids, num_segments, axis = axis,
+                    target = target
+                )
+            

@@ -18,9 +18,6 @@ HParamsMBartEncoder     = HParamsBartEncoder(
     mha_normalize   = False,
     mha_normalize_input = True,
     normalize_output    = True,
-    
-    epsilon = 1e-5,
-    mha_epsilon = 1e-5,
     ffn_activation  = 'gelu'
 )
 
@@ -31,11 +28,6 @@ HParamsMBartDecoder  = HParamsBartDecoder(
     mha_normalize_input = True,
     enc_mha_normalize   = False,
     enc_mha_normalize_input = True,
-    
-    epsilon = 1e-5,
-    mha_epsilon = 1e-5,
-    enc_mha_epsilon = 1e-5,
-
     ffn_activation  = 'gelu'
 )
 

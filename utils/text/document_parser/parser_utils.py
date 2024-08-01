@@ -9,22 +9,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
+
 from ..text_processing import split_text
 
-def clean_paragraphs(document):
-    """ Cleans `document` by stripping paragraph texts and removing empty ones """
-    cleaned = {}
-    for page_idx, para_list in document.items():
-        cleaned[page_idx] = []
-        for p in para_list:
-            p_clean = p.copy()
-            if 'text' in p_clean:
-                p_clean['text'] = p_clean['text'].strip()
-                if len(p_clean['text']) == 0: continue
-            
-            cleaned[page_idx].append(p_clean)
-    
-    return cleaned
+_reference_re   = r'\[\d+\]\s*'
+
+def remove_references(paragraphs):
+    for para in paragraphs:
+        if 'text' in para:
+            para['text'] = re.sub(_reference_re, '', para['text'])
+    return paragraphs
 
 def infer_pages(paragraphs,
                 start_number    = 0,
@@ -56,8 +51,6 @@ def infer_pages(paragraphs,
             
         * the function do not split big paragraphs so if a single paragraph have more words, it will be in a single page (the only paragraph for this page). 
     """    
-    pages = {}
-    
     page_number, total_p_words, total_p_lines = start_number, 0, 0
     current_paragraphs = []
     for paragraph in tqdm(paragraphs):
@@ -74,7 +67,7 @@ def infer_pages(paragraphs,
             total_p_words + n_words >= max_word_per_page or 
             total_p_lines + n_lines >= max_line_per_page
         ):
-            pages[page_number] = current_paragraphs
+            for p in current_paragraphs: p['page'] = page_number
             
             page_number += 1
             current_paragraphs = []
@@ -84,27 +77,55 @@ def infer_pages(paragraphs,
         total_p_words += n_words
         total_p_lines += n_lines
     
-    if len(current_paragraphs) > 0:
-        pages[page_number] = current_paragraphs
+    for p in current_paragraphs: p['page'] = page_number
     
-    return pages
+    return paragraphs
 
 def split_paragraphs(document, max_paragraph_length):
     """
         Returns a new `document` (mapping `{page_idx : paragraphs`) where paragraphs are shorter than `max_paragraphs_length`
     """
-    result = {}
-    for page_number, paragraphs in document.items():
-        splitted = []
-        for para in paragraphs:
-            if 'text' not in para or len(para['text']) <= max_paragraph_length:
-                splitted.append(para)
-                continue
+    splitted = []
+    for para in document:
+        if 'text' not in para or len(para['text']) <= max_paragraph_length:
+            splitted.append(para)
+            continue
+
+        parts = split_text(para['text'], max_paragraph_length)
+
+        splitted.extend([{** para, 'text' : part} for part in parts])
             
-            parts = split_text(para['text'], max_paragraph_length)
-            
-            splitted.extend([{** para, 'text' : part} for part in parts])
-        
-        result[page_number] = splitted
-            
+    return splitted
+
+def merge_paragraphs(paragraphs, key, sep = '\n\n', pop_keys = ('section', 'section_titles')):
+    merged = paragraphs[0].copy()
+    result = [merged]
+    for para in paragraphs[1:]:
+        if para[key] == merged[key]:
+            for k, v in para.items():
+                if k not in merged:
+                    merged[k] = v
+                elif k == 'text':
+                    merged['text'] = '{}{}{}'.format(
+                        merged['text'], sep, v
+                    )
+                elif para[k] != merged[k]:
+                    if isinstance(merged[k], list):
+                        merged[k].append(v)
+                    else:
+                        merged[k] = [merged[k], v]
+        else:
+            merged = para.copy()
+            result.append(merged)
+    
+    pop_keys = [k for k in pop_keys if key not in k]
+    for res in result:
+        for k in pop_keys: res.pop(k, None)
+    
     return result
+
+def group_paragraphs(paragraphs, key):
+    grouped = {}
+    for para in paragraphs:
+        grouped.setdefault(para[key], []).append(para)
+    return grouped

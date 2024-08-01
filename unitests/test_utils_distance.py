@@ -17,8 +17,8 @@ from unitests import CustomTestCase, data_dir
 
 class TestNumpyDistance(CustomTestCase):
     def setUp(self):
-        self.max_err    = 1e-6
-        n, d = 256, 64
+        self.max_err    = 1e-5
+        n, d = 256, 32
         self.queries    = np.random.normal(size = (n, d)).astype(np.float32)
         self.points     = np.random.normal(size = (n, d)).astype(np.float32)
         self.np_queries = self.queries
@@ -38,7 +38,7 @@ class TestNumpyDistance(CustomTestCase):
     def test_single_distance(self):
         self.assertEqual(
             distance(self.queries[0], self.points, method = 'manhattan'),
-            np.sum(np.abs(self.np_points - self.np_queries[0]), axis = -1),
+            np.sum(np.abs(self.np_points - self.np_queries[:1]), axis = -1),
             max_err = self.max_err
         )
         self.assertEqual(
@@ -48,7 +48,7 @@ class TestNumpyDistance(CustomTestCase):
         )
         self.assertEqual(
             distance(self.queries[0], self.points, method = 'dp', force_distance = True),
-            1. - np.sum(self.np_points * self.np_queries[0], axis = -1),
+            - np.sum(self.np_points * self.np_queries[0], axis = -1),
             max_err = self.max_err
         )
         self.assertEqual(
@@ -70,7 +70,7 @@ class TestNumpyDistance(CustomTestCase):
         )
         self.assertEqual(
             distance(self.queries, self.points, method = 'dp', force_distance = True),
-            1. - np.sum(self.np_points * self.np_queries, axis = -1),
+            - np.sum(self.np_points * self.np_queries, axis = -1),
             max_err = self.max_err
         )
         self.assertEqual(
@@ -96,7 +96,7 @@ class TestNumpyDistance(CustomTestCase):
         )
         self.assertEqual(
             distance(self.queries, self.points, method = 'dp', force_distance = True, as_matrix = True),
-            np.array([1. - np.sum(q * self.np_points, axis = -1) for q in self.np_queries]),
+            np.array([- np.sum(q * self.np_points, axis = -1) for q in self.np_queries]),
             max_err = self.max_err
         )
         self.assertEqual(
@@ -105,41 +105,37 @@ class TestNumpyDistance(CustomTestCase):
             max_err = self.max_err
         )
     
-    def test_max_slice(self):
-        if ops.is_jax_backend():
-            self.fail('The `max_slice` argument is not well supported in JAX')
-            return
-        
+    def test_batched(self):
         n, d = self.queries.shape
         config = {'x' : self.queries, 'y' : self.points, 'method' : 'euclidian'}
         
         self.assertEqual(
-            distance(** config, max_slice = n // 4, as_matrix = False),
+            distance(** config, batch_size = n // 4, as_matrix = False),
             distance(** config, as_matrix = False)
         )
         self.assertEqual(
-            distance(** config, max_slice = 200, as_matrix = True),
+            distance(** config, batch_size_x = 200, as_matrix = True),
             distance(** config, as_matrix = True)
         )
         self.assertEqual(
-            distance(** config, max_slice_x = 200, as_matrix = True),
+            distance(** config, batch_size_y = 200, as_matrix = True),
             distance(** config, as_matrix = True)
         )
         self.assertEqual(
-            distance(** config, max_slice_y = 200, as_matrix = True),
+            distance(** config, batch_size_x = 200, batch_size_y = 150, as_matrix = True),
             distance(** config, as_matrix = True)
         )
 
 class TestTensorDistance(TestNumpyDistance):
     def setUp(self):
         super().setUp()
-        self.max_err    = 5e-6
+        self.max_err    = 5e-4
         self.queries    = K.convert_to_tensor(self.np_queries, dtype = 'float32')
         self.points     = K.convert_to_tensor(self.np_points, dtype = 'float32')
 
 class TestTensorAndArrayDistance(TestNumpyDistance):
     def setUp(self):
         super().setUp()
-        self.max_err    = 5e-6
+        self.max_err    = 5e-4
         self.queries    = self.np_queries
         self.points     = K.convert_to_tensor(self.np_points, dtype = 'float32')

@@ -403,7 +403,11 @@ class TextEncoder(object):
         
         return (add_sos and self.sos_token, add_eos and self.eos_token)
     
-    def is_end_of_word(self, token, prev_token = None, next_token = None):
+    def is_end_of_word(self, tokens, index, tokens_to_not_split = []):
+        token = tokens[index]
+        prev_token = None if index == 0 else tokens[index - 1]
+        next_token = None if index == len(tokens) - 1 else tokens[index + 1]
+        
         if self.level == TextEncoderLevel.WORD:
             return True
         elif self.level == TextEncoderLevel.CHAR:
@@ -411,7 +415,11 @@ class TextEncoder(object):
         elif self.sub_word_prefix:
             return not self[next_token].startswith(self.sub_word_prefix)
         else:
-            _space = ' ' if self.byte_encoder is None else self.byte_encoder.get(32, ' ')
+            if next_token is None: return True
+            if hasattr(self, 'space_replacement'):
+                _space = self.space_replacement
+            else:
+                _space = ' ' if self.byte_encoder is None else self.byte_encoder.get(32, ' ')
             return self[next_token].startswith(_space)
     
     def clean_text(self, text, tokens = {}, ** kwargs):
@@ -726,21 +734,19 @@ class TextEncoder(object):
         if split_level == 'token':  can_split   = lambda * a, ** kw: True
         elif split_level == 'word': can_split   = self.is_end_of_word
         
-        start, parts = 0, []
-        while start < len(encoded):
-            end = min(start + max_length, len(encoded)) - 1
-            n_prev, n_post  = _can_split(encoded, end, encoded_not_split)
-
-            end = _get_split_index(
-                encoded, start, end - n_prev, can_split
-            )
-            if end - n_prev < new_end < end + n_post:
-                end = _get_split_index(
-                    encoded, start, end + n_post, can_split, _decrease = False
-                )
+        start, parts, _iter = 0, [], 0
+        while start < len(encoded) and _iter < 2 * len(encoded) / max_length:
+            end = min(start + max_length, len(encoded))
+            if not can_split(encoded, end - 1, encoded_not_split):
+                new_end = _get_split_index(
+                    encoded, start, end - 1, can_split
+                ) + 1
+                if new_end > start and new_end - start <= max_length:
+                    end = new_end
             
-            parts.append(encoded[start : end + 1])
+            parts.append(encoded[start : end])
             start = end
+            _iter += 1
         
         return parts
     
@@ -748,12 +754,17 @@ class TextEncoder(object):
     def split(self,
               text,
               max_length,
+              *,
+              
               prefix    = None,
               suffix    = None,
               sep_token = None,
+              
               return_type   = 'np',
+              
               split_level   = 'sentence',
               tokens_to_not_split   = None,
+              
               ** kwargs
              ):
         """
@@ -790,7 +801,8 @@ class TextEncoder(object):
         if tokens_to_not_split is None: tokens_to_not_split = []
         else:
             tokens_to_not_split = convert_to_str(tokens_to_not_split)
-            if not isinstance(tokens_to_not_split, list): tokens_to_not_split = [tokens_to_not_split]
+            if not isinstance(tokens_to_not_split, list):
+                tokens_to_not_split = [tokens_to_not_split]
         
         add_sos, add_eos = self._should_add_sos_and_eos(** kwargs)
 
@@ -843,8 +855,17 @@ class TextEncoder(object):
                     ) if length != len(encoded_sentences[i - 1]) else encoded_sentences[i - 1])
                     sents, length = [], 0
                 
-                sents.append(sent)
-                length += len(enc)
+                if len(enc) >= max_length:
+                    parts.extend(self.split_encoded(
+                        enc,
+                        max_length  = max_length,
+                        split_level = 'word',
+                        encoded_not_split   = encoded_not_split,
+                        ** kwargs
+                    ))
+                else:
+                    sents.append(sent)
+                    length += len(enc)
             
             if length > 0:
                 parts.append(self.encode(
@@ -852,6 +873,7 @@ class TextEncoder(object):
                 ) if length != len(encoded_sentences[-1]) else encoded_sentences[-1])
         
         
+        parts = [prefix + p + suffix for p in parts]
         lengths = [len(part) for part in parts]
         
         if return_type == 'list': return parts, lengths
@@ -888,11 +910,11 @@ class TextEncoder(object):
             pattern, split_key
         )
         
-        prefix  = splitted[0].format(** kwargs, ** self.tokens)
-        suffix  = splitted[1].format(** kwargs, ** self.tokens)
+        prefix  = splitted[0].format(** {** self.tokens, ** kwargs})
+        suffix  = splitted[1].format(** {** self.tokens, ** kwargs})
         
         return self.split(
-            kwargs[split_key], max_length, prefix = prefix, suffix = suffix, ** kwargs
+            kwargs.pop(split_key), max_length, prefix = prefix, suffix = suffix, ** kwargs
         )
     
     def extract_sentence(self, tokens, idx, punct = '.?!', ** kwargs):
@@ -973,7 +995,7 @@ class TextEncoder(object):
             _update = True
         
         if 'tokenizer' in config:
-            from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
+            from .sentencepiece_encoder import SentencePieceTextEncoder
             cls = SentencePieceTextEncoder
         
         instance = cls(** config)
@@ -1166,17 +1188,13 @@ def _can_split(encoded, idx, encoded_not_split):
 def _get_split_index(encoded, last_end, idx, _can_split_fn, _decrease = True):
     new_idx = idx
     while last_end < new_idx < len(encoded):
-        valid = _can_split_fn(
-            token   = encoded[idx],
-            prev_token  = encoded[idx - 1] if idx > 0 else None,
-            next_token  = encoded[idx + 1] if idx < len(encoded) - 1 else None
-        )
-        if _can_split_fn(encoded[idx]): return new_idx
+        valid = _can_split_fn(encoded, new_idx, ())
+        if valid:       return new_idx
         elif _decrease: new_idx -= 1
         else:           new_idx += 1
     
     if not _decrease: return len(encoded) - 1
-    return _get_split_index(encoded, last_end, idx, cans_plit_fn, False)
+    return _get_split_index(encoded, last_end, idx, _can_split_fn, False)
 
 
 

@@ -11,10 +11,9 @@
 
 from .parser import parse_document
 
-@parse_document.dispatch(('txt', 'md'))
+@parse_document.dispatch
 def parse_txt(filename, encoding = 'utf-8', paragraph_sep = '\n\n', ** kwargs):
     with open(filename, 'r', encoding = encoding) as f:
         text = f.read()
     
-    return [{'text' : p} for p in text.split(paragraph_sep)]
-
+    return [{'text' : para} for para in text.split(paragraph_sep)]

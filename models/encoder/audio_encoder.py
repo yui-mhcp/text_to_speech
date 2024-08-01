@@ -9,8 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pandas as pd
-
 from .base_encoder import BaseEncoderModel
 from utils.keras_utils import TensorSpec, ops
 from models.interfaces.base_audio_model import BaseAudioModel
@@ -119,6 +117,10 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
         return super().build(model = config)
 
     @property
+    def pad_value(self):
+        return self.pad_mel_value if self.use_mel_fn else 0.
+    
+    @property
     def input_signature(self):
         length = None if not self.use_fixed_length_input else self.max_input_length
         
@@ -170,14 +172,10 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
         return self.augment_audio(inp)
     
     def get_dataset_config(self, mode, ** kwargs):
-        kwargs.update({'pad_kwargs' : {}})
         if self.use_fixed_length_input:
             kwargs['pad_kwargs'] = {
                 'padded_shapes' : (self.input_signature.shape[1:], ())
             }
-        
-        if self.use_mel_fn:
-            kwargs['pad_kwargs']['padding_values'] = (self.pad_mel_value, 0)
         
         return super().get_dataset_config(mode, ** kwargs)
 

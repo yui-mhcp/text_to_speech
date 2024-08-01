@@ -11,35 +11,19 @@
 
 import keras.ops as K
 
-from functools import wraps
-
 from .ops_builder import build_op
 
-def _tf_conv(name):
-    def func(* args, ** kwargs):
-        import tensorflow as tf
-        if 'padding' in kwargs: kwargs['padding'] = kwargs['padding'].upper()
-        return getattr(tf.nn, name)(* args, ** kwargs)
-    return func
+__keras_all__ = ['affine_transform', 'crop_images', 'extract_patches', 'hsv_to_rgb', 'map_coordinates', 'pad_images', 'resize', 'rgb_to_grayscale', 'rgb_to_hsv']
 
-def _tf_stft(* args, center = None, ** kwargs):
-    import tensorflow as tf
-    return tf.signal.stft(* args, ** kwargs)
+globals().update({
+    k : build_op('image.{}'.format(k), disable_np = True) for k in __keras_all__ if k != 'resize'
+})
 
 def _tf_image_resize(* args, interpolation = None, ** kwargs):
     import tensorflow as tf
     if interpolation is not None: kwargs['method'] = interpolation
     return tf.image.resize(* args, ** kwargs)
 
-conv    = K.conv
-conv1d  = build_op('conv', _tf_conv('conv1d'), disable_np = True)
-conv2d  = build_op('conv', _tf_conv('conv2d'), disable_np = True)
-
-stft    = build_op('stft', _tf_stft, disable_np = True)
-resize_image    = image_resize  = resize    = build_op(
-    'image.resize', _tf_image_resize, disable_np = True
+resize  = image_resize  = resize_image  = build_op(
+    'image.resize', tf_op = _tf_image_resize, disable_np = True
 )
-rgb_to_grayscale    = build_op(
-    'image.rgb_to_grayscale', disable_np = True
-)
-

@@ -18,7 +18,7 @@ from loggers import timer
 from utils.keras_utils import ops
 from utils.wrapper_utils import args_to_kwargs
 from utils.generic_utils import get_enum_item
-from utils.image.image_io import get_image_size
+from ..image_io import get_image_size
 
 _keys_to_convert    = ('boxes', 'scores', 'classes', 'angles')
 

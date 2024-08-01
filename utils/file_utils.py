@@ -117,6 +117,29 @@ def hash_file(filename):
     with open(filename, 'rb') as file:
         return hashlib.sha256(file.read()).hexdigest()
 
+def remove_path(data, path):
+    if path is True:
+        try:
+            from .datasets import get_dataset_dir
+            path = get_dataset_dir()
+        except (ImportError, ModuleNotFoundError):
+            raise ImportError('Unable to import `get_dataset_dir`. Explicitely provide `prefix`')
+
+    if isinstance(data, str):
+        data, path = path_to_unix(data), path_to_unix(path)
+        if not path.endswith('/'): prefix += '/'
+        return data[len(path):] if data.startswith(path) else data
+    elif isinstance(data, dict):
+        for col in data:
+            if 'filename' not in col: continue
+            data[col] = [remove_path(f, path) for f in data[col]]
+    elif isinstance(data, pd.DataFrame):
+        for col in data.columns:
+            if 'filename' not in col: continue
+            data[col] = data[col].apply(lambda f: remove_path(f, path))
+    
+    return data
+
 def download_file(url,
                   filename  = None,
                   directory = None,
@@ -198,6 +221,12 @@ def load_json(filename, default = {}, ** kwargs):
     return json.loads(result)
 
 @load_data.dispatch
+def load_jsonl(filename, ** kwargs):
+    with open(filename, 'r', encoding = 'utf-8') as file:
+        lines = [l for l in file]
+    return [json.loads(l) for l in lines]
+
+@load_data.dispatch
 def load_npz(filename, ** kwargs):
     with np.load(filename) as file:
         data = {k : file[k] for k in file.files()}
@@ -210,21 +239,18 @@ def load_h5(filename, keys = None, ** kwargs):
     def get_data(v):
         return v.asstr()[:] if v.dtype == object else np.array(v)
     
-    def load_group(group, root):
+    def load_group(group):
+        res = {}
         for k, v in group.items():
-            path = '{}/{}'.format(group.name, k)
-            if isinstance(v, h5py.Group):
-                load_group(v, False)
-            else:
-                data[k if root else path] = get_data(v)
+            if '\\' in k: k = k.replace('\\', '/')
+            res[k] = get_data(v) if not isinstance(v, h5py.Group) else load_group(v)
+        return res
 
-    data = {}
     with h5py.File(filename, 'r') as file:
         if keys:
-            data = {k : get_data(file.get(k)) for k in keys if k in file}
+            return {k : get_data(file.get(k)) for k in keys if k in file}
         else:
-            load_group(file, True)
-    return data
+            return load_group(file)
 
 @load_data.dispatch('pkl')
 def load_pickle(filename, ** kwargs):
@@ -277,18 +303,28 @@ def dump_json(filename, data, ** kwargs):
 
 @dump_data.dispatch(('h5', 'hdf5'))
 def dump_h5(filename, data, mode = 'w', ** kwargs):
+    def _create_datasets(group, data):
+        for k, v in data.items():
+            if '/' in k: k.replace(k, '/', '\\')
+            
+            if isinstance(v, dict):
+                _create_datasets(group.create_group(k), v)
+                continue
+            elif k in group:
+                continue
+            elif not isinstance(v, np.ndarray):
+                v = ops.convert_to_numpy(v)
+            
+            dtype = h5py.string_dtype() if not ops.is_numeric(v) else None
+            if dtype is not None: v = v.astype(dtype)
+            group.create_dataset(k, data = v, dtype = dtype)
+
     import h5py
     
     if isinstance(data, pd.DataFrame): data = data.to_dict('list')
     
     with h5py.File(filename, mode) as file:
-        for k, v in data.items():
-            if k in file: continue
-            if not isinstance(v, np.ndarray): v = ops.convert_to_numpy(v)
-            
-            dtype = h5py.string_dtype() if not ops.is_numeric(v) else None
-            if dtype is not None: v = v.astype(dtype)
-            file.create_dataset(k, data = v, dtype = dtype)
+        _create_datasets(file, data)
     
 @dump_data.dispatch('pkl')
 def dump_pickle(filename, data, ** kwargs):

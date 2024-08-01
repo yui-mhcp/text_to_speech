@@ -11,62 +11,108 @@
 
 import os
 import glob
+import keras
+import inspect
 
-from utils.wrapper_utils import partial
+from utils import load_json, dump_json, partial, import_objects
 
-_attributes = ('custom_objects', 'custom_functions', '_encoders', '_decoders', '_transformers')
+_transformers = sorted(import_objects(
+    __package__.replace('.', os.path.sep), classes = keras.Model, allow_functions = False
+).items(), key = lambda p: len(p[0]), reverse = True)
 
-custom_objects = {}
-custom_functions = {}
+_hf_path    = os.path.expanduser('~/.cache/huggingface/hub')
 
-_encoders, _decoders, _transformers = {}, {}, {}
+_huggingface_mapping    = {
+    'BertForMaskedLM'   : 'BertMLM',
+}
 
-def __load():
-    for module_name in glob.glob(os.path.join(* __package__.split('.'), '*.py')):
-        if module_name.endswith(('__init__.py', '_old.py')): continue
-        module_name = module_name.replace(os.path.sep, '.')[:-3]
+_huggingface_config_mapping = {
+    'embedding_dim' : ('hidden_size', 'd_model'),
+    'num_layers'    : ('num_hidden_layers', 'layers'),
+    'epsilon'       : ('layer_norm_eps', ),
+    'drop_rate'     : ('hidden_dropout_prob', ),
+    
+    'mha_num_heads' : ('num_attention_heads', 'attention_heads'),
+    'mha_num_kv_heads'  : ('num_key_value_heads', ),
+    'mha_drop_rate' : ('hidden_dropout_prob', ),
+    
+    'ffn_dim'       : ('intermediate_size', 'ffn_dim'),
+    'ffn_activation'    : ('hidden_act', 'activation_function'),
+    
+    'sos_token'     : ('bos_token_id', ),
+    'eos_token'     : ('eos_token_id', ),
+    'pad_token'     : ('pad_token_id', ),
 
-        module = __import__(module_name, fromlist = _attributes)
-        
-        for attr_name in _attributes:
-            globals()[attr_name].update(getattr(module, attr_name, {}))
+    'max_token_types'   : ('type_vocab_size', ),
+    'max_input_length'  : ('max_position_embeddings', ),
+    
+    'transform_activation'  : ('hidden_act', )
+}
 
-        if not hasattr(module, '_transformers'):
-            if hasattr(module, '_encoders'):
-                _transformers.update(module._encoders)
-            if hasattr(module, '_decoders'):
-                _transformers.update(module._decoders)
-
-def __get_pretrained(_cls, _name, pretrained_name, class_name = None, wrapper = None, ** kwargs):
-    if wrapper is not None:
-        return wrapper.from_pretrained(
-            pretrained_name = pretrained_name, class_name = class_name, ** kwargs
+def download_hf_model(model_name, reload = False, ** kwargs):
+    path    = os.environ.get('HF_HUB_CACHE', _hf_path)
+    path    = os.path.join(path, 'models--{}'.format(model_name.replace('/', '--')), 'snapshots')
+    if not os.path.exists(path) or reload:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(
+            model_name, allow_patterns = ('*.json', '*.bin', '*.pt'), ** kwargs
         )
+    return glob.glob(path + '/*')[0]
+
+def load_hf_checkpoint(model_name, map_location = 'cpu', ** kwargs):
+    import torch
     
-    if not class_name: class_name = pretrained_name
-    class_name  = class_name.lower()
-    candidates  = {k.lower() : v for k, v in _cls.items()}
+    kwargs['map_location'] = map_location
+    kwargs = {k : v for k, v in kwargs.items() if k in inspect.signature(torch.load).parameters}
     
-    cls = None
-    if class_name in candidates:
-        cls = candidates[class_name]
-    else:
-        for name, cand in sorted(candidates.items(), key = lambda p: len(p[0]), reverse = True):
-            if name in class_name:
-                cls = cand
+    path = download_hf_model(model_name)
+    
+    weights = torch.load(glob.glob(os.path.join(path, '*model.bin'))[0], ** kwargs)
+    
+    for f in glob.glob(os.path.join(path, '*.pt')):
+        basename    = os.path.basename(f)[:-3]
+        additional_weights  = torch.load(f, ** kwargs)
+        weights.update({
+            '{}.{}'.format(basename, k) : v for k, v in additional_weights.items()
+        })
+    return weights
+
+def load_hf_config(model_name):
+    path = download_hf_model(model_name)
+    
+    return load_json(os.path.join(path, 'config.json'))
+
+def get_hf_class(model_name):
+    arch = load_hf_config(model_name)['architectures'][0]
+    return _huggingface_mapping.get(arch, arch)
+
+def convert_hf_config(config, hparams, prefix = None):
+    converted_config = {}
+    for k, v in config.items():
+        if prefix and k.startswith(prefix): k = k.replace(prefix + '_', '')
+
+        if k in hparams:
+            converted_config[k] = v
+            continue
+
+        for normalized, candidates in _huggingface_config_mapping.items():
+            if k in candidates:
+                converted_config[normalized] = v
                 break
+
+    return hparams(** converted_config)
+
+def get_hf_equivalent_class(model_name = None, model_class = None, ** _):
+    assert model_name or model_class
+    if model_class is None: model_class = get_hf_class(model_name)
+    model_class = model_class.lower()
     
-    if cls is None:
-        raise ValueError('Unknown {} class for pretrained model {}\n  Candidates : {}'.format(
-            _name, pretrained_name, tuple(_cls.keys())
-        ))
+    for name, obj in _transformers:
+        if name.lower() in model_class:
+            return obj
+    raise ValueError('No matching class found for {}\n  Candidates : {}'.format(
+        model_class, tuple(_models.keys())
+    ))
 
-    return cls.from_pretrained(pretrained_name = pretrained_name, ** kwargs)
-
-
-get_pretrained_transformer      = partial(__get_pretrained, _transformers, 'transformer')
-get_pretrained_transformer_encoder  = partial(__get_pretrained, _encoders, 'encoder')
-get_pretrained_transformer_decoder  = partial(__get_pretrained, _decoders, 'decoder')
-
-#__load()
-
+def get_pretrained_transformer(pretrained, ** kwargs):
+    return get_hf_equivalent_class(pretrained, ** kwargs).from_pretrained(pretrained, ** kwargs)

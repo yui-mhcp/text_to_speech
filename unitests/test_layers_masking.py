@@ -53,7 +53,7 @@ class TestMaskedConv1D(CustomTestCase, parameterized.TestCase):
                 model.add(masked_1d.MaskedZeroPadding1D((k_half, k_half)))
             model.add(masked_1d.MaskedConv1D(512, padding = _padding, ** kwargs))
         
-        with keras.device('cpu'):
+        with keras.device('cpu:0'):
             out1 = model(self.inputs)
         out_length  = out1.shape[1]
         
@@ -65,7 +65,7 @@ class TestMaskedConv1D(CustomTestCase, parameterized.TestCase):
         if getattr(out1, '_keras_mask', None) is not None:
             self.assertTrue(np.all(K.convert_to_numpy(out1._keras_mask)))
         
-        with keras.device('cpu'):
+        with keras.device('cpu:0'):
             out2 = model(self.padded)
         
         if getattr(out2, '_keras_mask', None) is not None:

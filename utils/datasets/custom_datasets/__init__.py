@@ -43,6 +43,9 @@ class Task(enum.Enum):
     STT     = 'Speech To Text'
     SI      = 'Speaker Identification'
     
+    QA      = 'Question Answering (Q&A)'
+    
+
 def set_dataset_dir(directory):
     global _dataset_dir
     _dataset_dir = directory
@@ -156,10 +159,10 @@ def load_custom_dataset(dataset,
         if prefix not in dataset_infos: continue
         
         dataset = process_fn(** format_kwargs({
+            'subset'    : prefix,
             ** {** dataset_infos, ** dataset_infos[prefix]},
             ** kwargs,
-            ** {k.replace(prefix + '_', '') : v for k, v in kwargs.items() if k.startswith(prefix)},
-            'subset'    : subset
+            ** {k.replace(prefix + '_', '') : v for k, v in kwargs.items() if k.startswith(prefix)}
         }))
         if shuffle: dataset = sklearn_shuffle(dataset, random_state = random_state)
         datasets[prefix] = dataset
@@ -169,8 +172,8 @@ def load_custom_dataset(dataset,
 def maybe_load_embedding(directory, dataset, ** kwargs):
     if 'embedding' in dataset.columns: return dataset
     if any(k.startswith('embedding_') for k in kwargs.keys()):
-        from utils.embeddings import load_embedding
-        return load_embedding(directory, dataset = dataset, ** kwargs)
+        from utils.embeddings import load_embeddings
+        return load_embeddings(directory, dataset = dataset, ** kwargs)
     return dataset
 
 for module in os.listdir(__path__[0]):

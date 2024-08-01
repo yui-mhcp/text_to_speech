@@ -68,7 +68,7 @@ def get_image_size(image):
     
 @timer
 @graph_compile(
-    support_xla = False, cast_kwargs = False, follow_type_hints = None, force_tensorflow = True
+    support_xla = False, cast_kwargs = False, force_tensorflow = True
 )
 def load_image(filename : TensorSpec(),
 
@@ -91,12 +91,12 @@ def load_image(filename : TensorSpec(),
             - channels  : required kwarg for `tf.image.decode_image`
             - mode      : 'rgb', 'gray' or None, convert the image to the appropriate output type
                 If gray, the last dimension will be 1 and if 'rgb' will be 3. If 'None' the last dimension will be either 1 or 3 depending on the original image format
-            - as_array  : converts the output image to `np.ndarray`
+            - to_tensor : converts the output image to `Tensor`
             
             - boxes     : [x, y, w, h] position to extract
             - kwargs    : forwarded to `utils.image.bounding_box.crop_box` if `bbox` is provided
         Return :
-            - image : 3-D `Tensor` if `as_array == False`, `np.ndarray` otherwise
+            - image : 3-D `Tensor` if `to_tensor == True`, `np.ndarray | Tensor` otherwise
         
         Note : if a filename is given, it loads the image with `tf.image.decode_image` (if tensorflow backend) or `PIL.Image.load` otherwise
     """
@@ -161,7 +161,8 @@ def save_image(filename, image, ** kwargs):
         Return :
             - filename  : the image filename (the argument)
     """
-    image = load_image(image, dtype = 'uint8', as_array = True, ** kwargs)
+    image = load_image(image, dtype = 'uint8', to_tensor = False, run_eagerly = True, ** kwargs)
+    image = ops.convert_to_numpy(image)
     
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
@@ -510,7 +511,8 @@ def build_sprite(images, image_size = 128, directory = None, filename = 'sprite.
     
     for i, img in enumerate(images):
         img = load_image(
-            img, target_shape = (image_size, image_size, 3), dtype = 'uint8', as_array = True
+            img, target_shape = (image_size, image_size, 3), dtype = 'uint8',
+            to_tensor = False, run_eagerly = True
         )
         
         row, col = i // n, i % n

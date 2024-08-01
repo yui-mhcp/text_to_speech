@@ -11,8 +11,14 @@
 
 import keras
 import numpy as np
+import pandas as pd
 
+from functools import wraps
+
+from loggers import timer
 from utils.keras_utils import ops
+from .generic_utils import get_args
+from .wrapper_utils import args_to_kwargs
 
 def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     """
@@ -52,8 +58,8 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
 
 def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
     """ Pad `seq[axis]` to the next multiple of `multiple` (if not a multiple of it) """
-    if not isinstance(axis, (list, tuple, np.ndarray)):     axis = [axis]
-    if not isinstance(multiple, (list, tuple, np.ndarray)): multiple = [multiple]
+    if isinstance(axis, int):       axis = [axis]
+    if isinstance(multiple, int):   multiple = [multiple]
     axis = [ax if ax >= 0 else len(data.shape) + ax for ax in axis]
     
     shape   = ops.shape(data)
@@ -81,6 +87,167 @@ def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
 
     return ops.pad(data, paddings, ** kwargs) if should_pad else data
 
+def apply_on_batch(fn = None,
+                   *,
+                   
+                   cond = None,
+                   batched_arg  = 0,
+                   default_batch_size = None,
+                   
+                   sort_fn  = None,
+                   sort_key = None,
+                   
+                   concat_fn    = None,
+                   concat_axis  = 0
+                  ):
+    def wrapper(fn):
+        @timer(name = 'batched_{}'.format(fn.__name__))
+        @wraps(fn)
+        @args_to_kwargs(fn)
+        def batched_fn(*,
+                       
+                       batch_size   = default_batch_size,
+                       return_inputs    = False,
+                       tqdm = None,
+                       ** kwargs
+                      ):
+            if not isinstance(batched_argname, (list, tuple)):
+                batch_size = kwargs.pop('batch_size_{}'.format(batched_argname), batch_size)
+            
+            if cond is not None:
+                batch_size, kwargs = cond(batch_size, kwargs)
+            
+            if not batch_size: return fn(** kwargs)
+            
+            if tqdm is None: tqdm = lambda x: x
+            
+            if isinstance(batched_argname, str):
+                inputs = _to_iterable(kwargs.pop(batched_argname))
+                length = len(inputs)
+            else:
+                inputs = {n : _to_iterable(kwargs.pop(n)) for n in batched_argname}
+                length = len(inputs[batched_argname[0]])
+            
+            if sort_key is not None:
+                if isinstance(inputs, pd.DataFrame):
+                    sorted_indexes = sorted(
+                        range(length), key = lambda i: sort_key(inputs.iloc[i]), reverse = True
+                    )
+                    inputs = inputs.iloc[sorted_indexes]
+                else:
+                    sorted_indexes = sorted(
+                        range(length), key = lambda i: sort_key(inputs[i]), reverse = True
+                    )
+                    inputs = [inputs[idx] for idx in sorted_indexes]
+                invert_indexes = np.argsort(np.array(sorted_indexes, dtype = 'int32'))
+            
+            results = None
+            for idx in tqdm(range(0, length, batch_size)):
+                if isinstance(batched_argname, (list, tuple)):
+                    kwargs.update(_get_batch(inputs, idx, batch_size))
+                else:
+                    kwargs[batched_argname] = _get_batch(inputs, idx, batch_size)
+                
+                out = fn(** kwargs)
+                
+                results = nested_append(results, out)
+
+            if concat_fn is not None:
+                results = concat_fn(results)
+            else:
+                results = nested_concat(results, axis = concat_axis)
+            
+            if sort_key is not None:
+                results = nested_gather(results, invert_indexes, axis = concat_axis)
+            
+            return results
+        
+        batched_argname = batched_arg
+        if isinstance(batched_arg, int):
+            _args = get_args(fn)
+            if _args[0] == 'self': _args = _args[1:]
+            batched_argname = _args[batched_arg]
+            
+        return batched_fn
+    return wrapper if fn is None else wrapper(fn)
+
+def _to_iterable(value):
+    if isinstance(value, str): return [value]
+    return value
+
+@timer
+def nested_append(acc, value):
+    if isinstance(value, (list, tuple)):
+        return value.__class__(* [
+            nested_append(acc[i] if acc else None, value[i]) for i in range(len(value))
+        ])
+    elif isinstance(value, dict):
+        return {
+            k : nested_append(acc[k] if acc else None, value[k]) for k in value.keys()
+        }
+    
+    if acc is None: return [value] if ops.is_array(value) else value
+    acc.append(value)
+    return acc
+
+@timer
+def nested_concat(values, variable_length = None, pad_value = 0., axis = 0):
+    if isinstance(values, dict):
+        return {k : nested_concat(v, variable_length, pad_value, axis) for k, v in values.items()}
+    elif isinstance(values, tuple):
+        return values.__class__(* [
+            nested_concat(v, variable_length, pad_value, axis) for v in values
+        ])
+    elif not isinstance(values, list):
+        return values
+    elif isinstance(values[0], list):
+        return [nested_concat(v, variable_length, pad_value, axis) for v in values]
+    elif len(values) == 1:
+        return values[0]
+    
+    if variable_length is None:
+        variable_length = len(set([
+            tuple([s for i, s in enumerate(it.shape) if i != axis]) for it in values]
+        )) > 1
+    
+    if variable_length:
+        return concat_sequences(values, pad_value = pad_value, axis = axis)
+    else:
+        return ops.concatenate(values, axis = axis)
+
+@timer
+def nested_gather(values, indexes, axis):
+    if isinstance(values, dict):
+        return {k : nested_gather(v, indexes, axis) for k, v in values.items()}
+    elif isinstance(values, list):
+        return [nested_gather(v, indexes, axis) for v in values]
+    elif ops.is_array(values):
+        return ops.take(values, indexes, axis)
+    return values[indexes]
+    
+def concat_sequences(sequences, pad_value = 0., pad_mode = 'after', axis = 0):
+    shapes = ops.stack([
+        ops.convert_to_numpy(ops.shape(item)) for item in sequences
+    ], axis = 0)
+    
+    max_it_shape    = ops.max(shapes[:, 1:], axis = 0, keepdims = True)
+    pad_shapes      = max_it_shape - shapes[:, 1:]
+    
+    pad_shapes  = ops.stack([pad_shapes, ops.zeros_like(pad_shapes)], axis = 2)
+    if pad_mode == 'before': pad_shapes = ops.flip(pad_shapes, axis = 2)
+    pad_shapes = ops.pad(pad_shapes, [(0, 0), (1, 0), (0, 0)], constant_values = 0)
+    
+    return ops.concatenate([
+        ops.pad(it, pad_shapes[i], constant_values = pad_value)
+        for i, it in enumerate(sequences)
+    ], axis = axis)
+
+def _get_batch(data, start, size):
+    if isinstance(data, dict):
+        return {k : _get_batch(d, start, size) for k, d in data.items()}
+    if isinstance(data, pd.DataFrame): return data.iloc[start : start + size]
+    return data[start : start + size]
+
 def truncate(tokens, max_length, keep_mode = 'start'):
     """ Truncate a sequence of shape `(length, )` to `max_length` """
     assert mode in ('random', 'start', 'end')
@@ -99,26 +266,4 @@ def truncate(tokens, max_length, keep_mode = 'start'):
             start = 0
                 
     return tokens[start : start + max_length]
-
-def concat_sequences(seq1, seq2, pad_value):
-    """
-        Concat 2 sequences on the 0-axis
-        Arguments :
-            - seq1  : sequence with shape `(n1, len_1)`
-            - seq2  : sequence with shape `(n2, len_2)`
-            - pad_value : the padding value for the shortest sequence
-        Returns :
-            - concatenation with shape `(n1 + n2, max(len_1, len_2))`
-    """
-    len_1, len_2 = ops.shape(seq1)[1], ops.shape(seq2)[1]
-
-    if len_1 != len_2:
-        padding = [(0, 0), (0, ops.abs(len_1 - len_2))]
-        if len_1 > len_2:
-            seq2 = ops.pad(seq2, padding, constant_values = pad_value)
-        else:
-            seq1 = ops.pad(seq1, padding, constant_values = pad_value)
     
-    return ops.concatenate([seq1, seq2], axis = 0)
-
-

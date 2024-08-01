@@ -17,7 +17,7 @@ import pandas as pd
 from .base_model import BaseModel
 from utils.hparams import HParams
 from utils.keras_utils import TensorSpec, ops, execute_eagerly
-from utils import convert_to_str, load_embedding, save_embeddings, select_embedding, sample_df
+from utils import convert_to_str, load_embeddings, save_embeddings, select_embedding, sample_df
 
 logger  = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ class BaseEmbeddingModel(BaseModel):
         if filename is None:
             filename = _default_embeddings_filename
         
-        embeddings = load_embedding(
+        embeddings = load_embeddings(
             directory, embedding_dim = directory, embedding_name = filename, ** kwargs
         )
         

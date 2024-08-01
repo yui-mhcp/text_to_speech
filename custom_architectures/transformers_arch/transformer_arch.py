@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import keras
 import logging
 import collections
@@ -63,7 +64,7 @@ HParamsTransformerLayer = HParams(
     ** HParamsMHA.get_config(add_prefix = 'enc_mha'),
     embedding_dim   = 512,
     normalize   = 'after',
-    epsilon     = 1e-12,
+    epsilon     = 1e-5,
     drop_rate   = 0.1,
     mha_ffn_in_parallel = False,
     use_encoder_attention   = False,
@@ -263,59 +264,12 @@ def FeedForwardNetwork(ffn_dim,
     
     if use_up_proj:
         proj = keras.layers.Dense(ffn_dim, use_bias = use_bias, name = 'up_proj')(inputs)
-        x    = keras.layers.Multiply()([proj, x])
+        x    = K.multiply(proj, x)
     
     x = keras.layers.Dense(embedding_dim, use_bias = use_bias, name = 'dense_2')(x)
     model = keras.Model(inputs, x, name = name)
     model.supports_masking = True
     return model
-
-class FeedForwardNetworkOld(keras.Model):
-    def __init__(self,
-                 ffn_dim,
-                 ffn_activation,
-                 embedding_dim,
-                 use_bias   = True,
-                 use_up_proj    = False,
-                 name = 'ffn'
-                ):
-        """
-            Simple 2-`Dense` sequential network with an activation function between the 2 layers.
-            
-            Arguments :
-                - ffn_dim   : the 1st layer's number of units
-                - ffn_activation    : the activation function between the 2 layers
-                - embedding_dim     : the Transformers' depth (the number of units for the 2nd layer)
-        """
-        super().__init__(name = name)
-        
-        if isinstance(ffn_dim, float): ffn_dim = int(ffn_dim * embedding_dim)
-        self.ffn_dim    = ffn_dim
-        self.use_bias   = use_bias
-        self.use_up_proj    = use_up_proj
-        self.ffn_activation = ffn_activation
-        self.embedding_dim  = embedding_dim
-        
-        self.dense_1    = keras.layers.Dense(ffn_dim, use_bias = use_bias, name = 'dense_1')
-        self.up_proj    = keras.layers.Dense(ffn_dim, use_bias = use_bias, name = 'up_proj') if use_up_proj else None
-        self.act        = get_activation(ffn_activation)
-        self.dense_2    = keras.layers.Dense(embedding_dim, use_bias = use_bias, name = 'dense_2')
-    
-    def call(self, inputs, training = False):
-        x = self.dense_1(inputs)
-        if self.act is not None: x = self.act(x)
-        if self.use_up_proj:     x = x * self.up_proj(inputs)
-        return self.dense_2(x)
-
-    def get_config(self):
-        return {
-            'name'  : self.name,
-            'ffn_dim'   : self.ffn_dim,
-            'use_bias'  : self.use_bias,
-            'use_up_proj'   : self.use_up_proj,
-            'ffn_activation'    : self.ffn_activation,
-            'embedding_dim' : self.embedding_dim
-        }
 
 @keras.saving.register_keras_serializable('transformers')
 class TransformerLayer(keras.layers.Layer):
@@ -779,14 +733,6 @@ class TransformerBlock(keras.Model):
             return_mask         = return_mask,
             as_dict = as_dict
         )
-    
-    def transfer_weights(self, pretrained, ** kwargs):
-        from models.weights_converter import (
-            _transformer_patterns, name_based_partial_transfer_learning
-        )
-        kwargs.setdefault('patterns', _transformer_patterns)
-
-        return name_based_partial_transfer_learning(self, pretrained, ** kwargs)
 
     def get_output_shape(self,
                          inputs,
@@ -848,6 +794,70 @@ class TransformerBlock(keras.Model):
     def get_config(self):
         return self.hparams.get_config()
     
+    def transfer_weights(self, pretrained, ** kwargs):
+        from models.weights_converter import (
+            _transformer_patterns, name_based_partial_transfer_learning
+        )
+        kwargs.setdefault('patterns', _transformer_patterns)
+
+        return name_based_partial_transfer_learning(self, pretrained, ** kwargs)
+
+    @classmethod
+    def convert_config(cls, config, prefix = None):
+        from . import convert_hf_config
+        if prefix is None:
+            if 'Encoder' in cls.__name__: prefix = 'encoder'
+            if 'Decoder' in cls.__name__: prefix = 'decoder'
+        
+        return convert_hf_config(config, cls.default_params, prefix)
+    
+    @classmethod
+    def from_pretrained(cls, pretrained = None, pretrained_name = None, ** kwargs):
+        from . import load_hf_checkpoint, load_hf_config
+        from utils import load_json, dump_json
+        from models import get_pretrained_weights_dir
+        
+        if isinstance(pretrained, str):
+            pretrained, pretrained_name = None, pretrained
+        elif pretrained_name is None:
+            pretrained_name = pretrained.name_or_path
+        
+        model_dir   = os.path.join(
+            get_pretrained_weights_dir(), cls.__name__ + '--' + pretrained_name.replace('/', '--')
+        )
+        config_file     = os.path.join(model_dir, 'config.json')
+        weights_file    = os.path.join(model_dir, 'model.weights.h5')
+        os.makedirs(model_dir, exist_ok = True)
+        
+        if os.path.exists(config_file) and not kwargs.get('overwrite', False):
+            instance = cls.from_config({** load_json(config_file), ** kwargs})
+        else:
+            hparams  = cls.convert_config(
+                load_hf_config(pretrained_name) if pretrained is None else pretrained.config.to_dict(),
+                pretrained = pretrained_name
+            )
+            instance = cls(** hparams(** kwargs))
+            
+            dump_json(config_file, instance.get_config(), indent = 4)
+        
+        instance.build((None, None))
+        
+        weights_loaded = False
+        if os.path.exists(weights_file) and not kwargs.get('overwrite', False):
+            try:
+                instance.load_weights(weights_file)
+                weights_loaded = True
+            except ValueError as e:
+                logger.error('An error occured while loading weights : {}'.format(e))
+        
+        if not weights_loaded:
+            logger.debug(instance.transfer_weights(
+                load_hf_checkpoint(pretrained_name) if pretrained is None else pretrained,
+                ** kwargs
+            ))
+            instance.save_weights(weights_file)
+
+        return instance
 
 @keras.saving.register_keras_serializable('transformers')
 class TransformerEncoder(TransformerBlock):
@@ -1138,3 +1148,61 @@ class Transformer(keras.Model):
                 'decoder'   : keras.saving.deserialize_keras_object(config['decoder'])
             })
         return cls(** config)
+
+    @classmethod
+    def convert_config(cls, config, prefix = None):
+        from . import convert_hf_config
+        
+        encoder_config = cls.encoder_class.convert_config(config, prefix = 'encoder')
+        decoder_config = cls.decoder_class.convert_config(config, prefix = 'decoder')
+        global_config  = convert_hf_config(config, cls.default_params)
+        
+        return global_config(
+            ** encoder_config.get_config(add_prefix = 'encoder'),
+            ** decoder_config.get_config(add_prefix = 'decoder')
+        )
+
+    @classmethod
+    def from_pretrained(cls, pretrained = None, pretrained_name = None, ** kwargs):
+        from . import load_hf_checkpoint, load_hf_config
+        from utils import load_json, dump_json
+        from models import get_pretrained_weights_dir
+        
+        if isinstance(pretrained, str):
+            pretrained, pretrained_name = None, pretrained
+        elif pretrained_name is None:
+            pretrained_name = pretrained.name_or_path
+        
+        model_dir   = os.path.join(
+            get_pretrained_weights_dir(), pretrained_name.replace('/', '--')
+        )
+        config_file     = os.path.join(model_dir, 'config.json')
+        weights_file    = os.path.join(model_dir, 'model.weights.h5')
+        os.makedirs(model_dir, exist_ok = True)
+        
+        if os.path.exists(config_file) and not kwargs.get('overwrite', False):
+            instance = cls.from_config({** load_json(config_file), ** kwargs})
+        else:
+            hparams  = cls.convert_config(
+                load_hf_config(pretrained_name) if pretrained is None else pretrained.config.to_dict()
+            )
+            instance = cls(** hparams(** kwargs))
+            
+            dump_json(config_file, instance.get_config(), indent = 4)
+        
+        instance.build((None, None))
+        
+        weights_loaded = False
+        if os.path.exists(weights_file) and not kwargs.get('overwrite', False):
+            try:
+                instance.load_weights(weights_file)
+                weights_loaded = True
+            except ValueError as e:
+                logger.error('An error occured while loading weights : {}'.format(e))
+        
+        if not weights_loaded:
+            weights = load_hf_checkpoint(pretrained_name) if pretrained is None else pretrained
+            logger.debug(instance.encoder.transfer_weights(weights, ** kwargs))
+            logger.debug(instance.decoder.transfer_weights(weights, ** kwargs))
+
+        return instance

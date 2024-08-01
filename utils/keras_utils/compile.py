@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import enum
 import inspect
 import logging
 import warnings
@@ -38,6 +39,11 @@ def is_tensorflow_available():
         return True
     except:
         return False
+
+class ExecutionMode(enum.IntEnum):
+    EAGER   = 0
+    GRAPH   = 1
+    XLA     = 2
 
 @dataclass
 class TensorSpec:
@@ -92,10 +98,12 @@ def set_eager_execution(eager):
     else:       _should_execute_eagerly.pop(_get_thread_id())
 
 def graph_compile(fn    = None,
+                  *,
                   
                   cast_kwargs   = True,
                   cast_defaults = True,
                   follow_type_hints = True,
+                  eager_convertion  = False,
                   
                   support_xla   = True,
                   prefer_xla    = None,
@@ -163,75 +171,74 @@ def graph_compile(fn    = None,
                 )
                 return fn(* args, ** kwargs)
             
-            _follow_type_hints = follow_type_hints if follow_type_hints is not None else run_eagerly != True
-            if _follow_type_hints and fn_annots:
+            execution_mode, ctx_manager = _infer_execution_mode(
+                run_eagerly = run_eagerly,
+                
+                use_xla = use_xla,
+                prefer_xla  = prefer_xla,
+                support_xla = support_xla,
+                
+                force_tensorflow    = force_tensorflow
+            )
+
+            _should_cast = execution_mode != ExecutionMode.EAGER or eager_convertion
+            if _should_cast and follow_type_hints and fn_annots:
                 with time_logger.timer('follow_type_hints', debug = True):
                     args = tuple([
-                        _cast_arg(arg, fn_annots[name], force_tensorflow) if name in fn_annots else arg
+                        _cast_arg(arg, fn_annots[name], force_tensorflow, execution_mode) if name in fn_annots else arg
                         for name, arg in zip(fn_args[: len(args)], args)
                     ])
                     kwargs  = {
-                        k : _cast_arg(v, fn_annots[k], force_tensorflow) if k in fn_annots else v
+                        k : _cast_arg(v, fn_annots[k], force_tensorflow, execution_mode) if k in fn_annots else v
                         for k, v in kwargs.items()
                     }
             
-            if not skip_kwargs and cast_kwargs:
+            if not skip_kwargs and _should_cast and cast_kwargs:
                 with time_logger.timer('cast_kwargs', debug = True):
                     for k, v in kwargs.items():
                         if k not in fn_all_names:
                             kwargs[k] = _cast_arg(v, None, force_tensorflow)
             
-            if cast_defaults and defaults_to_cast:
+            if _should_cast and cast_defaults and defaults_to_cast:
                 with time_logger.timer('cast_defaults', debug = True):
                     for k, (val, annot) in defaults_to_cast.items():
                         if k not in fn_args[:len(args)] and k not in kwargs:
-                            kwargs[k] = _cast_arg(val, annot, force_tensorflow)
+                            kwargs[k] = _cast_arg(val, annot, force_tensorflow, execution_mode)
             
             if not ops.executing_eagerly(): return fn(* args, ** kwargs)
-
-            if should_execute_eagerly() and run_eagerly is not False:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('The function is requested to run eagerly by another function')
-                return fn(* args, ** kwargs)
-            elif run_eagerly:
-                with EagerExecution():
-                    return fn(* args, ** kwargs)
-
-            if use_xla is None:
-                use_xla = (support_xla and jit_compile()) or prefer_xla
-            elif use_xla and not support_xla:
-                warnings.warn('`use_xla = True` but the function {} does not support XLA\nSet `support_xla = True` in the decorator if you want to enable it'.format(fn))
-                use_xla = False
-
-            if not use_xla and not ops.is_tensorflow_backend():
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('The function should be executed in graph without XLA which is not supported by this backend')
+            if execution_mode == ExecutionMode.EAGER:
+                if ctx_manager is not None:
+                    with ctx_manager: return fn(* args, ** kwargs)
                 return fn(* args, ** kwargs)
             
             _compile_kwargs = compile_kwargs
-            if use_xla and ops.is_jax_backend() and static_args == 'auto':
+            if (execution_mode == ExecutionMode.XLA
+                and ops.is_jax_backend()
+                and not force_tensorflow
+                and static_args == 'auto'):
                 _compile_kwargs = _compile_kwargs.copy()
                 for k, v in kwargs.items():
                     if k not in fn_all_names and not ops.is_tensor(v):
                         _compile_kwargs['static_argnames'] += [k]
             
-            key = 'xla' if use_xla else 'graph'
+            key = 'xla' if execution_mode == ExecutionMode.XLA else 'graph'
             if recompile or key not in _compiled:
                 _fn = fn_with_retracing_logs if force_tensorflow or ops.is_tensorflow_backend() else fn
                 _compiled[key] = timer(compile_function(
-                    _fn, jit_compile = use_xla, ** _compile_kwargs
+                    _fn, jit_compile = execution_mode == ExecutionMode.XLA, ** _compile_kwargs
                 ), name = '{}_{}'.format(key, fn_name), debug = True)
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('The function is executed in {} mode'.format(key))
 
-            if use_xla and prepare_for_xla is not None:
+            if execution_mode == ExecutionMode.XLA and prepare_for_xla is not None:
                 args, kwargs = prepare_for_xla(* args, ** kwargs)
             elif prepare_for_graph is not None:
                 args, kwargs = prepare_for_graph(* args, ** kwargs)
 
-            with XLAExecution(force_tensorflow = force_tensorflow):
-                return _compiled[key](* args, ** kwargs)
+            if ctx_manager is not None:
+                with ctx_manager: return _compiled[key](* args, ** kwargs)
+            return _compiled[key](* args, ** kwargs)
         
         _compiled   = {}
         
@@ -244,7 +251,9 @@ def graph_compile(fn    = None,
         
         fn_annots = {
             k : v for k, v in get_annotations(fn).items()
-            if (isinstance(v, TensorSpec)) and (not v.static or ops.is_tensorflow_backend())
+            if (isinstance(v, TensorSpec)) and (
+                not v.static or ops.is_tensorflow_backend() or force_tensorflow
+            )
         }
         if 'input_signature' in compile_kwargs:
             _names = fn_args if fn_args[0] != 'self' else fn_args[1:]
@@ -450,16 +459,38 @@ def tensorflow_only_function(fn):
         return fn(* args, ** kwargs)
     return inner
 
+def _infer_execution_mode(run_eagerly, use_xla, prefer_xla, support_xla, force_tensorflow):
+    if run_eagerly:
+        return ExecutionMode.EAGER, EagerExecution()
+    elif should_execute_eagerly() and run_eagerly is not False:
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('The function is requested to run eagerly by another function')
+        return ExecutionMode.EAGER, None
+
+    if use_xla is None:
+        use_xla = (support_xla and jit_compile()) or prefer_xla
+    elif use_xla and not support_xla:
+        warnings.warn('`use_xla = True` but the function {} does not support XLA\nSet `support_xla = True` in the decorator if you want to enable it'.format(fn))
+        use_xla = False
+
+    if not use_xla and not (ops.is_tensorflow_backend() or force_tensorflow):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('The function should be executed in graph without XLA which is not supported by this backend')
+        return ExecutionMode.EAGER, None
+    
+    ctx_manager = XLAExecution(force_tensorflow = force_tensorflow)
+    return (ExecutionMode.XLA if use_xla else ExecutionMode.GRAPH), ctx_manager
+    
 def _should_cast_kwarg(x):
     if isinstance(x, dict): return all(_should_cast_kwarg(vi) for vi in x.values())
     if isinstance(x, list): return all(_should_cast_kwarg(xi) for xi in x)
     return not isinstance(x, (str, bool)) and not callable(x)
 
-def _cast_arg(value, annot, force_tensorflow = False, *, cache = True):
+def _cast_arg(value, annot, force_tensorflow = False, mode = None, *, cache = True):
     if value is None: return None
     
     if cache and isinstance(value, (int, float, bool)):
-        return _cached_cast_arg(value, annot, force_tensorflow)
+        return _cached_cast_arg(value, annot, force_tensorflow, mode)
     
     if not force_tensorflow:
         convert_to_tensor = ops.convert_to_tensor
@@ -467,6 +498,8 @@ def _cast_arg(value, annot, force_tensorflow = False, *, cache = True):
         convert_to_tensor = ops.convert_to_tf_tensor
     
     if isinstance(annot, TensorSpec):
+        if annot.static and mode == ExecutionMode.XLA: return value
+        
         if annot.nested and isinstance(value, list):
             return [convert_to_tensor(v) for v in value]
         else:
@@ -477,8 +510,8 @@ def _cast_arg(value, annot, force_tensorflow = False, *, cache = True):
     return value
 
 @cache
-def _cached_cast_arg(value, annot, force_tensorflow = False):
-    return _cast_arg(value, annot, force_tensorflow, cache = False)
+def _cached_cast_arg(value, annot, force_tensorflow = False, mode = None):
+    return _cast_arg(value, annot, force_tensorflow, mode, cache = False)
 
 def _get_thread_id():
     return threading.current_thread().ident

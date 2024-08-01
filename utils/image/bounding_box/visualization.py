@@ -15,8 +15,8 @@ import enum
 from utils.keras_utils import ops
 from utils.generic_utils import get_enum_item
 from utils.plot_utils import plot, plot_multiple
-from utils.image.image_utils import normalize_color
-from utils.image.image_io import load_image
+from ..image_utils import normalize_color
+from ..image_io import load_image
 from .converter import BoxFormat, NORMALIZE_WH, box_converter_wrapper
 
 class Shape(enum.IntEnum):
@@ -39,6 +39,7 @@ def draw_boxes(image,
                color    = 'r',
                thickness    = 3,
                with_label   = True,
+               labels   = None,
                
                vertical = True,
                ** kwargs
@@ -53,22 +54,39 @@ def draw_boxes(image,
         ops.convert_to_numpy(normalize_color(c, dtype = ops.dtype_to_str(image.dtype))).tolist()
         for c in color
     ]
-
+    label_color = {}
     for i, (x1, y1, x2, y2) in enumerate(boxes['boxes'].tolist()):
         if x2 <= x1 or y2 <= y1: continue
         
         c = color[i % len(color)]
-        if with_label and boxes.get('classes', None) is not None:
-            label   = boxes['classes'][i]
+        if with_label and boxes.get('labels', labels) is not None:
+            label   = boxes['labels'][i] if 'labels' in boxes else (
+                labels[i] if len(labels) > 1 else labels[0]
+            )
             conf    = boxes['scores'][i] if 'scores' in boxes else None
+            if labels and ops.is_int(label): label = labels[label]
             if label not in label_color: 
                 label_color[label] = color[len(label_color) % len(color)]
             c = label_color[label]
             
             if show_text:
                 text    = '{}{}'.format(label, '' if not conf else ' ({:.2f} %)'.format(conf))
+                font_scale   = 1e-3 * image_h
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+                )
+                # Draw the rectangle behind the text
+                image = cv2.rectangle(
+                    image, (x1, y1 - text_height - baseline - 13), (x1 + text_width, y1), c, -1
+                )
+                factor = 1. if isinstance(c[0], float) else 255
+                if sum(c) / 3. < 0.4 * factor:
+                    c_text = (255, 255, 255) if isinstance(c[0], int) else (1., 1., 1.)
+                else:
+                    c_text = (0, 0, 0)
+
                 image   = cv2.putText(
-                    image, text, (x2, y1 - 13), cv2.FONT_HERSHEY_SIMPLEX, 1e-3 * image_h, c, 3
+                    image, text, (x1, y1 - 13), cv2.FONT_HERSHEY_SIMPLEX, font_scale, c_text, 2
                 )
         
         if shape == Shape.RECTANGLE:
@@ -94,7 +112,7 @@ def draw_boxes(image,
     
     return image
 
-def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., ** kwargs):
+def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., labels = None, ** kwargs):
     """
         Displays a (list of) `boxes` with `utils.plot_multiple`
         
@@ -107,7 +125,7 @@ def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., ** 
     """
     from .processing import crop_box
 
-    if isinstance(image, str): image = load_image(image, as_array = True)
+    if isinstance(image, str): image = load_image(image, to_tensor = False, run_eagerly = True)
     image = ops.convert_to_numpy(image)
     
     _, images = crop_box(
@@ -122,12 +140,17 @@ def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., ** 
     for i, box_image in enumerate(images):
         if any(s == 0 for s in box_image.shape): continue
         
-        label = 'Box' if boxes.get('classes', None) is None else boxes['classes'][i]
+        label = 'Box'
+        if boxes.get('labels', labels) is not None:
+            label   = boxes['labels'][i] if 'labels' in boxes else (
+                labels[i] if len(labels) > 1 else labels[0]
+            )
+            if labels and ops.is_int(label): label = labels[label]
         if label not in counts: counts[label] = 0
         counts[label] += 1
         
         title = '{} #{}'.format(label, counts[label])
-        if boxes.get('scores', None) is not None:
+        if 'scores' in boxes:
             title += ' ({:.2f} %)'.format(boxes['scores'][i])
         
         plot_data[title] = {'x' : box_image}

@@ -15,7 +15,6 @@ import logging
 import unittest
 import numpy as np
 import keras.ops as K
-import tensorflow as tf
 
 from absl.testing import parameterized
 

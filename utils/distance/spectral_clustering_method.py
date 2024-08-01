@@ -16,7 +16,7 @@ from utils.distance.kmeans_method import _kmeans
 from utils.distance.distance_method import distance
 from utils.distance.clustering import clustering_wrapper
 
-@graph_compile(reduce_retracing = True)
+@graph_compile(support_xla = False)
 def _spectral_clustering(points : TensorSpec(shape = (None, None), dtype = 'float'),
                          k      : TensorSpec(shape = (), dtype = 'int32'),
                          

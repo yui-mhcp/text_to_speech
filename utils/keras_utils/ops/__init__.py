@@ -9,10 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from . import core, image, linalg, math, nn, numpy, random
 from .ops_builder import *
-from .array_ops import *
-from .loop_ops import *
-from .math_ops import *
-from .nn_ops import *
-from . import random
 
+from .core import *
+from .image import *
+from .linalg import *
+from .math import *
+from .nn import *
+from .numpy import *
+from .random import *

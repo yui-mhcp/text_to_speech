@@ -11,13 +11,15 @@
 
 import os
 import glob
+import importlib
 
-from utils.text.document_parser.parser_utils import infer_pages, split_paragraphs, clean_paragraphs
-from utils.text.document_parser.parser import parse_document, first_page_to_image
-from utils.text.document_parser.html_parser import _wiki_cleaner
+from .parser_utils import *
+from .parser import parse_document, first_page_to_image
+from .html_parser import _wiki_cleaner
 
 def __load():
-    for module in glob.glob(__package__.replace('.', os.path.sep) + '/*_parser.py'):
-        __import__(module.replace(os.path.sep, '.')[:-3])
+    for module in glob.glob(__package__.replace('.', os.path.sep) + '/*_parser*'):
+        if os.path.basename(module).startswith(('.', '_')): continue
+        importlib.import_module(module.replace(os.path.sep, '.').replace('.py', ''))
 
 __load()

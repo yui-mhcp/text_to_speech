@@ -9,11 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .ops_builder import build_op, build_custom_op
+import keras
 
-shuffle = build_op('keras.random.shuffle', 'random.shuffle', disable_np = True)
-uniform = build_op('keras.random.uniform', 'random.uniform', disable_np = True)
-normal  = build_op('keras.random.normal', 'random.normal', disable_np = True)
-randint = build_op(
-    'keras.random.randint', 'random.uniform', tf_kwargs = {'dtype' : 'int32'}, disable_np = True
-)
+from .ops_builder import build_op
+
+__all__ = ['beta', 'binomial', 'categorical', 'dropout', 'gamma', 'normal', 'randint', 'shuffle', 'truncated_normal', 'uniform']
+
+globals().update({
+    k : build_op('random.{}'.format(k), disable_np = True) for k in __all__
+})

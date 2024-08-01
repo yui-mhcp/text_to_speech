@@ -16,7 +16,7 @@ from functools import cached_property
 
 from utils import dump_json
 from utils.keras_utils import ops
-from utils.text.text_encoder import TextEncoder
+from .text_encoder import TextEncoder
 
 class SentencePieceTextEncoder(TextEncoder):
     def __init__(self, vocab, tokenizer, *, offset = 0, ** kwargs):
@@ -78,6 +78,11 @@ class SentencePieceTextEncoder(TextEncoder):
             for idx in sequence
         ]).replace(self.space_replacement, ' ').strip()
 
+    def get_config(self):
+        config = super().get_config()
+        config['offset'] = self.offset
+        return config
+    
     def save_to_file(self, filename):
         model_path  = filename.replace('.json', '.model')
         

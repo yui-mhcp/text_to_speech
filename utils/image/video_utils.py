@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import os
-import cv2
 import logging
 import subprocess
 import numpy as np
@@ -28,6 +27,8 @@ class VideoInfos:
 
 def get_video_infos(filename):
     """ Returns a `VideoInfos` dataclass with the video's information """
+    import cv2
+    
     cap = cv2.VideoCapture(filename)
     
     infos   = VideoInfos(
@@ -42,6 +43,8 @@ def get_video_infos(filename):
     
 def write_video(images, filename, fps = 16, show = False):
     """ Save a list of images as a video to `filename` """
+    import cv2
+    
     h, w, c = images[0].shape
     video = cv2.VideoWriter(filename, 0, fps, (w,h))
     for image in images:

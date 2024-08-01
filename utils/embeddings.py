@@ -19,22 +19,161 @@ import pandas as pd
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
-from .file_utils import load_data, dump_data, path_to_unix
-from utils.keras_utils import TensorSpec, graph_compile, ops
+from .sequence_utils import pad_batch
+from .file_utils import load_data, dump_data, path_to_unix, remove_path
+from .keras_utils import TensorSpec, graph_compile, ops
 
 logger = logging.getLogger(__name__)
 
-_allowed_embeddings_ext = ('.csv', '.npy', '.pkl', '.pdpkl', '.embeddings.h5')
-_default_embedding_ext  = '.embeddings.h5'
-_embedding_filename = 'embeddings_{}'
-
-_accepted_modes     = ('random', 'mean', 'average', 'avg', 'int', 'callable')
+_embeddings_file_ext    = {'.csv', '.npy', '.pkl', 'pdpkl', '.embeddings.h5', '.h5'}
+_default_embeddings_ext = '.embeddings.h5'
 
 def get_embedding_file_ext(filename):
     """ Returns a valid extension for `filename` such that `filename + ext` exists """
     for ext in _allowed_embeddings_ext:
         if os.path.exists(filename + ext): return ext
     return None
+
+def save_embeddings(filename, embeddings, *, directory = None, remove_file_prefix = True):
+    """
+        Save `embeddings` to the given `filename`
+        
+        Arguments :
+            - filename  : the file in which to store the embeddings. Must have one of the supported file format for embeddings.
+            - embeddings    : `pd.DataFrame` or raw embeddings to store
+            
+            - directory : directory in which to put the file (optional)
+            - remove_file_prefix    : whether to remove a specific file prefix to `filename*` columns (only relevant if `embeddings` is a `pd.DataFrame`)
+                If `True`, removes the `utils.datasets.get_dataset_dir` prefix
+                It is useful when saving datasets, as the dataset directory may differ between hosts, meaning that filenames also differ.
+                Note that it is removed only at the start of filenames such that if your filename is not in the dataset directory, it will have no effect ;)
+    """
+    if directory: filename = os.path.join(directory, filename)
+    if not os.path.splitext(filename)[1]:
+        filename += _default_embeddings_ext
+    elif not any(filename.endswith(ext) for ext in _allowed_embeddings_ext):
+        raise ValueError('Unsupported embeddings file extension !\n  Accepted : {}\n  Got : {}'.format(_allowed_embeddings_ext, filename))
+    
+    os.makedirs(os.path.dirname(filename), exist_ok = True)
+    
+    if '{}' in filename:
+        embedding_dim   = embeddings_to_np(
+            embeddings.iloc[:1] if isinstance(embeddings, pd.DataFrame) else embeddings
+        ).shape[-1]
+        filename        = filename.format(embedding_dim)
+    
+    if filename.endswith('.npy'):
+        embeddings = embeddings_to_np(embeddings)
+    elif remove_file_prefix:
+        embeddings = remove_path(embeddings, remove_file_prefix)
+    
+    logger.debug('Saving embeddings to {}'.format(filename))
+    
+    dump_data(filename, embeddings)
+    
+    return filename
+
+def load_embeddings(filename,
+                    *,
+                    
+                    dataset     = None,
+                    filename_prefix  = True,
+                   
+                    aggregate_on    = 'id',
+                    aggregate_mode  = 0,
+                    aggregate_name  = 'speaker_embedding',
+                    
+                    ** kwargs
+                   ):
+    """
+        Load embeddings from file (csv / npy / pkl) and create an aggregation version (if expected)
+        
+        Arguments :
+            - directory     : directory in which embeddings are stored (must be 'embeddings' or have a sub-directory named 'embeddings')
+                It can also be the embeddings' filename
+            - embedding_name    : the embeddings' filename (can contains '{}' which will be formatted by `embedding_dim`)
+            - embedding_dim : dimension of the embedding (used to format `filename` if required)
+            
+            - filename_prefix   : a path to add at all filenames' start (i.e. each value in result['filename'])
+                if `True`, it adds the `get_dataset_dir` as prefix
+                Note that if the filename exists as is, it will have no effect
+            
+            - dataset       : the dataset on which to merge embeddings
+            
+            - aggregate_on  : the column to aggregate on
+            - aggregate_mode    : the mode for the aggregation
+            - aggregate_name    : the name for the aggregated embeddings' column (default to `speaker_embedding` for retro-compatibility)
+        Return :
+            - embeddings or dataset merged with embeddings (merge is done on columns that are both in `dataset` and `embeddings`)
+        
+        Note : the effective loading filename is
+            - directory : if `os.path.isfile(directory)`
+            - embedding_name    : if `os.path.exists(embedding_name)`
+            - else  : `os.path.join(directory, embedding_name)`
+        
+    """
+    if not os.path.exists(filename):
+        ext = get_embeddings_file_ext(filename)
+        if not ext:
+            logger.warning('Embeddings file {} does not exist !'.format(filename))
+            return dataset
+        
+        filename += ext
+    
+    embeddings  = load_data(filename)
+    if not isinstance(embeddings, pd.DataFrame): return embeddings
+    
+    if any('Unnamed:' in col for col in embeddings.columns):
+        embeddings = embeddings.drop(
+            columns = [col for col in embeddings.columns if 'Unnamed:' in col]
+        )
+
+    if aggregate_on:
+        embeddings = aggregate_embeddings(
+            embeddings, aggregate_on, aggregation_name = aggregate_name, mode = aggregate_mode
+        )
+
+    for col in embeddings.columns:
+        if 'embedding' not in col or isinstance(embeddings.loc[0, col], np.ndarray): continue
+        embeddings[col] = embeddings[col].apply(embeddings_to_np)
+
+    if filename_prefix:
+        if filename_prefix is True:
+            try:
+                from .datasets import get_dataset_dir
+                filename_prefix = get_dataset_dir()
+            except (ImportError, ModuleNotFoundError):
+                raise ImportError('Unable to import `get_dataset_dir`. Explicitely provide `prefix`')
+
+        for col in embeddings.columns:
+            if 'filename' not in col: continue
+            embeddings[col] = embeddings[col].apply(
+                lambda f: '{}/{}'.format(filename_prefix, f)
+            )
+    
+    if dataset is None: return embeddings
+    
+    intersect = list(set(embeddings.columns).intersection(set(dataset.columns)))
+    
+    for col in intersect:
+        if embeddings[col].dtype != dataset[col].dtype:
+            embeddings[col] = embeddings[col].apply(dataset[col].dtype)
+        
+        if 'filename' in col:
+            embeddings[col] = embeddings[col].apply(path_to_unix)
+            dataset[col]    = dataset[col].apply(path_to_unix)
+    
+    logger.debug('Merging embeddings with dataset on columns {}'.format(intersect))
+    dataset = pd.merge(dataset, embeddings, on = intersect)
+
+    if len(dataset) == 0:
+        raise ValueError('Merge resulted in an empty dataframe !\n  Columns : {}\n  Embeddings : {}'.format(intersect, embeddings))
+    
+    dataset = dataset.dropna(
+        axis = 'index', subset = [c for c in dataset.columns if 'embedding' in c]
+    )
+    
+    return dataset
 
 def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = True):
     """
@@ -51,11 +190,10 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
     """
     # if it is a string representation of a numpy matrix
     if isinstance(embeddings, str):
+        embeddings = embeddings.strip()
         if embeddings.startswith('['):
             # if it is a 2D-matrix
             if embeddings.startswith('[['):
-                from utils.sequence_utils import pad_batch
-                
                 return pad_batch([
                     embeddings_to_np(xi + ']', dtype = dtype)
                     for xi in embeddings[1:-1].split(']')
@@ -63,24 +201,63 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
             # if it is a 1D-vector
             sep = '\t' if ', ' not in embeddings else ', '
             return np.fromstring(embeddings[1:-1], dtype = dtype, sep = sep).astype(np.float32)
-        elif not os.path.isfile(embeddings):
-            raise ValueError("The file {} does not exist !".format(embeddings))
+        elif os.path.isfile(embeddings):
+            from .embeddings_io import load_embeddingss
             
-        return embeddings_to_np(load_embeddings(embeddings), col = col, dtype = dtype)
+            return embeddings_to_np(load_embeddingss(embeddings), col = col, dtype = dtype)
+        else:
+            raise ValueError("The file {} does not exist !".format(embeddings))
     
-    elif isinstance(embeddings, np.ndarray):    return embeddings
-    elif hasattr(embeddings, 'numpy'):          return ops.convert_to_numpy(embeddings) if force_np else embeddings
+    elif isinstance(embeddings, np.ndarray):
+        return embeddings
+    elif ops.is_tensor(embeddings):
+        return ops.convert_to_numpy(embeddings) if force_np else embeddings
     elif isinstance(embeddings, pd.DataFrame):
         embeddings = [embeddings_to_np(e) for e in embeddings[col].values]
         if len(embeddings[0].shape) == 1: return np.array(embeddings)
-        
-        from utils.sequence_utils import pad_batch
         
         return pad_batch(embeddings)
     else:
         raise ValueError("Invalid type of embeddings : {}\n{}".format(
             type(embeddings), embeddings
         ))
+
+def aggregate_embeddings(dataset,
+                         column = 'id',
+                         embedding_col  = 'embedding',
+                         aggregation_name   = 'speaker_embedding',
+                         mode = 0
+                        ):
+    """ Aggregates the `embedding_col` column by grouping on `column` """
+    if embedding_col not in dataset.columns:
+        raise ValueError('The embedding column {} is not available in {}'.format(
+            embedding_col, dataset.columns
+        ))
+    
+    from utils.pandas_utils import aggregate_df
+    
+    if aggregation_name in dataset.columns: dataset.pop(aggregation_name)
+    
+    if column not in dataset.columns:
+        if 'id' not in dataset.columns:
+            raise RuntimeError('The column {} is not available in {} !'.format(
+                column, dataset.columns
+            ))
+        logger.warning('The column {} is not available in {}. Using by default `id`'.format(
+            column, dataset.columns
+        ))
+        column = 'id'
+    
+    if column != 'id' and 'id' in dataset.columns and np.any(dataset[column].isnan()):
+        dataset = dataset.fillna({
+            col : dataset['id'] for col in (column if isinstance(column, list) else [column])
+        })
+    
+    return aggregate_df(
+        dataset, group_by = column, columns = embedding_col, merge = True, ** {
+            aggregation_name : mode
+        }
+    )
 
 def select_embedding(embeddings, mode = 'random', ** kwargs):
     """
@@ -123,216 +300,6 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
             _accepted_modes, mode
         ))
 
-def aggregate_embeddings(dataset,
-                         column = 'id',
-                         embedding_col  = 'embedding',
-                         aggregation_name   = 'speaker_embedding',
-                         mode = 0
-                        ):
-    """ Aggregates the `embedding_col` column by grouping on `column` """
-    if embedding_col not in dataset.columns:
-        raise ValueError('The embedding column {} is not available in {}'.format(
-            embedding_col, dataset.columns
-        ))
-    
-    from utils.pandas_utils import aggregate_df
-    
-    if aggregation_name in dataset.columns: dataset.pop(aggregation_name)
-    
-    if column not in dataset.columns:
-        if 'id' not in dataset.columns:
-            raise RuntimeError('The column {} is not available in {} !'.format(
-                column, dataset.columns
-            ))
-        logger.warning('The column {} is not available in {}. Using by default `id`'.format(
-            column, dataset.columns
-        ))
-        column = 'id'
-    
-    if column != 'id' and 'id' in dataset.columns and np.any(dataset[column].isnan()):
-        dataset = dataset.fillna({
-            col : dataset['id'] for col in (column if isinstance(column, list) else [column])
-        })
-    
-    return aggregate_df(
-        dataset, group_by = column, columns = embedding_col, merge = True, ** {
-            aggregation_name : mode
-        }
-    )
-
-def load_embedding(directory,
-                   embedding_name   = _embedding_filename,
-                   embedding_dim    = None,
-                   dataset          = None,
-                   filename_prefix  = True,
-                   
-                   aggregate_on     = 'id',
-                   aggregate_mode   = 0,
-                   aggregate_name   = 'speaker_embedding',
-                   ** kwargs
-                  ):
-    """
-        Load embeddings from file (csv / npy / pkl) and create an aggregation version (if expected)
-        
-        Arguments :
-            - directory     : directory in which embeddings are stored (must be 'embeddings' or have a sub-directory named 'embeddings')
-                It can also be the embeddings' filename
-            - embedding_name    : the embeddings' filename (can contains '{}' which will be formatted by `embedding_dim`)
-            - embedding_dim : dimension of the embedding (used to format `filename` if required)
-            
-            - filename_prefix   : a path to add at all filenames' start (i.e. each value in result['filename'])
-                if `True`, it adds the `get_dataset_dir` as prefix
-                Note that if the filename exists as is, it will have no effect
-            
-            - dataset       : the dataset on which to merge embeddings
-            
-            - aggregate_on  : the column to aggregate on
-            - aggregate_mode    : the mode for the aggregation
-            - aggregate_name    : the name for the aggregated embeddings' column (default to `speaker_embedding` for retro-compatibility)
-        Return :
-            - embeddings or dataset merged with embeddings (merge is done on columns that are both in `dataset` and `embeddings`)
-        
-        Note : the effective loading filename is
-            - directory : if `os.path.isfile(directory)`
-            - embedding_name    : if `os.path.exists(embedding_name)`
-            - else  : `os.path.join(directory, embedding_name)`
-        
-    """
-    if os.path.isfile(directory):
-        emb_file = directory
-    else:
-        if '{}' in embedding_name:
-            assert embedding_dim is not None
-            embedding_name = embedding_name.format(embedding_dim)
-        
-        if os.path.exists(embedding_name):
-            emb_file = embedding_name
-        else:
-            if not directory.endswith('embeddings'):
-                directory = os.path.join(directory, 'embeddings')
-            emb_file = os.path.join(directory, embedding_name)
-    
-    if not os.path.splitext(emb_file)[1]:
-        ext = get_embedding_file_ext(emb_file)
-        if ext: emb_file += ext
-    
-    if not os.path.exists(emb_file):
-        logger.warning('Embedding file {} does not exist !'.format(emb_file))
-        return None
-    
-    embeddings  = load_data(emb_file)
-    if isinstance(embeddings, dict):
-        embeddings = pd.DataFrame({k : list(v) for k, v in embeddings.items()})
-    elif not isinstance(embeddings, pd.DataFrame):
-        return embeddings
-    elif any('Unnamed:' in col for col in embeddings.columns):
-        embeddings = embeddings.drop(
-            columns = [col for col in embeddings.columns if 'Unnamed:' in col]
-        )
-    
-    for col in embeddings.columns:
-        if 'embedding' not in col or isinstance(embeddings.loc[0, col], np.ndarray): continue
-        embeddings[col] = embeddings[col].apply(embeddings_to_np)
-    
-    if aggregate_on is not None and aggregate_on in embeddings.columns:
-        embeddings = aggregate_embeddings(
-            embeddings, aggregate_on, aggregation_name = aggregate_name, mode = aggregate_mode
-        )
-    
-    if filename_prefix is not None and 'filename' in embeddings.columns:
-        if filename_prefix is True:
-            try:
-                from utils.datasets import get_dataset_dir
-                filename_prefix = get_dataset_dir()
-            except (ImportError, ModuleNotFoundError):
-                pass
-        
-        if isinstance(filename_prefix, str):
-            embeddings['filename'] = embeddings['filename'].apply(
-                lambda f: os.path.join(filename_prefix, f) if not f.startswith(filename_prefix) else f
-            )
-    
-    if dataset is None: return embeddings
-    
-    intersect = list(set(embeddings.columns).intersection(set(dataset.columns)))
-    
-    for col in intersect:
-        if embeddings[col].dtype != dataset[col].dtype:
-            embeddings[col] = embeddings[col].apply(str)
-        
-        if 'filename' in col:
-            embeddings[col] = embeddings[col].apply(path_to_unix)
-            dataset[col]    = dataset[col].apply(path_to_unix)
-    
-    logger.debug('Merging embeddings with dataset on columns {}'.format(intersect))
-    dataset = pd.merge(dataset, embeddings, on = intersect)
-
-    if len(dataset) == 0:
-        raise ValueError('Merge resulted in an empty dataframe !\n  Columns : {}\n  Embeddings : {}'.format(intersect, embeddings))
-    
-    dataset = dataset.dropna(
-        axis = 'index', subset = ['embedding']
-    )
-    
-    return dataset
-
-def save_embeddings(directory,
-                    embeddings,
-                    embedding_name  = _embedding_filename,
-                    remove_file_prefix  = True
-                   ):
-    """
-        Save `embeddings` to the given path
-        
-        Arguments :
-            - directory : the embeddings' filename (if ending with a valid extension) or the directory
-            - embeddings    : the embeddings to save
-            embedding_name  : the filename basename
-                If no extension, set to `_default_embedding_ext`
-                If contains {}, formatted with the embedding dimension (`embeddings.shape[-1]`)
-            - remove_file_prefix    : if a `filename` column is there, remove the `remove_file_prefix` from the start of filenames (only working when embeddings is a `pd.DataFrame`)
-                If `True`, removes the `get_dataset_dir` prefix
-                It is useful when saving datasets as the dataset directory may differ between hosts, meaning that filenames also differ.
-                Note that it is removed only at the start of filenames such that if your filename is not in the dataset directory, it will have no effect ;)
-    """
-    if os.path.splitext(directory)[1] in _allowed_embeddings_ext:
-        embedding_file = directory
-    else:
-        if not directory.endswith('embeddings'):
-            directory = os.path.join(directory, 'embeddings')
-        os.makedirs(directory, exist_ok = True)
-        embedding_file = os.path.join(directory, embedding_name)
-    
-    if '{}' in embedding_file:
-        embedding_dim   = embeddings_to_np(embeddings.iloc[:1]).shape[-1]
-        embedding_file  = embedding_file.format(embedding_dim)
-    
-    ext = os.path.splitext(embedding_file)[1]
-    if not ext: embedding_file += _default_embedding_ext
-    elif ext not in _allowed_embeddings_ext:
-        raise ValueError('Unknown embedding extension !\n  Accepted : {}\n  Got : {}'.format(
-            _allowed_embeddings_ext, embedding_file
-        ))
-    
-    if embedding_file.endswith('npy'): embeddings = embeddings_to_np(embeddings)
-    elif remove_file_prefix is not None and isinstance(embeddings, pd.DataFrame) and 'filename' in embeddings.columns:
-        if remove_file_prefix is True:
-            try:
-                from utils.datasets import get_dataset_dir
-                remove_file_prefix = get_dataset_dir()
-            except (ImportError, ModuleNotFoundError):
-                pass
-        
-        if isinstance(remove_file_prefix, str):
-            remove_file_prefix = path_to_unix(remove_file_prefix)
-            embeddings['filename'] = embeddings['filename'].apply(
-                lambda f: path_to_unix(f).lstrip(remove_file_prefix)
-            )
-    
-    dump_data(embedding_file, embeddings)
-    
-    return embedding_file
-
 def embed_dataset(directory,
                   dataset,
                   embed_fn,
@@ -344,7 +311,7 @@ def embed_dataset(directory,
                   
                   save_every    = 10000,
                   overwrite     = False,
-                  embedding_name    = _embedding_filename,
+                  embedding_name    = None,
                   
                   tqdm = tqdm,
                   verbose   = True,
@@ -363,7 +330,7 @@ def embed_dataset(directory,
     
     embeddings = None
     if not overwrite:
-        embeddings = load_embedding(
+        embeddings = load_embeddings(
             directory = directory, embedding_name = embedding_name, aggregate_on = None, ** kwargs
         )
     
@@ -414,25 +381,11 @@ def embed_dataset(directory,
     return embeddings
 
 
-def pad_dataset_embedding(dataset, columns = None):
-    """
-        Pads `columns`' embeddings to have matrices with same dimensions, and adds a n_{col} column with the current number of embeddings (to allow to retrieve the original embeddings' matrix)
-        The operation is skipped for columns with single embedding (1D array)
-    """
-    if columns is None: columns = [c for c in dataset.columns if c.endswith('embedding')]
-    if not isinstance(columns, (list, tuple)): columns = [columns]
-    
-    for col in columns:
-        if len(dataset.iloc[0][col].shape) == 1: continue
-        
-        dataset['n_{}'.format(col)] = dataset[col].apply(lambda e: len(e))
-        dataset[col] = list(embeddings_to_np(dataset, col = col))
-    
-    return dataset
-
 @graph_compile
 def compute_centroids(embeddings    : TensorSpec(shape = (None, None), dtype = 'float'),
-                      ids           : TensorSpec(shape = (None, )),
+                      ids       : TensorSpec(shape = (None, )),
+                      num_ids   : TensorSpec(shape = (), dtype = 'int32', static = True) = None,
+                      sorted    = False
                      ):
     """
         Compute the mean embeddings (named the `centroids`) for each id
@@ -444,17 +397,25 @@ def compute_centroids(embeddings    : TensorSpec(shape = (None, None), dtype = '
                 - unique_ids    : vector of unique ids
                 - centroids     : centroids[i] is the centroid associated to embeddings of ids[i]
     """
-    uniques, indexes, counts = ops.unique(ids, return_inverse = True, return_counts = True)
-    # mask.shape == [len(uniques), len(embeddings)]
-    mask = ops.arange(ops.size(uniques))[:, None] == indexes[None, :]
-    return uniques, ops.divide_no_nan(
-        ops.sum(ops.where(
-            mask[:, :, None],
-            embeddings[None, :, :],
-            ops.convert_to_tensor(0, embeddings.dtype)
-        ), axis = 1),
-        ops.cast(counts[:, None], dtype = embeddings.dtype)
-    )
+    if not sorted and ops.is_numeric(ids):
+        sorted_indexes  = ops.argsort(ids)
+        embeddings  = ops.take(embeddings, sorted_indexes, axis = 0)
+        ids = ops.take(ids, sorted_indexes, axis = 0)
+        sorted = True
+    
+    if num_ids is None or not ops.is_int(ids):
+        uniques, indices = ops.unique(ids, return_inverse = True)
+        num_ids = ops.shape(uniques)[0]
+    else:
+        indices = ids
+        uniques = ops.arange(num_ids, dtype = 'int32') if ops.is_tensor(embeddings) else np.arange(num_ids, dtype = 'int32')
+    
+    if not sorted:
+        sorted_indexes  = ops.argsort(indices)
+        embeddings  = ops.take(embeddings, sorted_indexes, axis = 0)
+        indices     = ops.take(indices, sorted_indexes, axis = 0)
+    
+    return uniques, ops.segment_mean(embeddings, indices, num_segments = num_ids, sorted = True)
 
 @graph_compile
 def get_embeddings_with_ids(embeddings  : TensorSpec(shape = (None, None), dtype = 'float'),
@@ -469,7 +430,7 @@ def get_embeddings_with_ids(embeddings  : TensorSpec(shape = (None, None), dtype
             sub_embeddings, sub_ids = get_embeddings_with_ids(embeddings, assignment, ids)
             
             # equivalent to (where `embeddings` and `assignment` are `np.ndarray`'s)
-            mask = assignment.isin(ids)
+            mask = np.isin(assigment, ids)
             sub_embeddings, sub_ids = embeddings[mask], assignment[mask]
         ```
 
@@ -480,7 +441,7 @@ def get_embeddings_with_ids(embeddings  : TensorSpec(shape = (None, None), dtype
         Return :
             - (embeddings, assignment)  : subset of `embeddings` and `assignment` with valid id
     """
-    mask    = ops.any(assignment[:, None] == ids[None, :], axis = -1)
+    mask = ops.isin(assignment, ids)
     return embeddings[mask], assignment[mask]
 
 def visualize_embeddings(embeddings,

@@ -15,16 +15,27 @@ import logging
 import numpy as np
 import pandas as pd
 
+from keras import tree
+from functools import wraps
+
 from loggers import timer, time_logger
 from utils.datasets import prepare_dataset
 from utils.keras_utils import TensorSpec, ops
 from models.interfaces.base_model import BaseModel
-from utils import plot_embedding, pad_batch, distance, load_embedding, save_embeddings, path_to_unix
+from utils import partial, plot_embedding, pad_batch, distance, load_embeddings, save_embeddings, path_to_unix, pad_to_multiple, apply_on_batch
+from utils.search.vectors import build_vectors_db
 from custom_train_objects import GE2EGenerator, get_loss
 
 logger = logging.getLogger(__name__)
 
 DEPRECATED_CONFIG = ('threshold', 'embed_distance')
+
+def _sort_by_length(data):
+    if isinstance(data, (dict, pd.Series)):
+        return len(data.get('text'))
+    elif isinstance(data, str) or ops.is_array(data):
+        return len(data)
+    return 0
 
 class BaseEncoderModel(BaseModel):
     """
@@ -57,6 +68,15 @@ class BaseEncoderModel(BaseModel):
         
         self.__embeddings = None
     
+    def prepare_for_xla(self, inputs, * args, pad_multiple = 256, ** kwargs):
+        if self.pad_value is not None and ops.is_array(inputs):
+            inputs = pad_to_multiple(inputs, pad_multiple, constant_values = self.pad_value)
+        return (inputs, ) + args, kwargs
+    
+    @property
+    def pad_value(self):
+        return None
+    
     @property
     def embeddings(self):
         if self.__embeddings is None: self.__embeddings = self.load_embeddings()
@@ -68,8 +88,8 @@ class BaseEncoderModel(BaseModel):
     
     @property
     def embedding_dim(self):
-        return self.encoder.output_shape[-1]
-    
+        return self.model.embedding_dim if hasattr(self.model, 'embedding_dim') else self.encoder.output_shape[-1]
+        
     @property
     def output_signature(self):
         return TensorSpec(shape = (None, ), dtype = 'int32')
@@ -88,12 +108,16 @@ class BaseEncoderModel(BaseModel):
         des += "- Distance metric : {}\n".format(self.distance_metric)
         return des
 
-    def _add_tracked_variable(self, tracked_type, name, value):
-        if isinstance(value, keras.Model) and hasattr(value.loss, 'init_variables'):
-            value.loss.init_variables(value)
+    def _maybe_init_loss_weights(self, model, loss):
+        if hasattr(loss, 'init_variables'):
+            loss.init_variables(model)
             if not hasattr(self, 'process_batch_output'):
                 self.process_batch_output = _reshape_labels_for_ge2e
                 self._init_processing_functions()
+
+    def _add_tracked_variable(self, tracked_type, name, value):
+        if isinstance(value, keras.Model):
+            self._maybe_init_loss_weights(value, value.loss)
         
         return super()._add_tracked_variable(tracked_type, name, value)
     
@@ -102,17 +126,17 @@ class BaseEncoderModel(BaseModel):
         
         loss_config = {** self.default_loss_config, ** loss_config}
         
-        loss   = get_loss(loss, ** loss_config)
-        if hasattr(loss, 'init_variables'):
-            loss.init_variables(self.model)
-        
-            if not hasattr(self, 'process_batch_output'):
-                self.process_batch_output = _reshape_labels_for_ge2e
-                self._init_processing_functions()
+        loss = get_loss(loss, ** loss_config)
+        self._maybe_init_loss_weights(self.model, loss)
 
         super().compile(loss = loss, ** kwargs)
-            
     
+    def get_dataset_config(self, mode, ** kwargs):
+        if self.pad_value is not None:
+            kwargs.setdefault('pad_kwargs', {}).update({'padding_values' : (self.pad_value, 0)})
+        
+        return super().get_dataset_config(mode, ** kwargs)
+
     def prepare_dataset(self, dataset, mode, ** kwargs):
         config = self.get_dataset_config(mode, ** kwargs)
         
@@ -143,79 +167,76 @@ class BaseEncoderModel(BaseModel):
         
         return prepare_dataset(dataset, ** config)
     
-    def predict_with_target(self, batch, step, prefix, directory = None, ** kwargs):
-        """ Embeds the batch (inputs, ids) and plot the results with the given ids """
-        if directory is None: directory = self.train_test_dir
-        else: os.makedirs(directory, exist_ok = True)
-        kwargs.setdefault('show', False)
-        
-        inputs, ids = batch
-        
-        embeddings  = self.encoder(inputs, training = False)
-        
-        title       = 'Embedding space (step {})'.format(step)
-        filename    = os.path.join(directory, prefix + '.png')
-        plot_embedding(
-            embeddings, ids = ids, filename = filename, title = title, ** kwargs
-        )
-    
+    @apply_on_batch(default_batch_size = 8, sort_key = _sort_by_length)
     @timer
-    def embed(self, data, batch_size = 128, pad_value = 0., processed = False, tqdm = lambda x: x, ** kwargs):
+    def embed(self,
+              data  = None,
+              *,
+              
+              processed = False,
+              
+              keys  = 'dense',
+              to_numpy  = False,
+              return_raw    = None,
+              
+              encoder   = None,
+              
+              ** kwargs
+             ):
         """
             Embed a list of data
             
             Arguments :
                 - data  : the data to embed, any type supported by `self.get_input`
-                - batch_size    : the number of data to encode in parallel
-                - pad_value     : the padding value to use (if padding is required)
-                - tqdm      : progress bar
-                - kwargs    : ignored
+                - processed : whether `data` is already processed or not
+                - to_numpy  : whether to convert embeddings (`Tensor`) to `ndarray`
+                - return_raw    : whether the output should be raw `Tensor / ndarray` or `BaseEmbedding` class
             Return :
-                - embeddings    : `tf.Tensor` of shape `(len(data), self.embedding_dim)`
-            
-            Pipeline : 
-                1) Calls `self.get_input(data)` to have encoded data
-                2) Take a batch of `batch_size` inputs
-                3) Encodes the batch with `self.encoder`
-            
-            This function is the core of the `Encoder` model, as embeddings are used for everything (predict similarity / distance), label predictions, clustering, make funny colored plots, ...
-            
-            Note : if batching is used (i.e. the data is sequential of variable lengths), make sure that `self.encoder` correctly supports masking. Otherwise, embeddings may differ between `batch_size = 1` and `batch_size > 1` due to padding (which is unexpected !)
-            
-            Simple code to test the batching support :
-            ```
-            from utils import is_equal
-            
-            emb1 = model.embed(data, batch_size = 1)
-            emb2 = model.embed(data, batch_size = 16)
-            
-            print(is_equal(emb1, emb2)[1])
-            ```
-            If the data is not of variable shape (e.g. images), batching is well supported by default
+                - embeddings    : the embedded data
+                    If `return_raw` : `ndarray` (if `to_numpy = True`) else `Tensor`
+                    Else            : `BaseEmbedding` class(es)
         """
-        if tqdm is None: tqdm = lambda x: x
+        if encoder is None: encoder = self
         
-        if not processed:
-            with time_logger.timer('processing'):
-                if not isinstance(data, (list, tuple, pd.DataFrame)): data = [data]
-
-                inputs = self.get_input(data, ** kwargs)
-        else:
-            inputs = data
+        with time_logger.timer('processing'):
+            inputs = data if processed else self.get_input(data, ** kwargs)
+            
+            if self.pad_value is not None and len(inputs) > 1:
+                inputs = pad_batch(inputs, pad_value = self.pad_value)
+            else:
+                inputs = ops.stack(inputs, axis = 0)
         
-        encoder     = self.encoder
-        should_pad  = any(s is None for s in self.input_shape[1:])
+        with time_logger.timer('embedding'):
+            out = encoder(inputs, return_mask = True, as_dict = True, ** kwargs)
+            if to_numpy:
+                if ops.is_tensor(out):
+                    out = ops.convert_to_numpy(out)
+                else:
+                    out = tree.map_structure(ops.convert_to_numpy, out)
+            
+            embeddings = getattr(out, 'output', out)
         
-        embeddings = []
-        for idx in tqdm(range(0, len(inputs), batch_size)):
-            with time_logger.timer('batching'):
-                batch = inputs[idx : idx + batch_size]
-                batch = pad_batch(batch, pad_value = pad_value) if should_pad else ops.stack(batch, axis = 0)
-
-            with time_logger.timer('encoding'):
-                embeddings.append(encoder(batch, training = False))
-
-        return ops.concatenate(embeddings, axis = 0) if len(embeddings) > 1 else embeddings[0]
+        if keys and isinstance(embeddings, dict):
+            if return_raw is None: return_raw = False
+            
+            embeddings = {k : v for k, v in embeddings.items() if k in keys}
+            if len(embeddings) == 1:
+                embeddings = list(embeddings.values())[0]
+        
+        if isinstance(embeddings, dict) and not return_raw:
+            for k, v in embeddings.items():
+                try:
+                    embeddings[k] = build_vectors_db(
+                        v, mode = k, data = data, mask = out.mask, inputs = inputs, model = self
+                    )
+                except Exception as e:
+                    embeddings[k] = v
+        elif return_raw is False:
+            embeddings = build_vectors_db(
+                embeddings, data = data, mask = out.mask, inputs = inputs, model = self
+            )
+        
+        return embeddings
     
     @timer
     def plot_embedding(self, data, ids = None, batch_size = 128, ** kwargs):
@@ -237,73 +258,48 @@ class BaseEncoderModel(BaseModel):
         elif isinstance(data, dict):
             data, ids = list(data.keys()), list(data.values())
         
-        embedded = self.embed(data, batch_size = batch_size)
+        embedded = self.embed(data, batch_size = batch_size, to_numpy = True)
         
         plot_embedding(embedded, ids = ids, ** kwargs)
 
     @timer
-    def predict_distance(self, x, y,
-                         
-                         as_matrix  = False,
-                         decoder    = None,
-                         embed_similarity = False,
-                         ** kwargs
-                        ):
+    def predict_distance(self, x, y, as_matrix = True, ** kwargs):
         """
             Return a score of distance between x and y
             
             Arguments :
-                - x : embedding vector(s) or a valid value for `self.embed`
-                - y : embedding vector(s) or a valid value for `self.embed`
-                - as_matrix : whether to return a matrix of distances between each pair or a 1-1 distance (if `True`, prefer using `self.predict_distance_matrix`)
-                - decoder   : callable that takes a list [x, y] as argument and returns a score
-                - embed_similarity : whether the decoder returns a similarity or distance score
+                - x : embedding vector(s), or any valid value for `self.embed`
+                - y : embedding vector(s), or any valid value for `self.embed`
+                - as_matrix : whether to return a matrix of distances between each pair, or a 1-1 distance (if `True`, prefer using `self.predict_distance_matrix`)
             Return :
-                - distance : `tf.Tensor` of distance scores
+                - distance : `Tensor` of distance scores
                     If `as_matrix = False`:
-                        - a 1-D vector representing the distance between `x[i]` and `y[i]`
+                        - 1-D vector representing the distance between `x[i]` and `y[i]`
                     else:
-                        - a 2-D matrix representing the distance between `x[i]` and `y[j]`
-            
-            **Important Note** : even if `self.distance_metric` is a similarity score, the result is a *distance score*, which differs from `self.distance` that simply returns the distance metric value
+                        - 2-D matrix representing the distance between `x[i]` and `y[j]`
             
             Note :
             - a *distance score* means that the higher the score is, the more the data is different
             - a *similarity score* means that the higher the score is, the more the data is similar
         """
-        if decoder is None: decoder = self.decoder
+        if not ops.is_array(x) or x.shape[-1] != self.embedding_dim: x = self.embed(x)
+        if not ops.is_array(y) or y.shape[-1] != self.embedding_dim: y = self.embed(y)
         
-        if not isinstance(x, (np.ndarray, tf.Tensor)) or x.shape[-1] != self.embedding_dim:
-            x = self.embed(x)
-        if not isinstance(y, (np.ndarray, tf.Tensor)) or y.shape[-1] != self.embedding_dim:
-            y = self.embed(y)
+        if len(x.shape) == 1: x = ops.expand_dims(x, axis = 0)
+        if len(y.shape) == 1: y = ops.expand_dims(y, axis = 0)
         
-        if len(x.shape) == 1: x = tf.expand_dims(x, axis = 0)
-        if len(y.shape) == 1: y = tf.expand_dims(y, axis = 0)
-        
-        if decoder is None:
-            scores = self.distance(x, y, as_matrix = as_matrix, force_distance = True, ** kwargs)
-        else:
-            if x.shape[0] == 1 and y.shape[0] > 1:
-                x = tf.tile(x, [y.shape[0], 1])
-            
-            scores = decoder([x, y], as_matrix = as_matrix)
-            if embed_similarity: scores = 1. - scores
-        
-        return scores
+        return distance(
+            x, y, self.distance_metric, as_matrix = as_matrix, force_distance = True, ** kwargs
+        )
     
-    def predict_similarity(self, x, y, * args, ** kwargs):
+    @wraps(predict_distance)
+    def predict_similarity(self, * args, ** kwargs):
         """ returns `1. - self.predict_distance(...)` """
-        return 1. - self.predict_distance(x, y, * args, ** kwargs)
+        return - self.predict_distance(* args, ** kwargs)
     
-    def predict_distance_matrix(self, x, y = None, ** kwargs):
-        if y is None: y = x
-        return self.predict_distance(x, y, as_matrix = True, ** kwargs)
+    predict_distance_matrix     = partial(predict_distance, as_matrix = True)
+    predict_similarity_matrix   = partial(predict_similarity, as_matrix = True)
     
-    def predict_similarity_matrix(self, x, y = None, ** kwargs):
-        if y is None: y = x
-        return self.predict_similarity(x, y, as_matrix = True, ** kwargs)
-
     def predict(self,
                 data,
                 *,
@@ -360,7 +356,7 @@ class BaseEncoderModel(BaseModel):
         
         cache_size  = max(cache_size, batch_size)
 
-        embeddings = load_embedding(
+        embeddings = load_embeddings(
             directory       = directory,
             embedding_name  = embedding_name,
             aggregate_on    = None,
@@ -456,3 +452,4 @@ class BaseEncoderModel(BaseModel):
 def _reshape_labels_for_ge2e(output, ** _):
     uniques, indexes = ops.unique(ops.reshape(output, [-1]), return_inverse = True)
     return ops.reshape(indexes, [ops.shape(uniques)[0], -1])
+

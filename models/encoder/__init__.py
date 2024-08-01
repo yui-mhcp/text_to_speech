@@ -9,3 +9,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .audio_encoder import AudioEncoder
+from .text_encoder import TextEncoder

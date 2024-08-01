@@ -61,6 +61,8 @@ def convert_to_tf_tensor(x):
         return tf.convert_to_tensor(x)
     return x
 
+_graph_failed = {}
+
 class CustomTestCase(unittest.TestCase):
     def assertEqual(self, value, target, msg = None, max_err = 1e-6, ** kwargs):
         eq, err_msg = is_equal(target, value, max_err = max_err, ** kwargs)
@@ -127,7 +129,20 @@ class CustomTestCase(unittest.TestCase):
         if target is not None:
             self.assertEqual(next(iter(ds)), target)
         
-    def assertGraphCompatible(self, fn, * args, _xla = False, target = None, nested = None, ** kwargs):
+    def assertGraphCompatible(self,
+                              fn,
+                              * args,
+                              
+                              _xla = False,
+                              
+                              target = None,
+                              target_shape  = None,
+                              nested = None,
+                              
+                              ** kwargs
+                             ):
+        if fn in _graph_failed: return
+        
         import tensorflow as tf
         
         with self.subTest('{} compatible : {}'.format('XLA' if _xla else 'Graph', fn.__name__)):
@@ -139,11 +154,20 @@ class CustomTestCase(unittest.TestCase):
             args    = keras.tree.map_structure(convert_to_tf_tensor, args)
             kwargs  = keras.tree.map_structure(convert_to_tf_tensor, kwargs)
             
-            result  = graph_fn(* args, ** kwargs)
+            err = None
+            try:
+                result  = graph_fn(* args, ** kwargs)
+            except Exception as e:
+                err = e
+            
+            if err is not None:
+                _graph_failed[fn] = True
+                self.fail('The function does not support graph mode :\n{}'.format(err))
             
             if nested is None and target is not None:
                 nested = isinstance(target, (list, tuple, dict))
             self.assertTfTensor(result, nested = nested)
+            
             if target is not None:
                 self.assertEqual(keras.tree.map_structure(lambda t: t.numpy(), result), target)
     

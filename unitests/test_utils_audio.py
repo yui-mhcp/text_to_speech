@@ -35,14 +35,14 @@ class TestAudio(CustomTestCase, parameterized.TestCase):
             load_audio(filename, rate = 22050), 'audio_resample.npy'
         )
         self.assertReproductible(
-            load_audio(filename, rate = None, reduce_noise = True), 'reduce_noise.npy'
+            load_audio(filename, rate = None, reduce_noise = True), 'audio_reduce_noise.npy'
         )
         self.assertReproductible(
-            load_audio(filename, rate = None, trim_silence = True), 'trim_silence.npy'
+            load_audio(filename, rate = None, trim_silence = True), 'audio_trim_silence.npy'
         )
         self.assertReproductible(
             load_audio(filename, rate = None, trim_silence = True, method = 'window'),
-            'trim_silence-window.npy'
+            'audio_trim_silence-window.npy'
         )
 
         trimmed = trim_silence(self.audio, rate = self.rate, method = 'window')
@@ -52,10 +52,15 @@ class TestAudio(CustomTestCase, parameterized.TestCase):
         self.assertEqual(loaded_trimmed, trimmed)
 
         self.assertEqual(load_audio(write_audio(
-            self.audio, os.path.join(reproductibility_dir, 'write_audio.wav'), self.rate, normalize = False
+            self.audio,
+            os.path.join(reproductibility_dir, 'audio_write_audio.wav'),
+            self.rate,
+            normalize = False
         ), None, normalize = False), self.audio, max_err = 1e-6)
 
-    @parameterized.parameters(* _mel_classes.keys())
+    @parameterized.named_parameters([
+        (name.lower()[:-4], name) for name in _mel_classes.keys()
+    ])
     def test_stft(self, name):
         mel_class   = _mel_classes[name]
         mel_fn      = mel_class() if 'Jasper' not in name else mel_class(dither = 0.)

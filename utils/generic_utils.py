@@ -60,6 +60,14 @@ def convert_to_str(x):
     
     return x
 
+def get_entry(data, keys):
+    if isinstance(data, str):        return data
+    elif not isinstance(data, dict): return None
+    elif isinstance(keys, str):      return data.get(keys, None)
+    for k in keys:
+        if k in data: return data[k]
+    return None
+    
 def to_json(data):
     """ Converts a given data to json-serializable (if possible) """
     if data is None: return data

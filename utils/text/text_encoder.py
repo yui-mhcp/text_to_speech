@@ -584,7 +584,8 @@ class TextEncoder(object):
                sequence,
                skip_padding = True,
                remove_tokens    = False,
-               attach_punctuation   = True
+               attach_punctuation   = True,
+               ** _
               ):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
         if hasattr(sequence, 'tokens'): sequence = sequence.tokens

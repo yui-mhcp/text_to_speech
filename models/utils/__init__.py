@@ -9,20 +9,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import warnings
+from . import describe, prediction, saving
 
-from .parser import parse_document
+from .describe import *
+from .prediction import *
+from .saving import *
 
-@parse_document.dispatch
-def parse_docx(filename, ** kwargs):
-    """ Parses `.docx` files and return the list of paragraphs in the form {'text' : str} """
-    try:
-        from docx import Document
-    except ImportError as e:
-        warnings.warn('Please install the `docx` library : `pip install python-docx`')
-        return []
-    
-    doc = Document(filename)
-    
-    return [{'text' : p.text} for p in doc.paragraphs]
+def _get_tracked_type(value, types):
+    if isinstance(value, (list, tuple)) and len(value) > 0: value = value[0]
+    for t in types:
+        if isinstance(value, t): return t
+    return None

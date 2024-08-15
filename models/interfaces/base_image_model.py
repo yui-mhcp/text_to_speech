@@ -14,11 +14,11 @@ import pandas as pd
 
 from functools import cached_property
 
-from utils import pad_to_multiple
+from utils import pad_to_multiple, get_entry
 from utils.hparams import HParams
 from utils.keras_utils import TensorSpec, ops
 from utils.image import load_image, pad_image, get_image_normalization_fn, augment_image, augment_box
-from models.model_utils import infer_downsampling_factor, infer_upsampling_factor
+from models.utils import infer_downsampling_factor, infer_upsampling_factor
 from .base_model import BaseModel
 
 _default_image_augmentation = ['noise', 'brightness', 'contrast', 'hue', 'saturation']
@@ -68,7 +68,7 @@ class BaseImageModel(BaseModel):
     
     @property
     def has_fixed_input_size(self):
-        return all(s is not None for s in self.input_size)
+        return all(self.input_size)
     
     @property
     def has_variable_input_size(self):
@@ -228,3 +228,12 @@ class BaseImageModel(BaseModel):
             config['max_image_size'] = self.max_image_size
         
         return config
+    
+    @staticmethod
+    def get_image_data(data):
+        if isinstance(data, dict):
+            data = get_entry(data, ('tf_image', 'image', 'image_copy', 'filename'))
+
+        if isinstance(data, str):
+            return load_image(data, to_tensor = False, dtype = None, run_eagerly = True)
+        return data

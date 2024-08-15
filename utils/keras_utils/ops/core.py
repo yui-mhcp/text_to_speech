@@ -42,7 +42,11 @@ eye     = build_custom_op(tf_fn = 'eye', keras_fn = 'eye', disable_np = True)
 """ Convertion functions (`Tensor` <--> `ndarray`) """
 
 @timer(debug = True)
-def convert_to_numpy(x, dtype = None):
+def is_array(x):
+    return isinstance(x, np.ndarray) or is_tensor(x)
+
+@timer(debug = True)
+def convert_to_numpy(x, dtype = None, copy = False):
     if not isinstance(x, np.ndarray):
         if 'tensorflow' in sys.modules:
             import tensorflow as tf
@@ -57,6 +61,8 @@ def convert_to_numpy(x, dtype = None):
         if not isinstance(x, np.ndarray): # if it was not a `tf.Tensor`
             if not K.is_tensor(x): return np.array(x, dtype = dtype)
             x = K.convert_to_numpy(x)
+    elif copy:
+        x = x.copy()
     
     if (dtype is None) or (dtype == 'float' and is_float(x)) or (dtype == 'int' and is_int(x)):
         return x
@@ -134,7 +140,6 @@ def get_convertion_dtype(x):
 
 
 convert_to_tensor_op    = build_op('convert_to_tensor', disable_np = True)
-is_array    = build_op('is_tensor', np_op = lambda x: isinstance(x, np.ndarray))
 is_tensor   = build_op('is_tensor', disable_np = True)
 
 def _fast_ndim(x):

@@ -86,7 +86,8 @@ def box_converter_wrapper(target,
         @args_to_kwargs(fn)
         def inner(** kwargs):
             for k in list(kwargs.keys()):
-                if k.startswith('boxes') and kwargs[k] is not None:
+                if k.startswith('boxes') and (
+                    isinstance(kwargs[k], (list, dict, np.ndarray)) or ops.is_tensor(kwargs[k])):
                     boxes = kwargs.pop(k)
                     if force_np:        boxes = box_to_numpy(boxes)
                     if force_tensor:    boxes = box_to_tensor(boxes)

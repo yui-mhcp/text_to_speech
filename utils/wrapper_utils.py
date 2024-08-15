@@ -12,7 +12,7 @@
 import inspect
 import functools
 
-from utils.generic_utils import get_kwargs, signature_to_str
+from .generic_utils import get_kwargs, signature_to_str
 
 class ContextManager:
     def __init__(self, enter = None, exit = None):

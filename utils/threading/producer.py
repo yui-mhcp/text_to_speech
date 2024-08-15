@@ -88,7 +88,8 @@ class Producer(Thread):
                  raise_if_error     = True,
                  stop_no_more_listeners = True,
                  
-                 name = None
+                 name = None,
+                 ** _
                 ):
         """
             Constructor for the `Producer`
@@ -321,8 +322,8 @@ class Producer(Thread):
         self.finished = True
         for l, _ in self.stop_listeners: l()
 
-    def on_append(self, item):
-        logger.debug('[APPEND {}] {}'.format(self.name, _item_to_str(item)))
+    def on_append(self, * args, ** kwargs):
+        logger.debug('[APPEND {}] {}'.format(self.name, _item_to_str(args)))
         for l, _ in self.append_listeners: l(item)
 
     def on_item_produced(self, item):

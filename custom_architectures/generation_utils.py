@@ -365,7 +365,7 @@ def infer_beam_search(self,
         if length_power is not None:
             reshaped_logits  = reshaped_logits / K.cast(
                 outputs.lengths + 1, logits.dtype
-            ) ** length_power
+            )[:, None] ** length_power
 
         reshaped_logits = K.reshape(reshaped_logits, [batch_size, num_beams * self.vocab_size])
         if first_iter: reshaped_logits = reshaped_logits[:, : self.vocab_size]
@@ -390,7 +390,7 @@ def infer_beam_search(self,
         lengths     = lengths + K.cast(K.logical_not(finished), lengths.dtype)
 
         generated   = K.scatter_update(
-            outputs.tokens,
+            K.take(outputs.tokens, beam_index, axis = 0),
             K.stack([
                 K.arange(effective_batch_size),
                 K.broadcast_to(loop_state.t, [effective_batch_size])
@@ -428,9 +428,9 @@ def infer_beam_search(self,
         )
         return next_inputs, next_outputs, next_state
 
-    batch_size  = len(inputs)
+    batch_size  = inputs.shape[0] if inputs.shape[0] is not None else K.shape(inputs)[0]
     effective_batch_size    = batch_size * num_beams
-    
+
     batch_idx_add   = K.repeat(K.arange(batch_size), num_beams)
     eos_mask        = K.scatter_update(
         K.full((1, self.vocab_size), float('-inf')), [[0, self.pad_token]], [0.]
@@ -454,13 +454,21 @@ def infer_beam_search(self,
         maximum_iterations  = config.max_steps - 1
     )
 
-    return InferenceOutput(
-        tokens  = outputs.tokens,
-        lengths = outputs.lengths - start_lengths,
-        scores  = outputs.scores,
-        logits  = outputs.logits if config.return_logits else None,
-        state   = state.state if return_state else None,
-        attention_weights = None if config.skip_attention else outputs.attention_weights
+    return tree.map_structure(
+        lambda t: K.reshape(
+            t, K.concatenate([
+                K.convert_to_tensor([batch_size, num_beams], 'int32'),
+                K.cast(K.shape(t)[1:], 'int32')
+            ], axis = 0)
+        )[:, : num_sentences] if t is not None and len(K.shape(t)) != 0 else t,
+        InferenceOutput(
+            tokens  = outputs.tokens,
+            lengths = outputs.lengths - start_lengths,
+            scores  = outputs.scores,
+            logits  = outputs.logits if config.return_logits else None,
+            state   = state.state if return_state else None,
+            attention_weights = None if config.skip_attention else outputs.attention_weights
+        )
     )
 
 def get_inference_lengths(self,
@@ -546,8 +554,12 @@ def process_logits(scores,
         )
     
     if logits_filter is not None:
-        scores = K.cast(logits_filter(scores, ** kwargs), scores.dtype)
-
+        if callable(logits_filter):
+            scores = K.cast(logits_filter(scores, ** kwargs), scores.dtype)
+        elif K.is_tensor(logits_filter):
+            from utils.text import remove_batch_tokens
+            scores = K.cast(remove_batch_tokens(scores, logits_filter), scores.dtype)
+            
     return K.log_softmax(scores, axis = -1)
 
 @timer

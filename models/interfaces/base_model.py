@@ -23,8 +23,8 @@ from keras.models import load_model, model_from_json
 from utils import HParams, copy_methods, dump_json, load_json, time_to_string
 from utils.keras_utils import TensorSpec, ops, graph_compile
 from utils.datasets import prepare_dataset, summarize_dataset
-from models.saving import get_saving_dir, get_model_dir, is_model_name
-from models.model_utils import _get_tracked_type, describe_model, optimizer_to_str, loss_to_str, metrics_to_str
+from models.utils import *
+from models.utils import _get_tracked_type
 from models.weights_converter import name_based_partial_transfer_learning
 from custom_architectures import get_architecture, deserialize_keras2_model
 from custom_train_objects import (

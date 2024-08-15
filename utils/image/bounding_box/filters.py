@@ -19,20 +19,19 @@ from .converter import NORMALIZE_01, BoxFormat, convert_box_format
 
 logger  = logging.getLogger(__name__)
 
-def filter_boxes(filters, boxes, ** kwargs):
-    if callable(filters): return filters(boxes, ** kwargs)
+def filter_boxes(filters, boxes, indices = None, rows = None, ** kwargs):
+    if callable(filters): filters = [filters]
     
-    valid_indexes = np.arange(len(boxes))
     for f in filters:
-        if not valid_indexes: return []
-        keep_indexes    = f(boxes = boxes, ** kwargs)
-        valid_indexes   = valid_indexes[keep_indexes]
+        if len(boxes) == 0: return boxes, indices, rows
+        keep_indexes    = f(boxes = boxes, indices = indices, rows = rows, ** kwargs)
         
-        boxes   = boxes[keep_indexes]
-        rows    = [rows[idx] for idx in keep_indexes]
-        indices = [indices[idx] for idx in keep_indexes]
+        if len(keep_indexes) < len(boxes):
+            boxes   = boxes[keep_indexes]
+            rows    = [rows[idx] for idx in keep_indexes]
+            indices = [indices[idx] for idx in keep_indexes]
         
-    return valid_indexes
+    return boxes, indices, rows
 
 class BoxFilter:
     """ Abstract class representing a box filtering strategy """
@@ -180,7 +179,7 @@ class RegionFilter(BoxFilter):
             BoxFormat.XYXY,
             normalize_mode  = NORMALIZE_01,
             ** kwargs
-        )
+        )[0]
     
     def filter(self, boxes, ** kwargs):
         if self.mode == 'overlap':

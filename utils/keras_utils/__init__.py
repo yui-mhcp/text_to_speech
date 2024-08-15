@@ -12,6 +12,8 @@
 import keras
 import logging
 
+from keras import tree
+
 from . import ops
 from .compile import *
 from .gpu_utils import *

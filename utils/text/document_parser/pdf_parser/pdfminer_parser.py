@@ -246,7 +246,7 @@ def is_pdf2image_available():
         import pdf2image
         return True
     except ImportError:
-        warnings.warm('The `pdf2image` library is not available. Skipping image extraction')
+        warnings.warn('The `pdf2image` library is not available. Skipping image extraction')
         return False
     
 @timer

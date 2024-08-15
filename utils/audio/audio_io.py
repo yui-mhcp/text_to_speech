@@ -37,6 +37,10 @@ _audio_player   = None
 _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
 _pydub_ext  = ('mp3', 'm4a', 'ogg')
 _librosa_ext    = ('flac', 'opus')
+_ffmpeg_ext     = _video_ext
+
+_write_pydub_ext    = ('mp3', )
+_write_ffmpeg_ext   = ()
 
 _load_fn    = {}
 _write_fn   = {}
@@ -326,7 +330,7 @@ def read_librosa(filename, ** kwargs):
     audio, rate = librosa.load(filename, sr = None)
     return rate, audio
 
-@read_audio.dispatch(_video_ext)
+@read_audio.dispatch(_ffmpeg_ext)
 def read_ffmpeg(filename, rate = None):
     try:
         import ffmpeg
@@ -386,7 +390,7 @@ def write_audio(audio, filename, rate, normalize = True, factor = 32767, verbose
         
     logger.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
-    normalized = audio if not hasattr(audio, 'numpy') else audio.numpy()
+    normalized = audio if isinstance(audio, np.ndarray) else ops.convert_to_numpy(audio)
     if normalize and len(audio) > 0:
         normalized = audio_processing.normalize_audio(
             audio, max_val = factor, normalize_by_mean = False
@@ -400,7 +404,7 @@ def write_wav(audio, filename, rate):
     """ Writes audio with `scipy.io.wavfile.write()` """
     write(filename, rate, audio)
     
-@write_audio.dispatch(_pydub_ext)
+@write_audio.dispatch(_write_pydub_ext)
 def write_pydub(audio, filename, rate):
     """ Writes audio with `pydub.AudioSegment.export()` """
     from pydub import AudioSegment
@@ -411,3 +415,24 @@ def write_pydub(audio, filename, rate):
     file = audio_segment.export(filename, format = filename.split('.')[-1])
     file.close()
     
+@write_audio.dispatch([])
+def write_ffmpeg(audio, filename, rate):
+    try:
+        import ffmpeg
+
+        format = 'f32le' if audio.dtype == 'float32' else 's16le'
+        process = (
+            ffmpeg
+            .input('pipe:0', format = format, ac = 1, ar = rate)
+            .output(filename, format = filename.split('.')[-1])
+            .overwrite_output()
+            .run_async(pipe_stdin = True)
+        )
+
+        process.stdin.write(audio.tobytes())
+        process.stdin.close()
+        process.wait()
+    except ImportError:
+        logger.error("You must install ffmpeg : `pip install ffmpeg-python`")
+    except ffmpeg.Error as e:
+        logger.error('Error while writing audio to {} : {}'.format(filename, e))

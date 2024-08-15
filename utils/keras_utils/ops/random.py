@@ -9,8 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import keras
-
 from .ops_builder import build_op
 
 __all__ = ['beta', 'binomial', 'categorical', 'dropout', 'gamma', 'normal', 'randint', 'shuffle', 'truncated_normal', 'uniform']

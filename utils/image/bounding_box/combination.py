@@ -83,8 +83,25 @@ def merge_rows(rows, indices):
     ]
     return rows, indices
 
-def group_boxes(boxes, indices, groups, rows = None, check_rows = None, sort = None, ** _):
+def align_rows(rows, mode, center_threshold = 1e-2, ** _):
+    """ Aligns `rows` on left/right border """
+    if len(rows) == 1: return rows
+    
+    if mode == 'auto':
+        x_center = (rows[:, 0] + rows[:, 2]) / 2.
+        is_centered = np.all(np.abs(x_center[:1] - x_center[1:]) < center_threshold)
+        if not is_centered: mode = 'left'
+    
+    if mode == 'left':
+        rows[:, 0] = np.min(rows[:, 0])
+    elif mode == 'right':
+        rows[:, 2] = np.max(rows[:, 2])
+    
+    return rows
+
+def group_boxes(boxes, indices, groups, rows = None, check_rows = None, align_borders = None, sort = None, ** kwargs):
     if check_rows is None: check_rows = rows is not None
+    if align_borders is None and rows is not None: align_borders = 'auto'
     
     res_boxes, res_indices, individuals = [], [], []
     for group in groups:
@@ -105,6 +122,9 @@ def group_boxes(boxes, indices, groups, rows = None, check_rows = None, sort = N
     
     if check_rows:
         individuals, res_indices = merge_rows(individuals, res_indices)
+    
+    if align_borders:
+        individuals = [align_rows(rows, align_borders, ** kwargs) for rows in individuals]
     
     return np.array(res_boxes), res_indices, individuals
 

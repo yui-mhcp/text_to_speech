@@ -18,19 +18,20 @@ import math
 import time
 import inspect
 import logging
+import warnings
 import collections
 import numpy as np
 import pandas as pd
 
 from loggers import timer, time_logger
 from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils import Producer, Consumer, time_to_string
+from utils import Producer, Consumer, time_to_string, partial
 from utils.threading import Producer, Consumer
 from utils.image.image_utils import resize_image
 
 logger  = logging.getLogger(__name__)
 
-DELAY_MS = 8
+DELAY_MS = 3
 DELAY_SEC   = DELAY_MS / 1000.
 
 _resize_kwargs  = set(list(inspect.signature(resize_image).parameters.keys())[1:])
@@ -67,9 +68,9 @@ def get_image_size(image):
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
 @timer
-@graph_compile(
-    support_xla = False, cast_kwargs = False, force_tensorflow = True
-)
+#@graph_compile(
+#    support_xla = False, cast_kwargs = False, force_tensorflow = True
+#)
 def load_image(filename : TensorSpec(),
 
                channels = 3,
@@ -145,8 +146,11 @@ def load_image(filename : TensorSpec(),
 
 def convert_to_uint8(image, ** kwargs):
     """ Converts `image` to `np.uint8` format (useful for subsequent `cv2` calls) """
-    return load_image(image, dtype = 'uint8', ** kwargs)
+    return ops.convert_to_numpy(load_image(
+        image, dtype = 'uint8', to_tensor = False, run_eagerly = True, ** kwargs
+    ))
 
+@timer
 def save_image(filename, image, ** kwargs):
     """
         Save given `image` to the given `filename`
@@ -161,15 +165,14 @@ def save_image(filename, image, ** kwargs):
         Return :
             - filename  : the image filename (the argument)
     """
-    image = load_image(image, dtype = 'uint8', to_tensor = False, run_eagerly = True, ** kwargs)
-    image = ops.convert_to_numpy(image)
+    image = convert_to_uint8(image, ** kwargs)
     
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
 
 def frame_generator(cam_id,
                     fps         = None,
-                    max_time    = 60,
+                    max_time    = None,
                     
                     nb_frames   = -1,
                     frames_step = 1,
@@ -196,9 +199,13 @@ def frame_generator(cam_id,
     """
     def should_continue(t0, t, n):
         run = True
-        if max_time is not None:    run = run and t - t0 < max_time
-        if nb_frames > 0:           run = run and n < nb_frames
+        if max_time > 0:    run = run and t - t0 < max_time
+        if nb_frames > 0:   run = run and n < nb_frames
         return run
+    
+    if not max_time: max_time = -1
+    if not nb_frames: nb_frames = -1
+    if max_time == -1 and nb_frames == -1: max_time = 60
     
     camera  = cam_id
     if isinstance(cam_id, (int, str)):
@@ -206,11 +213,11 @@ def frame_generator(cam_id,
     
     failed      = 0
     idx, seen   = frames_offset, 0
-    wait_time   = 1. / fps - DELAY_SEC
+    wait_time   = 1. / fps - DELAY_SEC if fps else 1e-3
     start_time  = time.time()
     start_iter_time = start_time
     
-    for _ in range(frames_offset): camera.read()
+    for _ in range(frames_offset): camera.grab()
     while should_continue(start_time, start_iter_time, seen):
         with time_logger.timer('frame generation'):
             ret, frame = camera.read()
@@ -240,29 +247,31 @@ def frame_generator(cam_id,
 
 @timer
 def stream_camera(cam_id    = 0,
-                  max_time  = 60,
+                  *,
+                  
+                  max_time  = None,
                   nb_frames = -1,
                   frames_step   = 1,
                   frames_offset = 0,
                   
                   fps   = -1,
                   show_fps  = None,
-                  multi_threaded    = True,
+                  use_multithreading    = True,
                   
                   add_copy  = False,
                   add_index = False,
                   buffer_size   = 5,
                   transform_fn  = None,
-                  transformer_prod  = None,
                   
-                  output_file   = None,
+                  copy_audio    = True,
                   output_fps    = None,
                   output_shape  = None,
+                  output_file   = None,
+                  transformed_file  = None,
                   
                   show  = True,
+                  flags = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED,
                   play_audio    = True,
-                  copy_audio    = True,
-                  imshow_flags  = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED,
                   
                   view_graph        = False,
                   output_graph      = False,
@@ -274,50 +283,57 @@ def stream_camera(cam_id    = 0,
         Streams either on a camera either on a video file (depending on `cam_id`) and applies `transformer_fn` on each frame.
         
         Arguments :
-            - cam_id    : camera ID (0 is the default camera) or video filename (str)
-            - max_time  : the maximum streaming time (press 'q' to quit before if `show = True`)
-            - nb_frames : number of frames to stream (quit after)
+            - cam_id    : the video stream
+                          - int : camera ID (0 is the default camera)
+                          - str : video filename
+                          - other   : should be a valid camera (i.e., implement `read()` method)
             
-            - fps   : frames per second for the input stream
-            - show_fps  : frames per second for the `cv2.imshow` call
+            - max_time  : maximum number of streaming time (in seconds)
+            - nb_frames : maximum number of frames to stream
+            - frames_step   : the number of frames to skip (e.g., `2` will take 1 frame out of 2)
+            - frames_offset : the number of frames to skip at the start of the stream
             
-            - max_workers   : number of workers for each `Consumer`
-                - -1 / -2   : each function is executed in the main thread (no separated thread) 
-                - 0     : each function is executed in a separate thread
+            - fps   : number of frames to load per second
+            - show_fps  : number of frames to display per second (only relevant if `show = True`)
+            - use_multithreading    : whether to parallelize frames reading / display
             
-            - add_index : if `True`, the input to `transform_fn` is a `dict` `{image: frame_index:}`
-            - add_copy  : if `True`, the input to `transform_fn` contains a `image_copy` key
-            - transform_fn  : valid argument to the `add_consumer` method. Its input is either a dict (if `id_format` is provided) either the frame
-            - transformer_prod  : a `Consumer` object that outputs the transformed frames to display (default to `prod.add_consumer(transform_fn)`)
+            - add_copy  : add the `image_copy` field in the stream generator output
+            - add_index : add the `frame_index` field in the stream generator output
+            - buffer_size   : the buffer size of the transformer consumer (allows to control the number of frames in the waiting queue)
+            - transform_fn  : a callable that takes 1 argument, and outputs a transformed frame
+                              the input is a dict if `add_index or add_copy` or the raw frame
+                              the output is used only if `show = True or transformed_file`
             
-            - output_file   : the output filename to save the (transformed) video
-            - output_fps    : the fps for the output video file
-            - output_shape  : output shape of the transformed video (default to the camera / input file's shape)
+            - copy_audio    : whether to copy original video audio to the output file(s)
+            - output_fps    : the frame rate for the output file(s)
+            - output_shape  : the frame shape for the output file(s)
+            - output_file   : where to save the raw stream
+            - transformed_file  : where to save the transformed frame (require `transform_fn`)
             
-            - show  : whether to display the result or not (with `cv2.imshow`)
-            - play_audio    : whether to play the audio (ignored if `cam_id` is not a video file)
-            - copy_audio    : whether to copy the input file's audio to the output file
-            - imshow_flags  : see `help(cv2.namedWindow)` for more information about the flags
+            - show  : whether to display the transformed stream with `cv2.imshow
+            - flags : the flags to `cv2.namedWindow` to initialize the display window
+            - play_audio    : whether to play the original audio when showing the stream
             
-            - kwargs    : kwargs passed to the `transform_fn` pipeline
-        
-        Note : in this function, it is recommanded to set `max_workers = 0` in order to run the I/O functions (`cv2.VideoCapture.read`, `cv2.imshow`, etc.) in separated threads. This allows for much better performances than sequential calls.
+            - {view / output}_graph : arguments forwarded to the `Producer.plot` method
+            
+            - kwargs    : forwarded to `transform_fn`
     """
     @timer
-    def write_video_frame(frame):
+    def write_video_frame(writer, frame):
         """ Writes frames to the corresponding output file """
         frame = convert_to_uint8(frame)
-        video_writer.write(frame[:, :, ::-1])
+        writer.write(frame[:, :, ::-1])
     
     @timer
     def show_frame(frame, prev_time = -1):
         """ Displays `fps` frames per second with `cv2.imshow` """
         if isinstance(frame, dict): frame = frame['image']
+        if callable(frame):         frame = frame()
         cv2.imshow(display_name, frame[..., ::-1])
         
         t = time.time()
         delay    = 0 if prev_time == -1 else (t - prev_time)
-        delay_ms = max(show_wait_time_ms - int(delay * 1000), 1) if multi_threaded else 1
+        delay_ms = max(show_wait_time_ms - int(delay * 1000), 1) if use_multithreading else 1
         if cv2.waitKey(delay_ms) & 0xFF == ord('q'):
             raise StopIteration()
         return None, (t, )
@@ -329,8 +345,6 @@ def stream_camera(cam_id    = 0,
         raise StopIteration()
     
     # variable initialization
-    if max_time <= 0:   max_time = None
-    
     if isinstance(cam_id, (int, str)):
         display_name = '{} {}'.format('Camera' if isinstance(cam_id, int) else 'File', cam_id)
         cap = cv2.VideoCapture(cam_id)
@@ -350,9 +364,16 @@ def stream_camera(cam_id    = 0,
     
     # set the output fps
     if not output_fps: output_fps = fps
-    if output_file and output_fps == -1:
-        logger.warning('When specifying an `output_file`, it is recommanded to specify `output_fps` as the `fps` can differ from the effective camera fps')
-        output_fps  = cap.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
+    if output_file or transformed_file:
+        if output_shape is None:
+            frame_h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            frame_w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        else:
+            frame_h, frame_w = output_shape
+
+        if output_fps == -1:
+            warnings.warn('When specifying an `output_file`, it is recommanded to specify `output_fps` as the `fps` can differ from the effective camera fps')
+            output_fps  = cap.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
     
     # set the display fps
     if play_audio and isinstance(cam_id, str):
@@ -368,33 +389,52 @@ def stream_camera(cam_id    = 0,
     #####################
     
     prod = Producer(frame_generator(
-        cap, fps = fps, max_time = max_time, nb_frames = nb_frames, return_index = add_index, add_copy = add_copy, frames_step = frames_step, frames_offset = frames_offset
-    ), run_main_thread = not multi_threaded, stop_listener = cap.release)
+        cap,
+        fps     = fps,
+        max_time    = max_time,
+        nb_frames   = nb_frames,
+        frames_step = frames_step,
+        frames_offset   = frames_offset,
+        
+        add_copy    = add_copy,
+        return_index = add_index
+    ), run_main_thread = not use_multithreading, stop_listener = cap.release)
     
     transformer = prod.add_consumer(
         transform_fn,
+        start   = True,
         link_stop   = True,
         buffer_size = buffer_size,
-        run_main_thread = not multi_threaded,
+        run_main_thread = not use_multithreading,
         ** kwargs
     ) if transform_fn is not None else prod
     
-    if transformer_prod is None: transformer_prod = transformer
+    # Adds a consumer to display frames (if expected)
+    if show:
+        cons = transformer.add_consumer(
+            show_frame,
+            link_stop = True,
+            stateful = True,
+            run_main_thread = not use_multithreading,
+            stop_no_more_listeners  = False,
+            start_listener  = lambda: cv2.namedWindow(display_name, flags),
+            stop_listener   = cv2.destroyAllWindows
+        )
+        if play_audio and output_fps != -1 and isinstance(cam_id, str):
+            cons.add_listener(play_audio_on_first_frame)
+
     # Adds a frame writer if required
     if output_file is not None:
-        if output_shape is None:
-            frame_h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            frame_w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        else:
-            frame_h, frame_w = output_shape
-
+        os.makedirs(os.path.dirname(output_file), exist_ok = True)
         video_writer    = cv2.VideoWriter(
             output_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
         )
         # Creates the video-writer consumer
-        writer_cons     = transformer_prod.add_consumer(
-            write_video_frame, link_stop = True, run_main_thread = not multi_threaded,
-            stop_listener = video_writer.release
+        writer_cons     = prod.add_consumer(
+            partial(write_video_frame, video_writer),
+            link_stop = True,
+            run_main_thread = not use_multithreading,
+            stop_listener   = video_writer.release
         )
         # Adds a listener to copy the video file's audio to the output file (if expected)
         if copy_audio and isinstance(cam_id, str):
@@ -403,21 +443,28 @@ def stream_camera(cam_id    = 0,
                 lambda: video_utils.copy_audio(cam_id, output_file), event = 'stop'
             )
     
-    # Adds a consumer to display frames (if expected)
-    if show:
-        cons = transformer_prod.add_consumer(
-            show_frame,
-            start = True,
-            link_stop = True,
-            stateful = True,
-            run_main_thread = not multi_threaded,
-            stop_no_more_listeners  = False,
-            start_listener  = lambda: cv2.namedWindow(display_name, imshow_flags),
-            stop_listener   = cv2.destroyAllWindows
+    if transformed_file is not None:
+        if transform_fn is None:
+            raise RuntimeError('When `transformed_file` is provided, `transform_fn` must not be None')
+        
+        os.makedirs(os.path.dirname(transformed_file), exist_ok = True)
+
+        transformed_video_writer    = cv2.VideoWriter(
+            transformed_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
         )
-        if play_audio and output_fps != -1 and isinstance(cam_id, str):
-            cons.add_listener(play_audio_on_first_frame)
-    
+        # Creates the video-writer consumer
+        writer_cons     = transformer.add_consumer(
+            partial(write_video_frame, transformed_video_writer),
+            link_stop = True,
+            run_main_thread = not use_multithreading,
+            stop_listener   = transformed_video_writer.release
+        )
+        # Adds a listener to copy the video file's audio to the output file (if expected)
+        if copy_audio and isinstance(cam_id, str):
+            from utils.image import video_utils
+            writer_cons.add_listener(
+                lambda: video_utils.copy_audio(cam_id, transformed_file), event = 'stop'
+            )
     
     ####################
     #  Start pipeline  #

@@ -28,6 +28,8 @@ from utils.generic_utils import to_json, convert_to_str
 
 logger = logging.getLogger(__name__)
 
+_index_file_format_re = re.compile(r'\{i?(:\d{2}d)?\}')
+
 _load_file_fn   = {}
 _dump_file_fn   = {}
 
@@ -42,6 +44,32 @@ def path_to_unix(path):
     """ Simply replaces '\' to '/' :D """
     if not isinstance(path, str): return path
     return path.replace('\\', '/')
+
+def expand_path(path, recursive = True):
+    if '*' not in path:
+        if not os.path.isdir(path): return path
+        path = path + '/*'
+    
+    files = []
+    for f in glob.glob(path):
+        if os.path.isfile(f):
+            files.append(f)
+        elif recursive:
+            files.extend(expand_path(f, True))
+    
+    return files
+
+def contains_index_format(path):
+    return '{}' in path or _index_file_format_re.search(path) is not None
+
+def get_path_index(path):
+    if '{}' in path: path = path.replace('{}', '*')
+    else:            path = _index_file_format_re.sub('*', path)
+    return len(glob.glob(path))
+
+def format_path_index(path):
+    idx = get_path_index(path)
+    return path.format(idx, i = idx)
 
 def sort_files(filenames):
     if isinstance(filenames, str):

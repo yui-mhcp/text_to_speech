@@ -166,7 +166,7 @@ def graph_compile(fn    = None,
             if prepare is not None: args, kwargs = prepare(* args, ** kwargs)
             
             if force_tensorflow and not is_tensorflow_available():
-                warnings.warm(
+                warnings.warn(
                     'Tensorflow is not available, running the function {} eagerly'.format(fn_name)
                 )
                 return fn(* args, ** kwargs)
@@ -489,7 +489,7 @@ def _should_cast_kwarg(x):
 def _cast_arg(value, annot, force_tensorflow = False, mode = None, *, cache = True):
     if value is None: return None
     
-    if cache and isinstance(value, (int, float, bool)):
+    if cache and isinstance(value, (int, float, bool)) and not ops.is_tensorflow_graph():
         return _cached_cast_arg(value, annot, force_tensorflow, mode)
     
     if not force_tensorflow:

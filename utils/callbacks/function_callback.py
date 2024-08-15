@@ -9,20 +9,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import warnings
+import logging
 
-from .parser import parse_document
+from .callback import Callback
 
-@parse_document.dispatch
-def parse_docx(filename, ** kwargs):
-    """ Parses `.docx` files and return the list of paragraphs in the form {'text' : str} """
-    try:
-        from docx import Document
-    except ImportError as e:
-        warnings.warn('Please install the `docx` library : `pip install python-docx`')
-        return []
+logger = logging.getLogger(__name__)
+
+class FunctionCallback(Callback):
+    def __init__(self, fn, name = None, ** kwargs):
+        if name is None: name = fn.__name__
+        
+        self.fn = fn
+        
+        super().__init__(name = name, ** kwargs)
     
-    doc = Document(filename)
-    
-    return [{'text' : p.text} for p in doc.paragraphs]
+    def apply(self, infos, output, ** kwargs):
+        kwargs.update(infos)
+        kwargs.update(output)
+        return self.fn(** kwargs)
+

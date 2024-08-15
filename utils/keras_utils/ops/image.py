@@ -9,8 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import keras.ops as K
-
 from .ops_builder import build_op
 
 __keras_all__ = ['affine_transform', 'crop_images', 'extract_patches', 'hsv_to_rgb', 'map_coordinates', 'pad_images', 'resize', 'rgb_to_grayscale', 'rgb_to_hsv']

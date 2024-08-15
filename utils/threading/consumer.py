@@ -163,19 +163,14 @@ class Consumer(Producer):
         
         args, kwargs, callback = item
         
-        try:
-            logger.debug('[CONSUME {}] {}'.format(self.name, _item_to_str(args)))
-            if not self.stateful:
-                result = self.consumer(* args, ** kwargs)
-            else:
-                result, next_state = self.consumer(
-                    * args, * self._state, ** kwargs
-                )
-                self._state = next_state
-        except StopIteration:
-            raise StopIteration()
-        except Exception as e:
-            result = e
+        logger.debug('[CONSUME {}] {}'.format(self.name, _item_to_str(args)))
+        if not self.stateful:
+            result = self.consumer(* args, ** kwargs)
+        else:
+            result, next_state = self.consumer(
+                * args, * self._state, ** kwargs
+            )
+            self._state = next_state
         
         if callback is not None: callback(result)
         return result
@@ -186,7 +181,7 @@ class Consumer(Producer):
     __call__    = _apply_async
     append  = _apply_async
     extend  = _map_async
-            
+    
     def run(self):
         if self.run_main_thread:
             self.on_start()

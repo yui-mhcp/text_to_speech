@@ -12,8 +12,7 @@
 import os
 import logging
 
-from .saving import *
-from .model_utils import *
+from .utils import *
 from .interfaces.base_model import BaseModel
 
 from utils import import_objects

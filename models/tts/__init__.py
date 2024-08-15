@@ -19,7 +19,7 @@ from utils.keras_utils import ops
 from utils import load_json, create_stream, limit_gpu_memory, set_memory_growth
 from utils.text import parse_document, get_encoder
 from utils.audio import read_audio, write_audio, get_audio_player
-from models.saving import get_model_dir, get_model_config, is_model_name
+from models.utils import get_model_dir, get_model_config, is_model_name
 
 from .waveglow import WaveGlow, PtWaveGlow
 from .tacotron2 import Tacotron2

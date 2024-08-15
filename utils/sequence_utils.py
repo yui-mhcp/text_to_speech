@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import keras
 import numpy as np
 import pandas as pd
 
@@ -19,6 +18,26 @@ from loggers import timer
 from utils.keras_utils import ops
 from .generic_utils import get_args
 from .wrapper_utils import args_to_kwargs
+
+def convert_to_list(data, rank = None):
+    """ Converts `data` to a `list` or a batched array of rank `rank` """
+    if isinstance(data, list):              return data
+    elif isinstance(data, pd.DataFrame):    return data.to_dict('records')
+    elif isinstance(data, (dict, str)):     return [data]
+    elif ops.is_array(data):
+        if rank is None:    return data
+        r = ops.rank(data)
+        if r == rank:       return ops.expand_dims(data, axis = 0)
+        elif r == rank + 1: return data
+        else: raise ValueError('Expected rank = {} or {}, got {}'.format(rank, rank + 1, r))
+    else:
+        raise ValueError('Unsupported `data` type : {}\n{}'.format(type(data), data))
+
+def stack_batch(batch, pad_value = 0., dtype = 'float32', maybe_pad = False):
+    if len(batch) == 1: return ops.expand_dims(batch[0], axis = 0)
+    elif maybe_pad and len(set(tuple(b.shape) for b in batch)):
+        return ops.cast(pad_batch(batch, dtype = dtype, pad_value = pad_value), dtype)
+    return ops.stack(batch, axis = 0)
 
 def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     """
@@ -255,7 +274,7 @@ def truncate(tokens, max_length, keep_mode = 'start'):
     start = 0
     if len(tokens) > max_length:
         if keep_mode == 'random':
-            start = keras.random.uniform(
+            start = ops.random.uniform(
                 (), minval = 0, 
                 maxval = len(tokens) - max_length,
                 dtype = 'int32'

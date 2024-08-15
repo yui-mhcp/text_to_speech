@@ -117,7 +117,8 @@ def load_youtube_video(url, filename = 'youtube.mp4', resolution = 'middle',
 
 def copy_audio(video_source, video_target):
     """ Copy audio from one video (`video_source`) to another (`video_target`) """
-    audio_file  = extract_audio(video_source, filename = 'audio_tmp.mp3')
+    tmp_audio_file  = os.path.splitext(video_target)[0] + '-audio-tmp.mp3'
+    audio_file  = extract_audio(video_source, filename = tmp_audio_file)
     res         = set_video_audio(audio_file, video_target)
     os.remove(audio_file)
     return res

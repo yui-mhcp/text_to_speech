@@ -15,12 +15,12 @@ import enum
 import logging
 import functools
 
-from keras import tree
-from threading import Thread, RLock
+from threading import Thread, Event, RLock
 
-from utils.keras_utils import ops
+from utils.keras_utils import ops, tree
 from utils.stream_utils import create_iterator
-from utils.generic_utils import get_enum_item, get_args, signature_to_str
+from utils.generic_utils import get_enum_item
+from utils.parser import get_args, signature_to_str
 from utils.wrapper_utils import partial
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,8 @@ class Producer(Thread):
                  stop_no_more_listeners = True,
                  
                  name = None,
-                 ** _
+                 
+                 ** kwargs
                 ):
         """
             Constructor for the `Producer`
@@ -114,6 +115,7 @@ class Producer(Thread):
         Thread.__init__(self, name = _get_thread_name(generator, name), daemon = daemon)
 
         self.generator  = generator
+        self._iterator  = create_iterator(self.generator, ** kwargs)
         
         self.doc    = generator.__doc__ if not doc and hasattr(generator, '__doc__') else doc
         
@@ -164,8 +166,7 @@ class Producer(Thread):
         return des
         
     def __iter__(self):
-        self._iterator  = create_iterator(self.generator)
-        return self._iterator
+        return self._iterator()
     
     def __str__(self):
         des = self.node_text
@@ -200,6 +201,9 @@ class Producer(Thread):
         if hasattr(self.generator, 'qsize') and self.generator.qsize() == 0:
             self.generator.put(None)
 
+    def set_item_rate(self, item_rate):
+        self._iterator.set_item_rate(item_rate)
+        
     def add_listener(self,
                      listener,
                      * args,

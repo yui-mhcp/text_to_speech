@@ -16,12 +16,12 @@ import keras
 import logging
 import inspect
 
-from keras import tree
 from functools import cached_property
 from keras.models import load_model, model_from_json
 
-from utils import HParams, copy_methods, dump_json, load_json, time_to_string
-from utils.keras_utils import TensorSpec, ops, graph_compile
+from loggers import timer, time_logger
+from utils import HParams, copy_methods, dump_json, load_json, time_to_string, create_stream
+from utils.keras_utils import TensorSpec, CompiledFunction, SavedModelFunction, ops, tree, graph_compile
 from utils.datasets import prepare_dataset, summarize_dataset
 from models.utils import *
 from models.utils import _get_tracked_type
@@ -38,6 +38,8 @@ from custom_train_objects import (
 
 logger = logging.getLogger(__name__)
 
+_compiled_function_names    = {'call', '_compiled_infer'}
+
 def _build_trackable_property(key, attr = None):
     def get_item_if_single(self):
         keys = self.tracked_variables[key].keys()
@@ -47,10 +49,12 @@ def _build_trackable_property(key, attr = None):
             key
         ))
     return property(get_item_if_single)
+
 class ModelInstances(type):
     _instances = {}
     _is_restoring   = False
     
+    @timer(name = 'model loading', debug = True)
     def __call__(cls, * args, reload = False, ** kwargs):
         name    = kwargs.get('name', kwargs.pop('nom', None)) # for retro-compatibility
         if not name: name = cls.__name__
@@ -148,7 +152,9 @@ class BaseModel(metaclass = ModelInstances):
         'directory' : '{root}/{self.name}',
         'save_dir'  : '{root}/{self.name}/saving',
         'pred_dir'  : '{root}/{self.name}/predictions',
-        'train_dir' : '{root}/{self.name}/training-logs'
+        'train_dir' : '{root}/{self.name}/training-logs',
+        'saved_model_dir'   : '{root}/{self.name}/saved_model',
+        'trt_llm_model_dir' : '{root}/{self.name}/trt_llm'
     }
     _files  = {
         'config_file'   : '{self.directory}/config.json',
@@ -157,10 +163,11 @@ class BaseModel(metaclass = ModelInstances):
     }
     _tracked_types  = {
         keras.Model     : 'models',
+        TRTLLMRunner    : 'models',
+        CompiledFunction    : 'models',
         keras.losses.Loss   : 'losses',
         keras.metrics.Metric    : 'metrics',
         keras.optimizers.Optimizer  : 'optimizers',
-        keras.optimizers.legacy.Optimizer   : 'optimizers'
     }
     
     def __init__(self,
@@ -178,6 +185,8 @@ class BaseModel(metaclass = ModelInstances):
                  support_xla    = None,
                  graph_compile_config   = None,
                  
+                 restoration_mode   = 'keras',
+                 
                  ** kwargs
                 ):
         """ Constructor that initialize the model's configuration, architecture, folders, ... """
@@ -190,6 +199,7 @@ class BaseModel(metaclass = ModelInstances):
         self._save  = save
         self.build_kwargs   = kwargs
         self.pretrained_name    = pretrained_name
+        self.restoration_mode   = restoration_mode
         
         self._run_eagerly   = run_eagerly
         self._support_xla   = support_xla
@@ -203,17 +213,28 @@ class BaseModel(metaclass = ModelInstances):
         if os.path.exists(self.history_file.replace('history', 'historique')):
             if not os.path.exists(self.history_file):
                 os.rename(self.history_file.replace('history', 'historique'), self.history_file)
-        self.__history  = History.load(self.history_file)
+        self.__history  = None
         self.checkpoint_manager = CheckpointManager(self, max_to_keep = max_to_keep)
         
         if is_model_name(self.name) and not force_rebuild:
-            self.restore_models()
+            with time_logger.timer('{} restoration'.format(restoration_mode), debug = True):
+                if restoration_mode == 'keras':
+                    self.restore_models()
+                elif restoration_mode == 'saved_model':
+                    self.model = SavedModelFunction(kwargs.get('directory', self.saved_model_dir))
+                elif restoration_mode == 'trt_llm':
+                    self.model = TRTLLMRunner(kwargs.get('directory', self.trt_llm_model_dir))
         else:
-            self.build(** kwargs)
+            if restoration_mode == 'trt_llm':
+                self.model = TRTLLMRunner(** kwargs)
+            elif restoration_mode == 'saved_model':
+                self.model = SavedModelFunction(** kwargs)
+            else:
+                self.build(** kwargs)
         
-        if save and not os.path.exists(self.config_file):
-            self._init_directories()
-            self.save()
+            if save and not os.path.exists(self.config_file):
+                self._init_directories()
+                self.save()
 
         self.init_train_config()
         
@@ -229,6 +250,7 @@ class BaseModel(metaclass = ModelInstances):
             self.__class__.__name__, self.name
         ))
     
+    @timer(debug = True)
     def _init_dir_properties(self):
         def format_path(path_format):
             return property(
@@ -241,6 +263,7 @@ class BaseModel(metaclass = ModelInstances):
         for property_name, path_format in self._files.items():
             setattr(self.__class__, property_name, format_path(path_format))
 
+    @timer(debug = True)
     def _init_processing_functions(self):
         for prefix in ('prepare', 'augment', 'process', 'process_batch'):
             if not hasattr(self, f'{prefix}_data') and (
@@ -254,11 +277,13 @@ class BaseModel(metaclass = ModelInstances):
         if hasattr(self, 'filter_input') or hasattr(self, 'filter_output'):
             self.filter_data = self._filter_data
             
+    @timer(debug = True)
     def _init_directories(self):
         """ Initialize directory structure based on `self._directories` """
         for property_name, path_format in self._directories.items():
             os.makedirs(getattr(self, property_name), exist_ok = True)
     
+    @timer(debug = True)
     def build(self, ** kwargs):
         """ Initializes the effective `keras.Model` classes """
         def _build_model(model):
@@ -281,6 +306,7 @@ class BaseModel(metaclass = ModelInstances):
         for name, model_config in kwargs.items():
             _set_model(_build_model(model_config), name)
         
+    @timer(debug = True)
     def init_train_config(self, ** kwargs):
         """ Initializes custom training parameters """
         mapper = self.training_hparams_mapper
@@ -308,7 +334,7 @@ class BaseModel(metaclass = ModelInstances):
     loss        = _build_trackable_property('losses', 'loss')
     optimizer   = _build_trackable_property('optimizers', 'optimizer')
     compiled    = property(
-        lambda self: (self.model.compiled and self.model.loss is not None) or len(self.losses) > 0
+        lambda self: (getattr(self.model, 'compiled', False) and self.model.loss is not None) or len(self.losses) > 0
     )
     
     input_signature     = property(lambda self: get_signature(self.input_shape))
@@ -321,7 +347,11 @@ class BaseModel(metaclass = ModelInstances):
         lambda s: TensorSpec(shape = s.shape[1:], dtype = s.dtype), self.output_signature
     ))
 
-    history = property(lambda self: self.__history)
+    @property
+    def history(self):
+        if self.__history is None:
+            self.__history = History.load(self.history_file)
+        return self.__history
     
     @cached_property
     def call_signature(self):
@@ -346,6 +376,27 @@ class BaseModel(metaclass = ModelInstances):
         }
     
     @property
+    def infer_compile_config(self):
+        config = self.graph_compile_config
+        if hasattr(self, 'prepare_for_xla_inference'):
+            config['prepare_for_xla'] = self.prepare_for_xla_inference
+        if hasattr(self, 'prepare_for_graph_inference'):
+            config['prepare_for_graph'] = self.prepare_for_graph_inference
+        config['input_signature'] = getattr(self, 'infer_signature', self.input_signature)
+        return config
+
+    @property
+    def compiled_infer(self):
+        if getattr(self, '_compiled_infer', None) is None:
+            if self.restoration_mode != 'keras':
+                self._compiled_infer = self.model
+            elif hasattr(self.model, 'infer'):
+                self._compiled_infer = graph_compile(self.model.infer, ** self.infer_compile_config)
+            else:
+                self._compiled_infer = graph_compile(self.model, ** self.infer_compile_config)
+        return self._compiled_infer
+
+    @property
     def default_metrics_config(self):
         return {}
     
@@ -368,9 +419,10 @@ class BaseModel(metaclass = ModelInstances):
         return name, value
 
     def __setattr__(self, name, value):
-        tracked_type = _get_tracked_type(value, tuple(self._tracked_types.keys()))
-        if tracked_type:
-            name, value = self._add_tracked_variable(tracked_type, name, value)
+        if name not in _compiled_function_names:
+            tracked_type = _get_tracked_type(value, tuple(self._tracked_types.keys()))
+            if tracked_type:
+                name, value = self._add_tracked_variable(tracked_type, name, value)
         
         super().__setattr__(name, value)
 
@@ -381,14 +433,18 @@ class BaseModel(metaclass = ModelInstances):
                 des += "Sub model `{}`\n".format(name)
             else:
                 des += "Model instance `{}`\n".format(name)
-            des += describe_model(model, with_compile = False) + '\n'
+            
+            if isinstance(model, keras.Model):
+                des += describe_model(model, with_compile = False) + '\n'
+            else:
+                des += str(model) + '\n'
         
         if len(self.models) > 1:
             des += optimizer_to_str(self.optimizers)
             des += loss_to_str(self.losses)
             des += metrics_to_str(self.metrics)
             des += '\n'
-        elif self.model.compiled:
+        elif getattr(self.model, 'compiled', False):
             des += optimizer_to_str(self.optimizer)
             des += loss_to_str(self.loss)
             des += metrics_to_str(self.metrics)
@@ -659,12 +715,16 @@ class BaseModel(metaclass = ModelInstances):
         
         return self.history
 
-    def get_config(self, with_trackable_variables = False):
+    def stream(self, stream, ** kwargs):
+        return create_stream(self.predict, stream, logger = logger, ** kwargs)
+
+    def get_config(self):
         return {
             'name'  : self.name,
             'run_eagerly'   : self._run_eagerly,
             'support_xla'   : self._support_xla,
             'graph_compile_config'  : self._graph_compile_config,
+            'restoration_mode'  : self.restoration_mode,
             'pretrained_name'   : self.pretrained_name,
             ** self.build_kwargs
         }
@@ -675,16 +735,22 @@ class BaseModel(metaclass = ModelInstances):
         shutil.move(self.directory, os.path.join(value, self.name))
         self._root = root
 
+    def export(self, directory = None, endpoints = None, ** kwargs):
+        if directory is None:   directory = self.saved_model_dir
+        
+        return self.compiled_infer.export(directory, endpoints = endpoints, ** kwargs)
+        
     def save(self, ** kwargs):
         if not self._save: return
-        self.save_models_config(** kwargs)
-        self.save_checkpoint(** kwargs)
-        self.save_history(** kwargs)
+        if self.restoration_mode == 'keras':
+            self.save_models_config(** kwargs)
+            self.save_checkpoint(** kwargs)
+            self.save_history(** kwargs)
         self.save_config(** kwargs)
     
     def save_history(self, directory = None, ** _):
         filename = self.history_file if not directory else os.path.join(directory, 'history.json')
-        self.__history.save(filename)
+        self.history.save(filename)
     
     def save_models_config(self, directory = None, ** _):
         config = tree.map_structure(

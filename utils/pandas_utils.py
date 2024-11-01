@@ -9,8 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import numpy as np
-import pandas as pd
 
 _base_aggregation = {
     'count' : len,
@@ -20,7 +20,14 @@ _base_aggregation = {
     'total' : np.sum
 }
 
+def is_dataframe(data):
+    if 'pandas' not in sys.modules: return False
+    import pandas as pd
+    return isinstance(data, pd.DataFrame)
+
 def set_display_options(columns = 25, rows = 25, width = 125, colwidth = 50):
+    import pandas as pd
+    
     pd.set_option('display.max_columns', columns)
     pd.set_option('display.max_row', rows)
 
@@ -160,6 +167,8 @@ def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** k
         
         Note : if no `kwargs` is provided, the default computation is `count, min, mean, max, total`
     """
+    import pandas as pd
+    
     if not isinstance(group_by, (list, tuple)): group_by = [group_by]
     if not isinstance(columns, (list, tuple)): columns = [columns]
     if len(columns) == 0: columns = [c for c in data.columns if c not in group_by]
@@ -192,24 +201,3 @@ def aggregate_df(data, group_by, columns = [], filters = {}, merge = False, ** k
     
     return result
 
-
-def compare_df(df1, df2):
-    """
-        Compare 2 pd.DataFrame element-wise and return a pd.DataFrame with each [row, col] is True (equal) or False
-    """
-    union = [c for c in df1.columns if c in df2]
-    
-    df1 = df1.reset_index()
-    df2 = df2.reset_index()
-    
-    result = []
-    for idx in range(len(df1)):
-        same_idx = {}
-        for c in union:
-            v1, v2 = df1.at[idx, c], df2.at[idx, c]
-            if not isinstance(v1, type(v2)): same_idx[c] = False
-            elif isinstance(v1, np.ndarray): same_idx[c] = np.allclose(v1, v2)
-            else: same_idx[c] = v1 == v2
-        result.append(same_idx)
-    
-    return pd.DataFrame(result)

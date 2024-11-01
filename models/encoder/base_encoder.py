@@ -13,17 +13,15 @@ import os
 import keras
 import logging
 import numpy as np
-import pandas as pd
 
-from keras import tree
 from functools import wraps
 
+from utils import *
 from loggers import timer, time_logger
 from utils.datasets import prepare_dataset
-from utils.keras_utils import TensorSpec, ops
-from models.interfaces.base_model import BaseModel
-from utils import partial, plot_embedding, pad_batch, distance, load_embeddings, save_embeddings, path_to_unix, pad_to_multiple, apply_on_batch
 from utils.search.vectors import build_vectors_db
+from utils.keras_utils import TensorSpec, ops, tree
+from models.interfaces.base_model import BaseModel
 from custom_train_objects import GE2EGenerator, get_loss
 
 logger = logging.getLogger(__name__)
@@ -31,7 +29,7 @@ logger = logging.getLogger(__name__)
 DEPRECATED_CONFIG = ('threshold', 'embed_distance')
 
 def _sort_by_length(data):
-    if isinstance(data, (dict, pd.Series)):
+    if isinstance(data, dict):
         return len(data.get('text'))
     elif isinstance(data, str) or ops.is_array(data):
         return len(data)
@@ -68,10 +66,13 @@ class BaseEncoderModel(BaseModel):
         
         self.__embeddings = None
     
-    def prepare_for_xla(self, inputs, * args, pad_multiple = 256, ** kwargs):
-        if self.pad_value is not None and ops.is_array(inputs):
-            inputs = pad_to_multiple(inputs, pad_multiple, constant_values = self.pad_value)
-        return (inputs, ) + args, kwargs
+    def prepare_for_xla(self, *, inputs, pad_multiple = 256, ** kwargs):
+        if self.pad_value is not None and ops.is_array(inputs) and ops.rank(inputs) in (2, 3):
+            inputs = pad_to_multiple(
+                inputs, pad_multiple, axis = 1, constant_values = self.pad_value
+            )
+        kwargs['inputs'] = inputs
+        return kwargs
     
     @property
     def pad_value(self):
@@ -140,7 +141,7 @@ class BaseEncoderModel(BaseModel):
     def prepare_dataset(self, dataset, mode, ** kwargs):
         config = self.get_dataset_config(mode, ** kwargs)
         
-        if isinstance(dataset, pd.DataFrame):
+        if is_dataframe(dataset):
             load_fn = config.pop('prepare_fn', None)
             if load_fn is not None and not hasattr(self, 'prepare_output'):
                 load_fn     = self.prepare_input
@@ -201,10 +202,12 @@ class BaseEncoderModel(BaseModel):
         with time_logger.timer('processing'):
             inputs = data if processed else self.get_input(data, ** kwargs)
             
-            if self.pad_value is not None and len(inputs) > 1:
-                inputs = pad_batch(inputs, pad_value = self.pad_value)
-            else:
-                inputs = ops.stack(inputs, axis = 0)
+            inputs = stack_batch(
+                inputs,
+                dtype   = ops.dtype_to_str(getattr(inputs[0], 'dtype', type(inputs[0]))),
+                pad_value   = self.pad_value,
+                maybe_pad   = self.pad_value is not None
+            )
         
         with time_logger.timer('embedding'):
             out = encoder(inputs, return_mask = True, as_dict = True, ** kwargs)
@@ -252,7 +255,7 @@ class BaseEncoderModel(BaseModel):
             
             Nearly equivalent to `plot_embedding(model.embed(data), ids)`
         """
-        if isinstance(data, pd.DataFrame):
+        if is_dataframe(data):
             col_id  = ids if isinstance(ids, str) else 'id'
             ids     = data[col_id].values if col_id in data.columns else None
         elif isinstance(data, dict):
@@ -349,6 +352,8 @@ class BaseEncoderModel(BaseModel):
             
             Note : if the saving feature is not required, it is recommanded to use `self.embed` to avoid overhead / complexity. The input type is also less restrictive in the `self.embed` method.
         """
+        import pandas as pd
+        
         if directory is None: directory = self.pred_dir
         if not isinstance(data, pd.DataFrame): data = pd.DataFrame(data)
 

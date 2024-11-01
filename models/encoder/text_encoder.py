@@ -12,7 +12,6 @@
 from .base_encoder import BaseEncoderModel
 from utils.keras_utils import TensorSpec, ops
 from models.interfaces.base_text_model import BaseTextModel
-from custom_architectures.transformers_arch import get_pretrained_transformer
 
 class TextEncoder(BaseTextModel, BaseEncoderModel):
     pad_value   = BaseTextModel.blank_token_idx
@@ -29,6 +28,8 @@ class TextEncoder(BaseTextModel, BaseEncoderModel):
     
     def build(self, model = None, pretrained = None, ** kwargs):
         if model is None:
+            from custom_architectures.transformers_arch import get_pretrained_transformer
+
             model = kwargs if not pretrained else get_pretrained_transformer(pretrained, ** kwargs)
             
         super().build(model = model)

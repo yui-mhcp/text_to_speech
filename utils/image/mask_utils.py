@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 
 from utils.keras_utils import ops
-from utils.image.image_io import get_image_size
-from utils.image.image_utils import normalize_color
+from .image_io import get_image_size
+from .image_utils import normalize_color
 from utils.wrapper_utils import dispatch_wrapper
 
 _mask_transformations = {

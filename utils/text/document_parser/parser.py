@@ -108,7 +108,6 @@ def parse_document(filename,
                 
                 ** kwargs
             )
-            for p in paragraphs: p.setdefault('filename', file)
             if not documents: documents = paragraphs
             elif isinstance(documents, list): documents.extend(paragraphs)
             else: documents.update(paragraphs)
@@ -151,6 +150,8 @@ def parse_document(filename,
     if max_paragraph_length:
         paragraphs = split_paragraphs(paragraphs, max_paragraph_length)
     
+    for p in paragraphs: p.setdefault('filename', filename)
+
     if merge_by:
         if any(merge_by not in p for p in paragraphs):
             logger.warning('The `merge_by` key {} is missing in some paragraphs : {}'.format(

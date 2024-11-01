@@ -13,9 +13,9 @@ import os
 import enum
 import keras
 
+from utils import HParams, import_objects
 from .custom_activations import get_activation
 from .custom_rnn_dropout_cell import CustomRNNDropoutCell
-from utils import HParams, import_objects
 
 globals().update(import_objects(
     __package__.replace('.', os.path.sep),

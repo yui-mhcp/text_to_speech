@@ -12,7 +12,6 @@
 import os
 import logging
 import multiprocessing
-import pandas as pd
 
 from functools import wraps
 from multiprocessing import cpu_count
@@ -27,6 +26,8 @@ def audio_dataset_wrapper(name, task, ** default_config):
         @timer(name = '{} loading'.format(name))
         @wraps(dataset_loader)
         def _load_and_process(directory, * args, rate = None, add_audio_time = False, ** kwargs):
+            import pandas as pd
+            
             dataset = dataset_loader(directory, * args, ** kwargs)
             if isinstance(dataset, tuple): directory, dataset = dataset
             if isinstance(dataset, list): dataset = pd.DataFrame(dataset)

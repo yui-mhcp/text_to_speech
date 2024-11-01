@@ -14,9 +14,8 @@ import logging
 import functools
 import numpy as np
 
-from utils.sequence_utils import apply_on_batch
+from utils import apply_on_batch, dispatch_wrapper, partial
 from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils.wrapper_utils import dispatch_wrapper, partial
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +56,7 @@ def _raise_if_not_matrix(batch_size, kwargs):
 @apply_on_batch(batched_arg = ('x', 'y'), cond = _propagate_if_matrix)
 @apply_on_batch(batched_arg = 'x', cond = _raise_if_not_matrix)
 @apply_on_batch(batched_arg = 'y', concat_axis = 1, cond = _raise_if_not_matrix)
-@graph_compile
+@graph_compile(internal_functions = _distance_methods)
 def tf_distance(x : TensorSpec(), y : TensorSpec(), method, ** kwargs):
     return distance(x, y, method, ** kwargs)
 

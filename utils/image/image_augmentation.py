@@ -11,7 +11,7 @@
 
 from utils.keras_utils import ops, tensorflow_only_function
 from utils.wrapper_utils import dispatch_wrapper
-from utils.image.image_utils import resize_image, rotate_image
+from .image_utils import resize_image, rotate_image
 
 _image_augmentations_fn = {}
 

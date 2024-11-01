@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import os
-import pandas as pd
 
 from .. import Task
 from .processing import audio_dataset_wrapper, _get_processed_name
@@ -59,6 +58,8 @@ def load_data(directory, *, subsets = None, ** kwargs):
                 })
         
         return infos
+    
+    import pandas as pd
     
     if not isinstance(subsets, (list, tuple)): subsets = [subsets] if subsets else []
     subsets = [s for s in subsets if os.path.exists(os.path.join(directory, s))]

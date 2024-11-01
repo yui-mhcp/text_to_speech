@@ -14,7 +14,7 @@ import glob
 import logging
 import numpy as np
 
-from .. import Task
+from .. import Task, add_dataset
 from utils import load_json
 from .processing import text_dataset_wrapper
 
@@ -60,6 +60,17 @@ def load_data(directory, *, subset, version = '2.0', clean_text = True, ** kwarg
                 })
     
     return dataset
+
+add_dataset(
+    'FQUAD', processing_fn = 'squad', task = Task.QA,
+    train   = {'directory' : '{}/FQUAD1.0', 'subset' : 'train', 'version' : ''},
+    valid   = {'directory' : '{}/FQUAD1.0', 'subset' : 'valid', 'version' : ''}
+)
+
+add_dataset(
+    'piaf', processing_fn = 'squad', task = Task.QA,
+    directory = '{}/piaf', subset = 'piaf', version = '1.1'
+)
 
 def _clean_paragraph(para):
     from utils.text.cleaners import remove_control

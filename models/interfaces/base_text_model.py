@@ -10,11 +10,9 @@
 # limitations under the License.
 
 import os
-import pandas as pd
 
 from .base_model import BaseModel
-from utils import copy_methods
-from utils.hparams import HParams
+from utils import HParams, copy_methods, is_dataframe
 from utils.keras_utils import TensorSpec, ops
 from utils.text import TextEncoder, get_encoder, random_mask
 
@@ -45,6 +43,10 @@ class BaseTextModel(BaseModel):
     def text_encoder_file(self):
         return os.path.join(self.save_dir, 'text_encoder.json')
 
+    @property
+    def is_chat_model(self):
+        return self.text_encoder.template is not None
+    
     @property
     def is_encoder_decoder(self):
         return getattr(self.model, 'decoder', None) is not None
@@ -137,16 +139,21 @@ class BaseTextModel(BaseModel):
                         self.vocab, old_vocab = old_vocab, ** self.model_tokens, ** kwargs
                     )
     
-    def prepare_text(self, data, *, format = None, max_length = None, ** kwargs):
-        if isinstance(data, pd.DataFrame): data = data.to_dict('records')
+    def prepare_text(self, data, *, format = None, max_length = None, use_template = True, ** kwargs):
+        if is_dataframe(data): data = data.to_dict('records')
         if isinstance(data, list):
             return [
-                self.prepare_text(d, format = format, max_length = max_length, ** kwargs)
+                self.prepare_text(
+                    d, format = format, max_length = max_length, use_template = use_template, ** kwargs
+                )
                 for d in data
             ]
         
         # Most common case first
-        if not format and not max_length:
+        if use_template and self.is_chat_model:
+            if not isinstance(data, dict): data = {'text' : data}
+            return self.encode_chat(format = format, ** {** kwargs, ** data})
+        elif not format and not max_length:
             return self.encode_text(data, ** kwargs)
         elif format and max_length:
             if not isinstance(data, dict): data = {'text' : data}
@@ -154,7 +161,7 @@ class BaseTextModel(BaseModel):
             return self.split_and_format_text(format, split_key, max_length, ** data, ** kwargs)
         elif format:
             if not isinstance(data, dict): data = {'text' : data}
-            return self.format_text(format, ** data, ** kwargs)
+            return self.format_text(format, ** {** kwargs, ** data})
         else:
             return self.split_text(data, max_length, ** kwargs)
         

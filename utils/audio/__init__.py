@@ -21,7 +21,7 @@ from .mkv_utils import process_mkv, parse_subtitles
 
 from .stft import *
 
-_audio_formats = tuple(set(list(_load_fn.keys()) + list(_write_fn.keys())))
+_audio_formats = set(list(_load_fn.keys()) + list(_write_fn.keys()))
 
 from utils.file_utils import load_data, dump_data
 

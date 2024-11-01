@@ -10,8 +10,7 @@
 # limitations under the License.
 
 from .hparams import HParams
-from .distance import *
-from .threading import *
+from .parser import *
 from .embeddings import *
 from .file_utils import *
 from .plot_utils import *
@@ -22,3 +21,7 @@ from .sequence_utils import *
 from .comparison_utils import *
 from .wrapper_utils import *
 from .keras_utils.gpu_utils import *
+
+from .distance import *
+from .callbacks import *
+from .threading import *

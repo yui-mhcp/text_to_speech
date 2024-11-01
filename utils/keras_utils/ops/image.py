@@ -9,13 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .ops_builder import build_op
+import keras
 
-__keras_all__ = ['affine_transform', 'crop_images', 'extract_patches', 'hsv_to_rgb', 'map_coordinates', 'pad_images', 'resize', 'rgb_to_grayscale', 'rgb_to_hsv']
-
-globals().update({
-    k : build_op('image.{}'.format(k), disable_np = True) for k in __keras_all__ if k != 'resize'
-})
+from .ops_builder import _import_functions, build_op
 
 def _tf_image_resize(* args, interpolation = None, ** kwargs):
     import tensorflow as tf
@@ -25,3 +21,8 @@ def _tf_image_resize(* args, interpolation = None, ** kwargs):
 resize  = image_resize  = resize_image  = build_op(
     'image.resize', tf_op = _tf_image_resize, disable_np = True
 )
+
+globals().update({
+    k : build_op('image.{}'.format(k), disable_np = True)
+    for k in _import_functions(keras.src.ops.image, globals())
+})

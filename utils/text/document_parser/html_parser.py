@@ -12,146 +12,131 @@
 import re
 import logging
 
+from functools import lru_cache
+
 from loggers import timer, time_logger
 from .parser import parse_document
 
 logger = logging.getLogger(__name__)
 
-_wiki_cleaner = r'(\[edit\]|\[[0-9]\])'
+_wiki_cleaner   = r'\[(edit|[0-9]+|source)\]'
+_skip_list_from_sections    = {'content', 'link', 'reference', 'see also', 'navigation', 'bibliography', 'notes', 'source', 'further reading'}
 
 @parse_document.dispatch
 @timer
-def parse_html(text,
-               level    = 2,
+def parse_html(html,
                
+               tags = ['p', 'ul'],
                tag_title    = 'h1',
-               title_separator  = ' - ',
-               p_separator      = '\n\n',
-               tags_to_keep     = ['p', 'li'],
+               max_title_level  = 3,
                
-               skip_header      = False,
-               skip_footer      = False,
-               skip_aside       = False,
-               skip_hrefs       = False,
-               links_threshold  = 0.1,
+               skip_header  = True,
+               skip_footer  = True,
+               skip_aside   = True,
+               skip_hrefs   = True,
                
-               is_sub_document  = False,
                remove_pattern   = None,
-               skip_list_section_keywords   = ['content', 'link', 'reference', 'see also', 'navigation', 'bibliography', 'notes', 'source', 'further reading'],
+               skip_list_from_sections  = _skip_list_from_sections,
                
                ** kwargs
               ):
     from bs4 import BeautifulSoup
-
-    @timer
-    def clean_parts(parts, separator = '\n\n'):
-        if _remove_regex is not None: parts = [re.sub(_remove_regex, lambda m: '', p) for p in parts]
-        text = [' '.join([w for w in p.split(' ') if len(w) > 0]) for p in parts]
-        return separator.join([p for p in text if len(p) > 0])
     
-    @timer
-    def should_skip_list(title_levels, current_text):
-        if len(title_levels) <= 1 and not is_sub_document: return True
-        for t in title_levels[1:]:
-            for pat in skip_list_section_keywords:
-                if pat.lower() in t.lower():
-                    return True
-        return False
-        
-        
-    @timer
-    def normalize_paragraph(title_levels, current_paragraph_idx, paragraph):
-        paragraphs = clean_parts(paragraph.get('text', []), p_separator)
-        
-        formatted = None if len(paragraphs) == 0 else {
-            'title'     : clean_parts(title_levels, title_separator),
-            'text'      : paragraphs,
-            'end_p_idx'   : current_paragraph_idx,
-            ** {k : v for k, v in paragraph.items() if k not in ('title', 'text')},
-            ** kwargs
-        }
-
-        return {'text' : []}, formatted
-    
-    @timer
-    def _is_list_of_links(tag, text):
-        links = tag.find_all('a')
-        if not links: return False
-        links_text = '\n'.join([l.text for l in links])
-        if len(text) - len(links_text) <= links_threshold * len(text):
-            logger.debug('Skipping tag {} because it is a list of links ! (text : {})'.format(
-                tag.name, text
-            ))
-            return True
-        return False
-    
-    if not isinstance(tags_to_keep, (list, tuple)): tags_to_keep = [tags_to_keep]
+    if tags and not isinstance(tags, (list, tuple, set)): tags = [tags]
+    skip_list_from_sections = tuple(set(sec.lower() for sec in skip_list_from_sections))
     _remove_regex = None if not remove_pattern else re.compile(remove_pattern)
     
+    for tag in ('script', 'style'):
+        html = _remove_tag(html, tag)
+    if skip_header: html = _remove_tag(html, 'header')
+    if skip_footer: html = _remove_tag(html, 'footer')
+    if skip_aside:  html = _remove_tag(html, 'aside')
+
     with time_logger.timer('parsing'):
-        parser = BeautifulSoup(text)
-
-    to_skip_tags    = []
-    if skip_header: to_skip_tags.append('header')
-    if skip_footer: to_skip_tags.append('footer')
-    if skip_aside:  to_skip_tags.append('aside')
+        parser = BeautifulSoup(html, features = 'lxml')
     
-    tag_titles = [tag_title] + ['h{}'.format(i+2) for i in range(level)]
-    tags = tags_to_keep + tag_titles + to_skip_tags
+    tags_title = [tag_title] + ['h{}'.format(i) for i in range(2, max_title_level + 1)]
     
+    tags_to_find    = list(tags) + tags_title
     with time_logger.timer('find tags'):
-        parsed_tags = parser.find_all(tags)
+        tags_parsed = parser.find_all(tags_to_find)
 
-    title_levels = []
-    
-    to_skip = []
-    
     paragraphs = []
-    current_paragraph = {'text' : []}
-    current_paragraph_idx = 0
-    for tag in parsed_tags:
-        if tag.name in tag_titles:
-            current_paragraph, parsed = normalize_paragraph(title_levels, current_paragraph_idx, current_paragraph)
-            if parsed: paragraphs.append(parsed)
-            
-            level = tag_titles.index(tag.name)
-            title_levels = title_levels[:level] + [tag.text]
-            
-            continue
+    _section_num, _section_titles = [], []
+    for tag in tags_parsed:
+        if not tag.text.strip(): continue
         
-        if any([skip_tag in tag.name for skip_tag in to_skip_tags]):
-            _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
-            logger.debug('Adding {} for skiping (text {})'.format(tag.name, _cleaned_text))
-            to_skip.append(tag)
-            continue
-        
-        if any([tag in skip.find_all(tag.name) for skip in to_skip]):
-            _cleaned_text = '\n'.join([w for w in tag.text.split('\n') if len(w) > 0])
-            logger.debug('Skipping tag {} with text {}'.format(tag.name, _cleaned_text))
-            continue
-        
-        text = tag.text.strip()
-        if skip_hrefs and _is_list_of_links(tag, text):
-            continue
-        if 'p' in tag.name:
-            if text:
-                current_paragraph['text'].append(text)
-                current_paragraph.setdefault('start_p_idx', current_paragraph_idx)
-            current_paragraph_idx += 1
-        
-        elif 'li' in tag.name and text:
-            if should_skip_list(title_levels, current_paragraph['text']): continue
-            current_paragraph.setdefault('start_p_idx', current_paragraph_idx)
-
-            if len(current_paragraph['text']) == 0:
-                current_paragraph['text'].append('- ' + text)
+        if tag.name in tags_title:
+            level = tags_title.index(tag.name) + 1
+            if level <= len(_section_num):
+                _section_num, _section_titles = _section_num[:level], _section_titles[:level]
+                _section_num[-1] += 1
+                _section_titles[-1] = tag.text
             else:
-                current_paragraph['text'][-1] += '\n- ' + text
+                _section_num.append(1)
+                _section_titles.append(tag.text)
+
+        elif 'ul' in tag.name:
+            if skip_hrefs and _is_link(tag, threshold = 0.25): continue
+            if _should_skip_list(skip_list_from_sections, tuple(_section_titles)): continue
+            
+            _maybe_add_paragraph(
+                paragraphs,
+                '\n'.join(['- ' + it.text.strip() for it in tag.children]),
+                _section_titles,
+                _section_num,
+                type = 'list'
+            )
+        else:
+            if skip_hrefs and _is_link(tag, 0.25): continue
+            
+            _maybe_add_paragraph(
+                paragraphs, tag.text, _section_titles, _section_num
+            )
+    
+    if _remove_regex is not None:
+        for p in paragraphs:
+            p['text'] = re.sub(_remove_regex, '', p['text'])
         
-    
-    current_paragraph, parsed = normalize_paragraph(
-        title_levels, current_paragraph_idx, current_paragraph
-    )
-    if parsed: paragraphs.append(parsed)
-    
     return paragraphs
+
+@timer
+def _remove_tag(html, tag):
+    return re.sub('<{tag}.*?>.*?</{tag}>'.format(tag = tag), '', html, flags = re.DOTALL)
+
+def _maybe_add_paragraph(paragraphs, text, section_titles, section_num, ** kwargs):
+    if isinstance(text, list): text = '\n'.join(text)
+    
+    text = text.strip()
+    if not text: return None, []
+
+    paragraphs.append({'text' : text, 'type' : 'text', ** kwargs})
+    if section_num:
+        paragraphs[-1].update({
+            'section'   : '.'.join([str(num) for num in section_num]),
+            'section_titles'    : section_titles.copy()
+        })
+    return paragraphs[-1], []
+
+@timer
+def _is_link(tag, threshold = 0.25):
+    links = tag.find_all('a')
+    if not links: return False
+    
+    links_text = ''.join([l.text for l in links])
+    if len(links_text) / len(tag.text) >= threshold:
+        logger.debug('Skipping tag {} because it is a list of links ! (text : {})'.format(
+            tag.name, tag.text
+        ))
+        return True
+    return False
+
+@timer
+@lru_cache(maxsize = 5)
+def _should_skip_list(_skip_list_from_sections, titles):
+    for title in titles:
+        title = title.lower()
+        if any(skip in title for skip in _skip_list_from_sections):
+            return True
+    return False
+

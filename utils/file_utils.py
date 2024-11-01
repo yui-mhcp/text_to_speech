@@ -16,15 +16,13 @@ import json
 import pickle
 import logging
 import numpy as np
-import pandas as pd
-import keras.ops as K
 
 from tqdm import tqdm
-from keras import tree
 
-from utils.keras_utils import ops
-from utils.wrapper_utils import dispatch_wrapper, partial
-from utils.generic_utils import to_json, convert_to_str
+from .keras_utils import ops
+from .pandas_utils import is_dataframe
+from .generic_utils import to_json, convert_to_str
+from .wrapper_utils import dispatch_wrapper, partial
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +43,17 @@ def path_to_unix(path):
     if not isinstance(path, str): return path
     return path.replace('\\', '/')
 
-def expand_path(path, recursive = True):
+def expand_path(path, recursive = True, unix = True):
+    """
+        Expand `path` to all matching file(s) if `path` is a directory or a formatted filename
+        
+        Arguments :
+            - path  : str, a file, directory of formatted-file (i.e., unix-style format, `*.jpg`)
+            - recursive : whether to expand nested directories
+            - unix      : whether to replace '\' to '/'
+        Return :
+            - file(s)   : `list` of files or single file if `path` is a file
+    """
     if '*' not in path:
         if not os.path.isdir(path): return path
         path = path + '/*'
@@ -53,6 +61,7 @@ def expand_path(path, recursive = True):
     files = []
     for f in glob.glob(path):
         if os.path.isfile(f):
+            if unix: f = path_to_unix(f)
             files.append(f)
         elif recursive:
             files.extend(expand_path(f, True))
@@ -60,6 +69,7 @@ def expand_path(path, recursive = True):
     return files
 
 def contains_index_format(path):
+    """ Returns whether `path` has a `{}`, `{i}` or `{i:..d}` format """
     return '{}' in path or _index_file_format_re.search(path) is not None
 
 def get_path_index(path):
@@ -72,71 +82,8 @@ def format_path_index(path):
     return path.format(idx, i = idx)
 
 def sort_files(filenames):
-    if isinstance(filenames, str):
-        if os.path.isdir(filenames):
-            return sort_files([os.path.join(filenames, f) for f in os.listdir(filenames)])
-        return [filenames]
+    if isinstance(filenames, str): filenames = expand_path(filename)
     return sorted(filenames, key = lambda f: (len(f), f))
-
-def get_files(file_format, sort = False):
-    if '{' not in file_format: return file_format
-    results = glob.glob(re.sub(r'\{.*\}', r'*', file_format))
-    if sort: results = sort_files(results)
-    return results
-
-def normalize_filename(filename,
-                       keys = 'filename',
-                       unix = False,
-                       recursive = True,
-                       invalid_mode = 'error'
-                      ):
-    """
-        Return (list of) str filenames extracted from multiple formats
-        
-        Arguments :
-            - filename  : (list of) filenames
-                - str   : filename / directory path (if `recursive`, directories are extended)
-                - pd.DataFrame  : must have a `key` column
-                - dict      : must have a `key` entry
-                - Tensor / np.ndarray / bytes    : string / bytes
-            - keys  : the column / key to use if `filename` is a `dict` or `pd.DataFrame`
-            - unix  : whether to convert path to unix-style (i.e. with '/' instead of '\')
-            - recursive : whether to expand directories or not
-            - invalid_mode  : either `error`, `keep` or `skip`, the action to perform when a data is not a string
-    """
-    if isinstance(filename, pd.DataFrame):
-        if isinstance(keys, (list, tuple)):
-            valids  = [k for k in keys if k in filename.columns]
-            keys    = valids[0] if len(valids) > 0 else keys[0]
-        filename = filename[keys].values if keys in filename.columns else None
-    elif isinstance(filename, (dict, pd.Series)):
-        if isinstance(keys, (list, tuple)):
-            valids  = [k for k in keys if k in filename]
-            keys    = valids[0] if len(valids) > 0 else keys[0]
-        filename = filename[keys] if keys in filename else None
-    
-    filename = convert_to_str(filename)
-    
-    if isinstance(filename, str):
-        if not os.path.isdir(filename): return filename if not unix else path_to_unix(filename)
-        elif not recursive: return None
-        outputs = tree.flatten([
-            normalize_filename(os.path.join(filename, f)) for f in os.listdir(filename)
-        ])
-    elif isinstance(filename, (list, tuple)):
-        outputs = tree.flatten([normalize_filename(
-            f, key = key, unix = unix, recursive = recursive, invalid_mode = invalid_mode
-        ) for f in filename])
-    else:
-        if invalid_mode == 'skip':      return None
-        elif invalid_mode == 'keep' :   return filename
-        else: raise ValueError("Unsupported `filename` ({}) : {}".format(type(filename), filename))
-    
-    return [o for o in outputs if o is not None]
-
-get_filename = partial(
-    normalize_filename, unix = True, keys = 'filename', invalid_mode = 'skip'
-)
 
 def hash_file(filename):
     """ Return the SHA256 signature of a file """
@@ -290,22 +237,31 @@ def load_txt(filename, encoding = 'utf-8', ** kwargs):
     with open(filename, 'r', encoding = encoding) as file:
         return file.read()
 
+def _pd_read_method(name, ** defaults):
+    def wrapped(* args, ** kwargs):
+        import pandas as pd
+        return getattr(pd, name)(* args, ** {** defaults, ** kwargs})
+    return wrapped
+
 load_data.dispatch(np.load, 'npy')
-load_data.dispatch(pd.read_csv, 'csv')
-load_data.dispatch(partial(pd.read_csv, sep = '\t'), 'tsv')
-load_data.dispatch(pd.read_excel, 'xlsx')
-load_data.dispatch(pd.read_pickle, 'pdpkl')
+load_data.dispatch(_pd_read_method('read_csv'), 'csv')
+load_data.dispatch(_pd_read_method('read_csv', sep = '\t'), 'tsv')
+load_data.dispatch(_pd_read_method('read_excel'), 'xlsx')
+load_data.dispatch(_pd_read_method('read_pickle'), 'pdpkl')
 
 
 @dispatch_wrapper(_dump_file_fn, 'Filename extension')
 def dump_data(filename, data, overwrite = True, ** kwargs):
     """ Dumps `data` into `filename`. The saving function differ according to the extension. """
-    if K.is_tensor(data): data = K.convert_to_numpy(data)
+    if ops.is_tensor(data): data = ops.convert_to_numpy(data)
     ext = os.path.splitext(filename)[1][1:]
     
     if not ext:
         for types, default_ext in _default_ext.items():
-            if isinstance(data, types):
+            if callable(types) and types(data):
+                filename, ext = '{}.{}'.format(filename, default_ext), default_ext
+                break
+            elif isinstance(data, types):
                 filename, ext = '{}.{}'.format(filename, default_ext), default_ext
                 break
         
@@ -330,7 +286,7 @@ def dump_json(filename, data, ** kwargs):
         file.write(data)
 
 @dump_data.dispatch(('h5', 'hdf5'))
-def dump_h5(filename, data, mode = 'w', ** kwargs):
+def dump_h5(filename, data, mode = 'w', overwrite = False, ** kwargs):
     def _create_datasets(group, data):
         for k, v in data.items():
             if '/' in k: k.replace(k, '/', '\\')
@@ -338,7 +294,7 @@ def dump_h5(filename, data, mode = 'w', ** kwargs):
             if isinstance(v, dict):
                 _create_datasets(group.create_group(k), v)
                 continue
-            elif k in group:
+            elif k in group and not overwrite:
                 continue
             elif not isinstance(v, np.ndarray):
                 v = ops.convert_to_numpy(v)
@@ -349,7 +305,7 @@ def dump_h5(filename, data, mode = 'w', ** kwargs):
 
     import h5py
     
-    if isinstance(data, pd.DataFrame): data = data.to_dict('list')
+    if is_dataframe(data): data = data.to_dict('list')
     
     with h5py.File(filename, mode) as file:
         _create_datasets(file, data)
@@ -385,13 +341,14 @@ def dump_excel(filename, data, ** kwargs):
 @dump_data.dispatch('pdpkl')
 def dump_pandas_pickle(filename, data, ** kwargs):
     _to_df(data).to_pickle(filename, ** kwargs)
-
+        
 def _to_df(data):
+    import pandas as pd
     return data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
 
 _default_ext    = {
     str     : 'txt',
     (list, tuple, set, dict, int, float) : 'json',
     np.ndarray      : 'npy',
-    pd.DataFrame    : 'h5'
+    is_dataframe    : 'h5'
 }

@@ -10,19 +10,19 @@
 # limitations under the License.
 
 import numpy as np
-import pandas as pd
 
 from functools import wraps
 
 from loggers import timer
-from utils.keras_utils import ops
-from .generic_utils import get_args
+from .parser import get_args, get_fn_name
+from .keras_utils import ops
+from .pandas_utils import is_dataframe
 from .wrapper_utils import args_to_kwargs
 
 def convert_to_list(data, rank = None):
     """ Converts `data` to a `list` or a batched array of rank `rank` """
     if isinstance(data, list):              return data
-    elif isinstance(data, pd.DataFrame):    return data.to_dict('records')
+    elif is_dataframe(data):                return data.to_dict('records')
     elif isinstance(data, (dict, str)):     return [data]
     elif ops.is_array(data):
         if rank is None:    return data
@@ -120,7 +120,7 @@ def apply_on_batch(fn = None,
                    concat_axis  = 0
                   ):
     def wrapper(fn):
-        @timer(name = 'batched_{}'.format(fn.__name__))
+        @timer(name = 'batched_{}'.format(get_fn_name(fn)))
         @wraps(fn)
         @args_to_kwargs(fn)
         def batched_fn(*,
@@ -148,7 +148,7 @@ def apply_on_batch(fn = None,
                 length = len(inputs[batched_argname[0]])
             
             if sort_key is not None:
-                if isinstance(inputs, pd.DataFrame):
+                if is_dataframe(inputs):
                     sorted_indexes = sorted(
                         range(length), key = lambda i: sort_key(inputs.iloc[i]), reverse = True
                     )
@@ -264,25 +264,6 @@ def concat_sequences(sequences, pad_value = 0., pad_mode = 'after', axis = 0):
 def _get_batch(data, start, size):
     if isinstance(data, dict):
         return {k : _get_batch(d, start, size) for k, d in data.items()}
-    if isinstance(data, pd.DataFrame): return data.iloc[start : start + size]
+    if is_dataframe(data): return data.iloc[start : start + size]
     return data[start : start + size]
 
-def truncate(tokens, max_length, keep_mode = 'start'):
-    """ Truncate a sequence of shape `(length, )` to `max_length` """
-    assert mode in ('random', 'start', 'end')
-    
-    start = 0
-    if len(tokens) > max_length:
-        if keep_mode == 'random':
-            start = ops.random.uniform(
-                (), minval = 0, 
-                maxval = len(tokens) - max_length,
-                dtype = 'int32'
-            )
-        elif keep_mode == 'end':
-            start = len(tokens) - max_length
-        else:
-            start = 0
-                
-    return tokens[start : start + max_length]
-    

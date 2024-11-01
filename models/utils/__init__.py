@@ -14,6 +14,7 @@ from . import describe, prediction, saving
 from .describe import *
 from .prediction import *
 from .saving import *
+from .trt_llm_runner import TRTLLMRunner
 
 def _get_tracked_type(value, types):
     if isinstance(value, (list, tuple)) and len(value) > 0: value = value[0]

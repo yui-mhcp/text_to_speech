@@ -20,6 +20,7 @@ DEFAULT_MAX_AUDIO_TIME  = 3
 
 class AudioEncoder(BaseAudioModel, BaseEncoderModel):
     prepare_input   = BaseAudioModel.get_audio
+    augment_input   = BaseAudioModel.augment_audio
     
     def __init__(self,
                  audio_rate     = DEFAULT_AUDIO_RATE,
@@ -46,8 +47,12 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
               flatten_kwargs    = {},
               normalize         = None,
               
+              model = None,
+              
               ** kwargs
              ):
+        if model is not None: return super().build(model = model)
+        
         if normalize is None: normalize = self.distance_metric == 'euclidian'
         if normalize:
             final_activation = 'l2' if not final_activation else [final_activation, 'l2']
@@ -167,9 +172,6 @@ class AudioEncoder(BaseAudioModel, BaseEncoderModel):
             input_data = input_data[start : start + self.max_input_length]
         
         return input_data
-    
-    def augment_input(self, inp):
-        return self.augment_audio(inp)
     
     def get_dataset_config(self, mode, ** kwargs):
         if self.use_fixed_length_input:

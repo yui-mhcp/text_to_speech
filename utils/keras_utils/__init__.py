@@ -17,6 +17,7 @@ from keras import tree
 from . import ops
 from .compile import *
 from .gpu_utils import *
+from .ops.execution_contexts import *
 
 logger = logging.getLogger(__name__)
 

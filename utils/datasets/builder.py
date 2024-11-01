@@ -13,13 +13,13 @@ import os
 import keras
 import logging
 import numpy as np
-import pandas as pd
 
 from keras import tree
 from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.model_selection import train_test_split as sklearn_train_test_split
 
-from utils.stream_utils import create_iterator
+from utils.pandas_utils import is_dataframe
+from utils.stream_utils import create_iterable
 
 logger  = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
         dataset = data
     elif isinstance(data, (list, tuple, dict, np.ndarray)):
         dataset = tf.data.Dataset.from_tensor_slices(data)
-    elif isinstance(data, pd.DataFrame):
+    elif is_dataframe(data):
         if siamese:
             dataset = build_siamese_dataset(data, ** kwargs)
         elif as_dict:
@@ -164,7 +164,7 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
             dataset = tf.data.Dataset.from_tensor_slices(data.values)
     elif isinstance(data, keras.utils.PyDataset) and hasattr(data, 'output_signature'):
         dataset = tf.data.Dataset.from_generator(
-            create_iterator(data), output_signature = tree.map_structure(
+            create_iterable(data), output_signature = tree.map_structure(
                 lambda s: tf.TensorSpec(shape = s.shape, dtype = s.dtype), data.output_signature
             )
         )
@@ -254,7 +254,7 @@ def train_test_split(dataset,
             stratify        = labels
         )
         train, valid = (x_train, y_train), (x_valid, y_valid)
-    elif isinstance(dataset, pd.DataFrame) and split_by_unique:
+    elif is_dataframe(dataset) and split_by_unique:
         uniques = dataset[split_column].value_counts()
         if min_occurence > 0: uniques = uniques[uniques > min_occurence]
 
@@ -268,8 +268,8 @@ def train_test_split(dataset,
         
         train = dataset[dataset[split_column].isin(train_uniques)]
         valid = dataset[dataset[split_column].isin(valid_uniques)]
-    elif isinstance(dataset, (pd.DataFrame, np.ndarray, list, tuple)):
-        if isinstance(dataset, pd.DataFrame) and isinstance(labels, str):
+    elif is_dataframe(dataset) or isinstance(dataset, (np.ndarray, list, tuple)):
+        if is_dataframe(dataset) and isinstance(labels, str):
             labels = dataset[labels].values
         
         train, valid = sklearn_train_test_split(
@@ -332,7 +332,9 @@ def build_siamese_dataset(dataset,
             - shuffle   : whether to shuffle or not
             - random_state  : state to use for reproducibility
     """
-    assert isinstance(dataset, pd.DataFrame)
+    import pandas as pd
+    
+    assert is_dataframe(dataset)
     # Useful for some datasets where pairs are not based on ID's (such as SNLI)
     if 'same' in dataset.columns:
         same_ds = dataset[dataset['same']]

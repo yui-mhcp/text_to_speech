@@ -9,8 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pandas as pd
-
 from functools import cached_property
 
 from utils.keras_utils import ops
@@ -52,9 +50,9 @@ class BaseClassificationModel(BaseModel):
         return tf.lookup.StaticHashTable(init, default_value = -1)
     
     def get_label_id(self, data):
-        if isinstance(data, (dict, pd.Series)): data = data['label']
+        if isinstance(data, dict): data = data['label']
         
-        if not ops.is_tensorflow_graph():
+        if ops.is_tensorflow_graph():
             import tensorflow as tf
             return self.lookup_table.lookup(tf.as_string(data))
         

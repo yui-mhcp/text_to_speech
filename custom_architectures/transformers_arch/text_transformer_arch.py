@@ -13,12 +13,11 @@ import keras
 import logging
 import keras.ops as K
 
-from functools import partial
+from functools import cached_property
 
 from loggers import timer
-from utils.hparams import HParams
+from utils import HParams, partial
 from custom_layers import CustomEmbedding, get_activation
-from utils.keras_utils import TensorSpec, ops, graph_compile
 from custom_architectures.generation_utils import infer as infer_method
 from .transformer_arch import *
 
@@ -216,7 +215,8 @@ class TransformerTokenEmbedding(keras.layers.Layer):
             import tensorflow as tf
             if tokens is not None:
                 tf.print("Tokens shape :", tf.shape(tokens))
-            tf.print("Positional offset :", tf.reshape(offset, [-1]))
+            if offset is not None:
+                tf.print("Positional offset :", tf.reshape(offset, [-1]))
         
         if tokens is not None:
             token_embedded = self.embed_tokens(tokens)
@@ -458,8 +458,11 @@ class TextTransformerBlock(TransformerBlock):
         
         return pooler_output if self.pooler_as_output else (output, pooler_output)
 
-    def infer(self, * args, ** kwargs):
-        return infer_method(self, * args, is_transformer = True, ** kwargs)
+    @cached_property
+    def infer(self):
+        return graph_compile(self._infer, prefer_xla = True)
+    
+    _infer  = partial(infer_method, is_transformer = True)
     
     def transfer_weights(self, * args, ** kwargs):
         kwargs.setdefault('skip_layers', ('sos_token', 'eos_token', 'pad_token'))
@@ -498,17 +501,3 @@ class TextTransformer(Transformer):
             self.decoder.set_tokens(** {
                 ** kwargs, ** {k[8:] : v for k, v in kwargs.items() if k.startswith('decoder_')}
             })
-
-    def prepare_for_xla(self, inputs, * args, mask = None, padding_multiple = 256, ** kwargs):
-        inputs = pad_to_multiple(
-            inputs, padding_multiple, axis = 1,
-            constant_values = getattr(self.encoder, 'pad_value', 0.)
-        )
-        if mask is not None:
-            kwargs['mask'] = pad_to_multiple(
-                mask, padding_multiple, axis = 1, constant_values = False
-            )
-        
-        if hasattr(self.decoder, 'prepare_for_xla'):
-            _, kwargs = self.decoder.prepare_for_xla(** kwargs)
-        return (self, inputs) + args, kwargs

@@ -44,13 +44,27 @@ class Displayer(Callback):
     
 
 class AudioDisplayer(Displayer):
-    def __init__(self, data_key = ('audio', 'filename'), *, name = 'display audio', ** kwargs):
+    def __init__(self,
+                 data_key = ('audio', 'filename'),
+                 *,
+                 play   = False,
+                 show_text  = True,
+                 
+                 name = 'display audio',
+                 
+                 ** kwargs
+                ):
         super().__init__(data_key, name = name, ** kwargs)
+
+        self.play = play
+        self.show_text  = show_text
 
     def display(self, _data, *, rate = None, ** kwargs):
         from utils.audio import display_audio
         
-        display_audio(_data, rate = rate)
+        if self.show_text:
+            logger.info('Text : {}'.format(kwargs['text']))
+        display_audio(_data, rate = rate, play = self.play)
 
 
 class ImageDisplayer(Displayer):

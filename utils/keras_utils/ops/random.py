@@ -9,10 +9,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .ops_builder import build_op
+import keras
 
-__all__ = ['beta', 'binomial', 'categorical', 'dropout', 'gamma', 'normal', 'randint', 'shuffle', 'truncated_normal', 'uniform']
+from .ops_builder import _import_functions, build_op
 
 globals().update({
-    k : build_op('random.{}'.format(k), disable_np = True) for k in __all__
+    k : build_op('random.{}'.format(k), disable_np = True)
+    for k in _import_functions(keras.src.random.random)
 })

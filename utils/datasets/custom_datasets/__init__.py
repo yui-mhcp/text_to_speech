@@ -13,11 +13,9 @@ import os
 import enum
 import logging
 import importlib
-import pandas as pd
 
 from sklearn.utils import shuffle as sklearn_shuffle
 
-from .preprocessing import *
 from utils.wrapper_utils import dispatch_wrapper
 
 logger  = logging.getLogger(__name__)
@@ -95,6 +93,8 @@ def load_custom_dataset(dataset,
                  
                         ** kwargs
                        ):
+    import pandas as pd
+    
     def format_kwargs(kwargs):
         return {k : v.format(dataset_dir) if isinstance(v, str) else v for k, v in kwargs.items()}
 

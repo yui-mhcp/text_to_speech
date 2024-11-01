@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-from utils import load_data, dump_data, is_equal
+from utils import load_data, dump_data, is_equal, get_fn_name
 
 data_dir    = os.path.join(os.path.dirname(__file__), '__data')
 reproductibility_dir    = os.path.join(os.path.dirname(__file__), '__reproduction')
@@ -145,7 +145,7 @@ class CustomTestCase(unittest.TestCase):
         
         import tensorflow as tf
         
-        with self.subTest('{} compatible : {}'.format('XLA' if _xla else 'Graph', fn.__name__)):
+        with self.subTest('{} compatible : {}'.format('XLA' if _xla else 'Graph', get_fn_name(fn))):
             if _xla:
                 graph_fn    = get_xla_function(fn)
             else:

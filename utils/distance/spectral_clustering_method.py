@@ -12,9 +12,9 @@
 import keras
 
 from utils.keras_utils import TensorSpec, graph_compile, ops
-from utils.distance.kmeans_method import _kmeans
-from utils.distance.distance_method import distance
-from utils.distance.clustering import clustering_wrapper
+from .kmeans_method import _kmeans
+from .distance_method import distance
+from .clustering import clustering_wrapper
 
 @graph_compile(support_xla = False)
 def _spectral_clustering(points : TensorSpec(shape = (None, None), dtype = 'float'),

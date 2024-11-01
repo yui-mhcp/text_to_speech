@@ -15,8 +15,8 @@ import unicodedata
 
 from unidecode import unidecode
 
+from .numbers import normalize_numbers
 from utils.wrapper_utils import partial
-from utils.text.numbers import normalize_numbers
 
 
 _special_symbols    = {
@@ -107,7 +107,9 @@ def get_cleaners_fn(cleaners):
 
 def clean_text(text, cleaners, tokens = {}, ** kwargs):
     """ Cleans `text` with the list of `cleaners` (see `get_cleaners_fn`) """
-    text = text.strip()
+    if not cleaners: return text
+    
+    text = text
     for cleaner in cleaners:
         text = cleaner(text, ** kwargs)
     

@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import os
-import glob
 import keras
 
 from keras.metrics import MeanMetricWrapper

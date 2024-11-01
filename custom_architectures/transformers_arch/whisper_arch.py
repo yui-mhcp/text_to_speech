@@ -249,11 +249,6 @@ class Whisper(TextTransformer):
     def __init__(self, * args, ** kwargs):
         super().__init__(* args, ** kwargs)
     
-    def prepare_for_xla(self, * args, ** kwargs):
-        if hasattr(self.decoder, 'prepare_for_xla'):
-            _, kwargs = self.decoder.prepare_for_xla(** kwargs)
-        return (self, ) + args, kwargs
-    
     @classmethod
     def from_pretrained(cls,
                         pretrained_name = 'medium',

@@ -21,12 +21,11 @@ from scipy.signal import get_window
 from librosa.util import pad_center, tiny
 from librosa.filters import mel as librosa_mel_fn
 
+from loggers import timer
 from utils import dump_json, load_json
-from utils.keras_utils import TensorSpec, graph_compile, execute_eagerly, ops
-from utils.audio.audio_processing import window_sumsquare
-from utils.audio.audio_processing import dynamic_range_compression, dynamic_range_decompression
-
-mel_signature   = TensorSpec(shape = (None, None), dtype = 'float32')
+from utils.keras_utils import TensorSpec, ops, graph_compile, execute_eagerly
+from .audio_processing import window_sumsquare
+from .audio_processing import dynamic_range_compression, dynamic_range_decompression
 
 class MelSTFT(object):
     def __init__(self, 
@@ -63,6 +62,16 @@ class MelSTFT(object):
             self.mel_basis = mel_basis.T.astype(np.float32)
         
         self.min_length = self.filter_length
+        
+        if not self.run_eagerly:
+            self.mel_spectrogram    = timer(graph_compile(
+                self.mel_spectrogram,
+                input_signature = TensorSpec(shape = (None, None), dtype = 'float32')
+            ))
+    
+    @property
+    def run_eagerly(self):
+        return False
     
     @property
     def rate(self):
@@ -109,8 +118,9 @@ class MelSTFT(object):
                 audio[:, :1], audio[:, 1:] - self.pre_emph * audio[:, :-1]
             ], axis = 1)
         
+        if self.run_eagerly: kwargs = {}
         return self.mel_spectrogram(audio, ** kwargs)
-        
+    
     def get_length(self, audio_length):
         """ Return expected mel_length given the audio_length """
         if ops.executing_eagerly():
@@ -120,7 +130,7 @@ class MelSTFT(object):
         ), 'int32')
     
     def get_audio_length(self, mel_length):
-        return (mel_length - 1) * self.hop_length
+        return mel_length * self.hop_length
     
     def mel_spectrogram(self, audio):
         """
@@ -228,7 +238,6 @@ class STFT(object):
         self.forward_basis = np.transpose(forward_basis, [2, 1, 0])
         self.inverse_basis = np.transpose(inverse_basis, [2, 1, 0])
     
-    @graph_compile(input_signature = [TensorSpec(shape = (None, None), dtype = 'float32')])
     def transform(self, audio):
         """
             Applyes STFT on audio
@@ -346,7 +355,6 @@ class TacotronSTFT(MelSTFT):
     def spectral_de_normalize(self, magnitudes):
         return dynamic_range_decompression(magnitudes)
 
-    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
         magnitudes, phases = self.stft_fn.transform(audio)
         mel_output = magnitudes @ ops.convert_to_tensor(self.mel_basis, magnitudes.dtype)
@@ -373,7 +381,6 @@ class ConformerSTFT(TacotronSTFT):
         self.log_zero_guard_value   = log_zero_guard_value
         self.mag_power  = mag_power
     
-    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
         magnitudes, phases = self.stft_fn.transform(audio)
 
@@ -425,7 +432,6 @@ class WhisperSTFT(TacotronSTFT):
             ** kwargs
         )
 
-    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
         magnitudes, phases = self.stft_fn.transform(audio)
         
@@ -442,7 +448,6 @@ class WhisperSTFT(TacotronSTFT):
         return mel_output
 
 class SpeechNetSTFT(MelSTFT):
-    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
         stfts = ops.stft(
             audio, self.win_length, self.hop_length, self.filter_length, center = False
@@ -458,6 +463,10 @@ class SpeechNetSTFT(MelSTFT):
         return self.normalize(mel_output)
     
 class DeepSpeechSTFT(MelSTFT):
+    @property
+    def run_eagerly(self):
+        return True
+    
     @execute_eagerly(
         signature = TensorSpec(shape = (None, None), dtype = 'float32'), numpy = True
     )
@@ -473,7 +482,6 @@ class DeepSpeechSTFT(MelSTFT):
         )
         return mel[:, :self.n_mel_channels].astype(np.float32)
         
-    @graph_compile(input_signature = [mel_signature], support_xla = False)
     def mel_spectrogram(self, audio):
         audio = ops.divide_no_nan(audio, ops.max(ops.abs(audio)))
         mel_output = self.make_features(
@@ -499,7 +507,6 @@ class JasperSTFT(MelSTFT):
             return int(math.ceil(max(self.filter_length, audio.shape[1]) / self.hop_length))
         return ops.cast(ops.ceil(ops.shape(audio)[1] / self.hop_length), 'int32')
     
-    @graph_compile(input_signature = [mel_signature])
     def mel_spectrogram(self, audio):
         if self.dither > 0:
             audio += self.dither * ops.random.normal(ops.shape(audio), dtype = audio.dtype)
@@ -543,6 +550,10 @@ class JasperSTFT(MelSTFT):
         return config
     
 class LibrosaSTFT(MelSTFT):
+    @property
+    def run_eagerly(self):
+        return True
+    
     @execute_eagerly(signature = TensorSpec(
         shape = (None, None), dtype = 'float32'
     ), numpy = True)
@@ -555,7 +566,6 @@ class LibrosaSTFT(MelSTFT):
             n_mels  = self.n_mel_channels
         ).astype(np.float32).T
     
-    @graph_compile(input_signature = [mel_signature], support_xla = False)
     def mel_spectrogram(self, audio):
         mel_output = self.make_features(
             audio[0], shape = (None, self.n_mel_channels)

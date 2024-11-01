@@ -10,13 +10,14 @@
 # limitations under the License.
 
 import logging
+import warnings
 import collections
 import keras.ops as K
 
 from keras import tree
 
 from loggers import timer, time_logger
-from utils.keras_utils import TensorSpec, ops
+from utils.keras_utils import TensorSpec, ops, graph_compile
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,17 @@ InferenceOutput = collections.namedtuple(
 )
 
 @timer
-def infer(self,
+@graph_compile(
+    prefer_xla = True,
+    internal_functions = lambda: [
+        infer_greedy, infer_beam_search, process_logits, get_inference_lengths
+    ]
+)
+def infer(model,
           tokens    : TensorSpec(shape = (None, None), dtype = 'int32') = None,
           lengths   : TensorSpec(shape = (None, ), dtype = 'int32')     = None,
           encoder_output    : TensorSpec(dtype = 'float')   = None,
-          initial_state  = None,
+          initial_state  : TensorSpec(dtype = 'float')  = None,
           prefix    : TensorSpec(dtype = 'float')   = None,
 
           step_fn    = None,
@@ -79,7 +86,7 @@ def infer(self,
 
           ** kwargs
          ):
-    if step_fn is None: step_fn = self
+    if step_fn is None: step_fn = model
     if initial_state:
         assert prefix is None, 'The `prefix` should be None when providing an `initial_state`'
         assert tokens is not None, 'You must provide `tokens` when providing an `initial_state`'
@@ -92,18 +99,18 @@ def infer(self,
             batch_size = _get_batch_size(tokens, encoder_output, prefix)
 
         state_length, init_length, max_steps, max_length = get_inference_lengths(
-            self, tokens = tokens, prefix = prefix, initial_state = initial_state, ** kwargs
+            model, tokens = tokens, prefix = prefix, initial_state = initial_state, ** kwargs
         )
 
         if tokens is None and prefix is None:
-            tokens  = K.full((batch_size, 1), self.sos_token, dtype = 'int32')
+            tokens  = K.full((batch_size, 1), model.sos_token, dtype = 'int32')
             lengths = K.ones((batch_size, ), dtype = 'int32')
         elif tokens is None:
             lengths = K.full((batch_size, ), K.shape(prefix)[1], dtype = 'int32')
         elif lengths is None:
-            lengths = K.count_nonzero(tokens != self.pad_token, axis = 1)
+            lengths = K.count_nonzero(tokens != model.pad_token, axis = 1)
         
-        generated   = K.full((batch_size, max_steps), self.pad_token, dtype = 'int32')
+        generated   = K.full((batch_size, max_steps), model.pad_token, dtype = 'int32')
         padding_mask    = K.ones((batch_size, init_length), dtype = 'bool')
     
     config  = InferenceConfig(
@@ -126,12 +133,12 @@ def infer(self,
 
     if isinstance(method, str): method = _inference_methods[method]
     return method(
-        self,
+        model,
         tokens,
         InferenceOutput(
             tokens  = generated,
             lengths = lengths,
-            scores  = K.zeros((batch_size, ), dtype = self.compute_dtype),
+            scores  = K.zeros((batch_size, ), dtype = model.compute_dtype),
             logits  = None,
             state   = (),
             attention_weights   = None
@@ -155,7 +162,6 @@ def infer(self,
         ** kwargs
     )
 
-@timer
 def infer_greedy(self,
                  initial_inputs,
                  outputs,
@@ -304,8 +310,8 @@ def infer_beam_search(self,
                       encoder_output  = None,
                       enc_padding_mask    = None,
                  
-                      num_beams    = 10,
-                      num_sentences    = 1,
+                      num_beams     : TensorSpec(shape = (), dtype = 'int32', static = True) = 10,
+                      num_sentences : TensorSpec(shape = (), dtype = 'int32', static = True) = 1,
 
                       length_power : TensorSpec(shape = (), dtype = 'float') = None,
 
@@ -476,8 +482,8 @@ def get_inference_lengths(self,
                           prefix   = None,
                           initial_state    = None,
 
-                          max_length   = None,
-                          max_new_tokens   = None,
+                          max_length   : TensorSpec(shape = (), dtype = 'int32', static = True) = None,
+                          max_new_tokens   : TensorSpec(shape = (), dtype = 'int32', static = True) = None,
                           ** _
                          ):
     """
@@ -514,7 +520,8 @@ def get_inference_lengths(self,
     
     if max_length is None:
         if max_new_tokens is None:
-            max_length = getattr(self, 'max_input_length', init_length + 512)
+            warnings.warn('The default behavior is to set `max_new_tokens = 256` when none of `max_length` / `max_new_tokens` is provided')
+            max_length = init_length + 256
         else:
             max_length = init_length + max_new_tokens
     

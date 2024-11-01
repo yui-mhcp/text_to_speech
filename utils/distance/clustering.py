@@ -14,10 +14,9 @@ import numpy as np
 
 from functools import wraps
 
-from utils.embeddings import compute_centroids
-from utils.keras_utils import TensorSpec, graph_compile, ops
-from utils.wrapper_utils import dispatch_wrapper, add_doc
-from utils.distance.distance_method import distance
+from .distance_method import distance
+from utils import get_fn_name, compute_centroids, dispatch_wrapper, add_doc
+from utils.keras_utils import TensorSpec, ops, graph_compile
 
 _clustering_methods = {}
 
@@ -104,7 +103,7 @@ def clustering_wrapper(clustering_fn):
         return centroids, assignment
 
     
-    find_clusters.dispatch(wrapper, clustering_fn.__name__.lstrip('_'))
+    find_clusters.dispatch(wrapper, get_fn_name(clustering_fn).lstrip('_'))
 
     return wrapper
 

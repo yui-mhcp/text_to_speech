@@ -16,16 +16,14 @@ import logging
 import threading
 import collections
 import numpy as np
-import pandas as pd
 
 from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
+from loggers import timer, time_logger
 from utils.audio import audio_processing
-from utils.keras_utils import TensorSpec, execute_eagerly, ops
-from utils.generic_utils import convert_to_str
-from utils.wrapper_utils import dispatch_wrapper
-from utils.threading import StoppedException, Consumer
+from utils.keras_utils import TensorSpec, ops, execute_eagerly
+from utils import StoppedException, Consumer, convert_to_str, dispatch_wrapper 
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +33,9 @@ _player_lock    = threading.Lock()
 _audio_player   = None
 
 _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
-_pydub_ext  = ('mp3', 'm4a', 'ogg')
-_librosa_ext    = ('flac', 'opus')
+_pydub_ext  = ('m4a', 'ogg')
+_librosa_ext    = ('mp3', 'flac', 'opus')
+_audiofile_ext  = ()
 _ffmpeg_ext     = _video_ext
 
 _write_pydub_ext    = ('mp3', )
@@ -52,14 +51,14 @@ def load_audio(data, rate, ** kwargs):
         Load audio from different type of data :
             - str : filename of the audio file
             - np.ndarray / Tensor    : raw audio
-            - dict / pd.Series : 
+            - dict : 
                 'audio' : raw audio
                 'wavs_{rate}'   : filename for audio of correct rate
                 'filename'      : filename for audio (resample if needed)
         Return :
             - audio : `np.ndarray` or `Tensor` with shape [n_samples]
     """
-    if isinstance(data, (dict, pd.Series)):
+    if isinstance(data, dict):
         if 'audio' in data: return data['audio']
 
         audio_key = 'wavs_{}'.format(rate)
@@ -78,15 +77,15 @@ def load_audio(data, rate, ** kwargs):
 def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
     """
         Load mel from different type of data :
-            - dict / pd.Series  : 
+            - dict  : 
                 'mel'   : raw mel
                 stft.dir_name   : filename of mel
             - other : call load_audio(data) and apply stft_fn on audio
         Return : mel spectrogram (as 2D Tensor)
     """
-    if isinstance(data, (dict, pd.Series)) and 'mel' in data:
+    if isinstance(data, dict) and 'mel' in data:
         mel = data['mel']
-    elif isinstance(data, (dict, pd.Series)) and stft_fn.dir_name in data:
+    elif isinstance(data, dict) and stft_fn.dir_name in data:
         mel = load_mel_npy(
             data[stft_fn.dir_name], shape = (None, stft_fn.n_mel_channels)
         )
@@ -107,6 +106,7 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
 def load_mel_npy(file):
     return np.load(convert_to_str(file))
 
+@timer
 def resample_audio(audio, rate, target_rate):
     if rate == target_rate: return audio, rate
     ratio   = target_rate / rate
@@ -196,6 +196,7 @@ def display_audio(filename, rate = None, play = False, ** kwargs):
 """
 
 @dispatch_wrapper(_load_fn, 'File extension')
+@timer
 @execute_eagerly(signature = [
     TensorSpec(shape = (),       dtype = 'int32'),
     TensorSpec(shape = (None, ), dtype = 'float32')
@@ -260,7 +261,8 @@ def read_audio(filename,
                     tuple(_load_fn.keys()), read_method
                 ))
 
-        rate, audio = read_method(filename, rate = target_rate)
+        with time_logger.timer('read file'):
+            rate, audio = read_method(filename, rate = target_rate)
     else:
         assert rate is not None, 'You must provide the `rate` when passing raw audio !'
         audio = filename
@@ -330,6 +332,14 @@ def read_librosa(filename, ** kwargs):
     audio, rate = librosa.load(filename, sr = None)
     return rate, audio
 
+@read_audio.dispatch(_audiofile_ext)
+def read_audiofile(filename, ** kwargs):
+    """ Reads an audio with the `librosa.load` function """
+    import audiofile
+    
+    audio, rate = audiofile.read(filename)
+    return rate, audio
+
 @read_audio.dispatch(_ffmpeg_ext)
 def read_ffmpeg(filename, rate = None):
     try:
@@ -378,7 +388,7 @@ def read_moviepy(filename, ** kwargs):
 """
 
 @dispatch_wrapper(_write_fn, 'Filename extension')
-def write_audio(audio, filename, rate, normalize = True, factor = 32767, verbose = False):
+def write_audio(filename, audio, rate, normalize = True, factor = 32767, verbose = False):
     """
         Writes `audio` to `filename` with given `rate` and the format given by the filename extension
     """
@@ -415,7 +425,6 @@ def write_pydub(audio, filename, rate):
     file = audio_segment.export(filename, format = filename.split('.')[-1])
     file.close()
     
-@write_audio.dispatch([])
 def write_ffmpeg(audio, filename, rate):
     try:
         import ffmpeg

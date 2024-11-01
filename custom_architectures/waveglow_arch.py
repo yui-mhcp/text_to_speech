@@ -166,7 +166,7 @@ class WaveGlow(keras.Model):
         self.n_channels     = n_channels
         self.kernel_size    = kernel_size
 
-        self.seed_generator = keras.random.SeedGenerator()  
+        self.seed_generator = keras.random.SeedGenerator()
         
         self.upsample = layers.Conv1DTranspose(
             n_mel_channels, 1024, strides = 256, name = 'upsample'
@@ -215,8 +215,8 @@ class WaveGlow(keras.Model):
     def call(self, inputs, training = False):
         return self.infer(inputs)
     
-    def infer(self, spect, sigma = 1.0, deterministic = False):
-        spect = self.upsample(spect)
+    def infer(self, inputs, sigma = 1.0, deterministic = False):
+        spect = self.upsample(inputs)
         # trim conv artifacts. maybe pad spec to kernel multiple
         time_cutoff = self.upsample.kernel_size[0] - self.upsample.strides[0]
         spect = spect[:, :-time_cutoff, :]

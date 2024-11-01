@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import numpy as np
+import pandas as pd
 import keras.ops as K
 
 from absl.testing import parameterized
@@ -19,7 +20,7 @@ from sklearn.datasets import make_blobs
 from unitests import CustomTestCase, data_dir
 from utils.embeddings import *
 
-class TestClustering(CustomTestCase, parameterized.TestCase):
+class TestEmbeddings(CustomTestCase, parameterized.TestCase):
     def setUp(self):
         self.n_ids = 7
         self.embeddings, self.ids = sklearn_shuffle(* make_blobs(

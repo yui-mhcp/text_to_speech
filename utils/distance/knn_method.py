@@ -11,11 +11,10 @@
 
 import keras
 import numpy as np
-import pandas as pd
 
-from utils.embeddings import load_embeddings, compute_centroids, embeddings_to_np, get_embeddings_with_ids
+from utils import load_embeddings, compute_centroids, embeddings_to_np, get_embeddings_with_ids, is_dataframe
 from utils.keras_utils import TensorSpec, graph_compile, ops
-from utils.distance.distance_method import distance
+from .distance_method import distance
 
 class KNN(object):
     """
@@ -56,7 +55,7 @@ class KNN(object):
         if isinstance(embeddings, str):
             embeddings = load_embeddings(embeddings)
         
-        if isinstance(embeddings, pd.DataFrame):
+        if is_dataframe(embeddings):
             if ids is None:
                 ids     = embeddings['id'].values
             elif isinstance(ids, str):
@@ -192,7 +191,7 @@ class KNN(object):
         
         # New data points to plot
         if x is not None:
-            if isinstance(x, pd.DataFrame):
+            if is_dataframe(x):
                 if 'id' in x and x_ids is None:
                     x_ids = x['id'].values
                 x = embeddings_to_np(x)

@@ -16,6 +16,7 @@ import collections
 import keras.ops as K
 
 from keras import tree
+from functools import cached_property
 
 from utils.hparams import HParams
 from loggers import timer, time_logger
@@ -195,12 +196,8 @@ def build_look_ahead_mask(length, maxlen = None, dtype = 'bool'):
         Creates a `look ahead` mask with shape [batch_size, 1, size, size]
         The mask is `False` (or 0) if the value should be masked and `True` (or 1) otherwise
     """
-    mask = K.tril(K.ones((1, 1, length, length), dtype = dtype))
-    if maxlen is not None:
-        mask = K.pad(
-            mask, [(0, 0), (0, 0), (0, 0), (maxlen - length, 0)], constant_values = K.ones((), dtype)
-        )
-    return mask
+    k = 0 if maxlen is None else maxlen - length
+    return K.tri(length, maxlen, k, dtype = dtype)[None, None, :, :]
 
 def combine_masks(padding_mask, look_ahead_mask):
     if padding_mask.dtype == 'bool':
@@ -240,13 +237,18 @@ def build_mask(inputs,
     )
     
     if not use_causal_attention: return padding_mask
+    elif isinstance(seq_len, int) and seq_len == 1: return padding_mask
 
-    if look_ahead_mask is None:
-        look_ahead_mask = build_look_ahead_mask(
-            seq_len, maxlen if initial_state else None, dtype = dtype
+    return K.cond(
+        K.equal(seq_len, 1),
+        lambda: padding_mask,
+        lambda: combine_masks(
+            padding_mask,
+            look_ahead_mask if look_ahead_mask is not None else build_look_ahead_mask(
+                seq_len, maxlen if initial_state else None, dtype = dtype
+            )
         )
-    
-    return combine_masks(padding_mask, look_ahead_mask)
+    )
 
 def FeedForwardNetwork(ffn_dim,
                        activation,
@@ -1063,71 +1065,58 @@ class Transformer(keras.Model):
             as_dict = as_dict
         )
     
-    @timer(name = 'Transformer inference')
-    @graph_compile(
-        reduce_retracing = True, support_xla = True, follow_type_hints = True, cast_kwargs = False,
-        prepare_for_xla = lambda self, * args, ** kwargs: (self.prepare_for_xla(
-            * args, ** kwargs
-        ) if hasattr(self, 'prepare_for_xla') else ((self, ) + args, kwargs))
-    )
-    def infer(self,
-              inputs    : TensorSpec(),
-              *,
-              
-              tokens    : TensorSpec(shape = (None, None), dtype = 'int32') = None,
-              initial_state : TensorSpec() = None,
-
-              enc_padding_mask  : TensorSpec() = None,
-              padding_mask  : TensorSpec() = None,
-              training  = False,
-              
-              flatten   = False,
-              flat_length   : int = None,
-              return_state  = False,
-              return_attention  = False,
-              return_last_attention = False,
-              return_hidden_states  = False,
-              return_mask   = False,
-              as_dict       = True,
-
-              ** kwargs
-             ):
-        encoder_outputs = self.encoder(
-            inputs,
-            
-            mask    = enc_padding_mask,
-            training    = training,
-            
-            return_state    = False,
-            return_attention    = False,
-            return_hidden_states    = False,
-            return_mask     = True,
-            as_dict     = True,
-            
-            ** {k[8:] : v for k, v in kwargs.items() if k.startswith('encoder_')}
+    @cached_property
+    def infer(self):
+        return graph_compile(
+            self._infer, prefer_xla = True, internal_functions = self.decoder.infer
         )
-        encoded, mask = encoder_outputs.output, encoder_outputs.mask
-        if flatten:
-            raise NotImplementedErr()
-            encoded = K.boolean_mask(
-                K.reshape(encoded, [-1, self.encoder.embedding_dim]),
-                K.reshape(mask, [-1])
-            )[None]
-            if flat_length is not None: encoded = encoded[:, : flat_length]
-            mask    = None
+                             
+    def _infer(self,
+               inputs    : TensorSpec(),
+               *,
+
+               encoder_output   : TensorSpec(dtype = 'float')   = None,
+               enc_padding_mask : TensorSpec(dtype = 'bool') = None,
+               
+               training = False,
+               as_dict  = True,
+               
+               flatten   = False,
+               flat_length   : int = None,
+
+               ** kwargs
+              ):
+        if encoder_output is None:
+            encoder_output = self.encoder(
+                inputs,
+
+                mask    = enc_padding_mask,
+                training    = training,
+
+                return_state    = False,
+                return_attention    = False,
+                return_hidden_states    = False,
+                return_mask     = True,
+                as_dict     = True,
+
+                ** {k[8:] : v for k, v in kwargs.items() if k.startswith('encoder_')}
+            )
+            encoder_output, enc_padding_mask = encoder_output.output, encoder_output.mask
+            if flatten:
+                raise NotImplementedErr()
+                encoder_output = K.boolean_mask(
+                    K.reshape(encoder_output, [-1, self.encoder.embedding_dim]),
+                    K.reshape(enc_padding_mask, [-1])
+                )[None]
+                if flat_length is not None: encoder_output = encoder_output[:, : flat_length]
+                enc_padding_mask    = None
 
         return self.decoder.infer(
-            encoder_output  = encoded,
-            enc_padding_mask    = mask,
+            encoder_output  = encoder_output,
+            enc_padding_mask    = enc_padding_mask,
             
             training    = training,
-            initial_state   = initial_state,
-            
-            return_state    = return_state,
-            return_attention    = return_attention,
-            return_last_attention   = return_last_attention,
-            return_hidden_states    = return_hidden_states,
-            return_mask     = return_mask,
+            as_dict = as_dict,
             
             ** {k : v for k, v in kwargs.items() if not k.startswith('encoder_')}
         )

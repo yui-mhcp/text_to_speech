@@ -16,7 +16,7 @@ from utils.generic_utils import import_objects, print_objects
 
 from .builder import *
 from .summary import *
-from .custom_datasets import set_dataset_dir, get_dataset_dir, is_custom_dataset, load_custom_dataset, show_custom_datasets
+from .custom_datasets import *
 
 @timer(name = 'dataset loading')
 def get_dataset(dataset, *, source = 'keras', ** kwargs):

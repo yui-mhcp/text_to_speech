@@ -9,13 +9,109 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 import queue
 import logging
 import multiprocessing
-import pandas as pd
+
+from threading import Event
+
+from .pandas_utils import is_dataframe
+from .generic_utils import time_to_string
+
+logger  = logging.getLogger(__name__)
 
 KEEP_ALIVE  = '__keep_alive__'
 
+WARMUP_DELAY_MS = 1
+
+class Iterator:
+    def __init__(self,
+                 generator,
+                 
+                 max_items  = None,
+                 max_time   = None,
+                 item_rate  = None,
+                 
+                 ** kwargs
+                ):
+        self.generator  = create_iterable(generator, ** kwargs)
+        
+        self.item_rate  = item_rate
+        self.max_items  = max_items if max_items else -1
+        self.max_time   = max_time if max_time else -1
+        
+        self.n_items    = -1
+        self.prev_time  = -1
+        self.start_time = -1
+        
+        self.timer  = Event()
+        self.wait_time  = (1. / item_rate - WARMUP_DELAY_MS / 1000) if item_rate else -1
+        self.end_times  = []
+        self.start_times    = []
+
+    def __repr__(self):
+        des = '<Iterator'
+        if self.item_rate: des += ' rate={}'.format(self.item_rate)
+        return des + '>'
+    
+    def __iter__(self):
+        self.start_time = time.time()
+        start_time = self.start_time
+        i = -1
+        for i, item in enumerate(self.generator()):
+            yield item
+            
+            end_time = time.time()
+            self.start_times.append(start_time)
+            self.end_times.append(end_time)
+            
+            if self.max_items != -1 and i + 1 >= self.max_items:
+                break
+            elif self.max_time != -1 and end_time - self.start_time >= self.max_time:
+                break
+            elif self.item_rate:
+                self.wait(start_time, end_time)
+                start_time = time.time()
+            else:
+                start_time = end_time
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            i += 1
+            now = time.time()
+            logger.debug('Iterator finished after {} - {} items produced ({:.3f} item(s) / sec)'.format(
+                time_to_string(now - self.start_time), i, i / (now - self.start_time)
+            ))
+            if self.item_rate and i:
+                avg_item_time = sum(
+                    end - start for start, end in zip(self.start_times, self.end_times)
+                ) / len(self.start_times)
+                avg_wait_time = sum(
+                    start_i_plus_1 - end for end, start_i_plus_1 in zip(
+                        self.end_times, self.start_times[1:]
+                    )
+                ) / (len(self.start_times) - 1)
+                logger.debug('  Average wait time : {}\n  Effective rate : {}'.format(
+                    time_to_string(avg_wait_time), 1. / avg_item_time
+                ))
+    
+    def __call__(self):
+        return iter(self)
+    
+    def wait(self, prev_time, now = None):
+        if now is None: now = time.time()
+        wait_time = self.wait_time - (now - prev_time)
+        self.timer.clear()
+        while wait_time > 0 and self.timer.wait(wait_time):
+            self.timer.clear()
+            wait_time = self.wait_time - (time.time() - prev_time)
+        
+    def set_item_rate(self, rate):
+        self.item_rate  = rate
+        self.wait_time  = 1. / rate - WARMUP_DELAY_MS / 1000
+        self.timer.set()
+    
+        
 def create_stream(fn,
                   stream,
                   timeout   = None,
@@ -78,6 +174,10 @@ def create_stream(fn,
     return results
 
 def create_iterator(generator, ** kwargs):
+    if isinstance(generator, Iterator): return generator
+    return Iterator(generator, ** kwargs)
+
+def create_iterable(generator, ** kwargs):
     """
         Creates a regular iterator (usable in a `for` loop) based on multiple types
             - `pd.DataFrame`    : iterates on the rows
@@ -87,11 +187,11 @@ def create_iterator(generator, ** kwargs):
         
         Note : `kwargs` are forwarded to `queue.get` (if `Queue` instance) or to the function call (if `callable`)
     """
-    if isinstance(generator, pd.DataFrame):
+    if is_dataframe(generator):
         def _df_iterator():
             for idx, row in generator.iterrows():
                 yield row
-        return _df_iterator()
+        return _df_iterator
     elif isinstance(generator, (queue.Queue, multiprocessing.queues.Queue)):
         def _queue_iterator():
             try:
@@ -102,15 +202,15 @@ def create_iterator(generator, ** kwargs):
             except queue.Empty:
                 pass
             
-        return _queue_iterator()
+        return _queue_iterator
     elif callable(generator):
-        return generator(** kwargs)
+        return lambda: generator(** kwargs)
     elif hasattr(generator, '__len__'):
         def _iterator():
             for i in range(len(generator)):
                 yield generator[i]
         return _iterator
-    return generator
+    return lambda: generator
 
 def text_input_stream(msg = 'Enter a text :', quit = 'q', ** kwargs):
     """ Creates a generator function asking user input until `quit` is entered """

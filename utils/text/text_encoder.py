@@ -16,17 +16,17 @@ import json
 import logging
 import regex as re
 import numpy as np
-import pandas as pd
 
 from keras import tree
+from datetime import datetime
 from functools import cached_property, cache
 
-from utils import dump_json, load_json, pad_batch, get_enum_item, convert_to_str, download_file
+from utils import dump_json, load_json, pad_batch, get_enum_item, convert_to_str, download_file, is_dataframe
 from utils.keras_utils import TensorSpec, execute_eagerly, ops
 from utils.text import cleaners as cleaners_module
-from utils.text.ctc_decoder import ctc_decode
-from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
-from utils.text.text_processing import split_sentence, split_and_join, filter_texts
+from .ctc_decoder import ctc_decode
+from .byte_pair_encoding import bytes_to_unicode, bpe
+from .text_processing import split_sentence, split_and_join, filter_texts, process_model_output
 
 logger  = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ _whisper_url   = 'https://raw.githubusercontent.com/openai/whisper/master/whispe
 
 _gpt_pattern    = r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"
 _clip_pattern   = r"<\|startoftext\|>|<\|endoftext\|>|'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]|[^\s\p{L}\p{N}]+"
+_llama_pattern  = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
 
 WHISPER_LANGUAGES = {
     "en": "english",
@@ -368,6 +369,9 @@ class TextEncoder(object):
             len(self), self.vocab if self.vocab_size <= 50 else '[{}, ...]'.format(str(self.vocab[:50])[1:-1])
         )
         config = self.get_config()
+        if self.template:
+            des += 'Template :\n{}\n'.format(pretty_print_template(config.pop('template')))
+        
         for k in ['name', 'vocab', 'bpe_pairs', 'byte_encoder']:
             config.pop(k)
         des += 'Config : {}'.format(json.dumps(config, indent = 2))
@@ -427,13 +431,7 @@ class TextEncoder(object):
         if not isinstance(tokens, dict):
             tokens = {self.clean_text(token, ** kwargs) : token for token in tokens}
         
-        text = cleaners_module.clean_text(text, self.cleaners_fn, tokens = tokens, ** kwargs)
-
-        if self.level == TextEncoderLevel.CHAR and self.ukn_token_idx == -1 and not self.use_sos_and_eos:
-            text = ''.join([c for c in text if c in self])
-            text = text.strip()
-
-        return text
+        return cleaners_module.clean_text(text, self.cleaners_fn, tokens = tokens, ** kwargs)
     
     def split_text(self, text, tokens = None, strip = True):
         """ Splits `text` into a list of tokens """
@@ -450,7 +448,7 @@ class TextEncoder(object):
             for part in parts:
                 new_parts.extend(split_and_join(part, token))
             parts = new_parts
-        
+
         splitted = []
         for part in parts:
             splitted.extend(self.split_text(part, strip = strip) if part not in tokens else [part])
@@ -553,8 +551,8 @@ class TextEncoder(object):
             3) Convert all tokens to its corresponding id (with the `self.tokenize` method)
             4) If necessary, add [sos, eos] tokens 
         """
-        if isinstance(text, pd.DataFrame):          text = text['text'].values
-        elif isinstance(text, (dict, pd.Series)):   text = text['text']
+        if is_dataframe(text):          text = text['text'].values
+        elif isinstance(text, dict):    text = text['text']
         text = convert_to_str(text)
         
         if isinstance(text, (list, tuple)):
@@ -588,7 +586,8 @@ class TextEncoder(object):
                ** _
               ):
         """ Decode a given np.ndarray by replacing each known id by its corresponding token """
-        if hasattr(sequence, 'tokens'): sequence = sequence.tokens
+        if hasattr(sequence, 'tokens'): sequence = process_model_output(sequence)
+        
         if ops.is_tensor(sequence):     sequence = ops.convert_to_numpy(sequence)
         if isinstance(sequence, np.ndarray):
             if np.issubdtype(sequence.dtype, np.floating) and all(s > 0 for s in sequence.shape):
@@ -608,7 +607,10 @@ class TextEncoder(object):
         
         sep = ' ' if self.word_split else ''
 
-        tokens = [self._id_to_symbol[s] for s in sequence if s in self._id_to_symbol]
+        tokens = [
+            self._id_to_symbol[s] for s in sequence
+            if s in self._id_to_symbol and s != self.blank_token_idx
+        ]
         
         if skip_padding or remove_tokens:
             _special_tokens = self.special_tokens if remove_tokens else [self.blank_token]
@@ -661,12 +663,58 @@ class TextEncoder(object):
         return self.decode(self.encode(text, ** kwargs))
 
     @execute_eagerly(signature = text_signature, numpy = True)
-    def encode_template(self, template = None, *, encode = True, ** kwargs):
-        template = compile_jinja_template(convert_to_str(template if template else self.template))
+    def encode_template(self,
+                        text = None,
+                        *,
+                        
+                        template    = None,
+                        
+                        format  = None,
+                        messages    = None,
+                        system_prompt   = None,
+                        
+                        encode  = True,
+                        add_eos = False,
+                        add_generation_prompt   = True,
+                        
+                        ** kwargs
+                       ):
+        template = convert_to_str(template) if template else self.template
         kwargs   = convert_to_str(kwargs)
+
+        if not messages:
+            if not text and not format:
+                raise RuntimeError('The `encode_template` requires either a list of `messages` ending by a `user` message, either a `text` or `format`, that will be used as user message')
+                
+            if format:
+                text = apply_format(
+                    format, text = text, ** kwargs, ** self.tokens
+                )
         
-        text = template.render(** kwargs, ** self.tokens)
-        return self.encode(text, ** kwargs) if encode else text
+            messages = {'role' : 'user', 'content' : text}
+        
+        if isinstance(messages, dict):  messages = [messages]
+        elif isinstance(messages, str): messages = [{'role' : 'user', 'content' : messages}]
+        elif not isinstance(messages, list) or any(not isinstance(msg, dict) for msg in messages):
+            raise ValueError('Unsupported `messages` argument : {}'.format(messages))
+        elif messages[-1]['role'] != 'user':
+            assert text is not None, '`messages` must end with a "user" message'
+            messages += [{'role' : 'user', 'content' : text}]
+        
+        if system_prompt and messages[0]['role'] != 'system':
+            if '{' in system_prompt:
+                system_prompt = apply_format(system_prompt, ** kwargs, ** self.tokens)
+            messages = [{'role' : 'system', 'content' : system_prompt}] + messages
+        
+        kwargs['messages'] = messages
+        
+        if 'date_string' in template and 'date_string' not in kwargs:
+            kwargs['date_string'] = datetime.now().strftime("%d %B %Y")
+        
+        text = apply_format(
+            template, add_generation_prompt = add_generation_prompt, ** kwargs, ** self.tokens
+        )
+        return self.encode(text, add_eos = add_eos, ** kwargs) if encode else text
 
     @execute_eagerly(signature = [
         text_signature, TensorSpec(shape = (None, ), dtype = 'int32', name = 'types')
@@ -720,7 +768,7 @@ class TextEncoder(object):
         if not isinstance(pattern, (list, tuple)): pattern = [pattern]
         
         formatted = [
-            pat.format(** kwargs, ** self.tokens) for pat in pattern
+            apply_format(pat, ** kwargs, ** self.tokens) for pat in pattern
         ]
         
         return self.join(* formatted, ** kwargs)[0]
@@ -1058,17 +1106,21 @@ class TextEncoder(object):
             data    = load_json(path[0])
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             vocab = data['model']['vocab']
+            for token in data['added_tokens']:
+                vocab[token['content']] = token['id']
+            
             if isinstance(vocab, dict): vocab = list(sorted(vocab.keys(), key = vocab.get))
             kwargs.update({
                 'vocab' : vocab,
                 'lstrip'    : False,
-                'rstrip'    : True,
+                'rstrip'    : False,
                 'cleaners'  : _default_cleaners,
                 'sos_token' : pretrained.bos_token,
                 'eos_token' : pretrained.eos_token,
-                'split_pattern'     : _gpt_pattern,
+                'split_pattern'     : _llama_pattern,
                 'bpe_pairs'         : [pair.split(' ') for pair in data['model']['merges']],
-                'byte_encoder'      : bytes_to_unicode()
+                'byte_encoder'      : bytes_to_unicode(),
+                'additional_tokens' : [tok['content'] for tok in data.get('added_tokens', [])]
             })
         elif hasattr(pretrained, 'sp_model'):
             from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
@@ -1096,9 +1148,10 @@ class TextEncoder(object):
             'sep_token'     : pretrained.sep_token,
             'ukn_token'     : pretrained.unk_token,
             'mask_token'    : pretrained.mask_token,
-            'additional_tokens' : getattr(pretrained, 'additional_special_tokens', None),
             'template'  : getattr(pretrained, 'chat_template', None)
         })
+        if 'additional_tokens' not in kwargs and getattr(pretrained, 'additional_special_tokens', []):
+            kwargs['additional_tokens'] = pretrained.additional_special_tokens
         
         if pretrained.pad_token is not None:    kwargs['pad_token'] = pretrained.pad_token
         elif kwargs.get('eos_token', None):     kwargs['pad_token'] = kwargs['eos_token']
@@ -1146,34 +1199,34 @@ class TextEncoder(object):
     def from_whisper_pretrained(cls, multilingual = True, ** kwargs):
         return cls.from_transformers_pretrained('openai/whisper-base')
 
-    @classmethod
-    def build_from_corpus(cls, textes, word_level, max_vocab_size = -1, 
-                          cleaners = [], tqdm = lambda x: x, **kwargs):
-        """ In theory it should work but it has not been tested yet :3 """
-        seen_vocab = {}
-        
-        cleaners_fn    = get_cleaners_fn.get_cleaners_fn(cleaners)
-        for text in tqdm(texts):
-            for cleaners_fn in cleaners_fn:
-                text = cleaner(text)
-            
-            tokens = text.split() if word_level else list(text)
-            for token in tokens:
-                if token not in seen_vocab: seen_vocab[token] = 0
-                seen_vocab[token] += 1
-                
-        if max_vocab_size > 0 and len(seen_vocab) > max_vocab_size:
-            vocab_order = sorted(list(seen_vocab.items()), key = lambda x: x[1], reverse=True)
-            vocab = [token for token, _ in vocab_order[:max_vocab_size]]
-        else:
-            vocab = [token for token, _ in seen_vocab]
 
-        if sort: vocab.sort()
+def pretty_print_template(template):
+    if '\n' in template: return template
+    
+    indent = 0
+    str_template = ''
+    for part in template.split('{'):
+        if not part: continue
+        p_indent = indent
+        if part[0] != '%':
+            part = '{' + part
+        elif part[2:].strip().startswith(('if', 'for')):
+            indent += 1
+        elif part[2:].strip().startswith(('elif', 'else')):
+            p_indent -= 1
+        elif part[2:].strip().startswith('end'):
+            indent -= 1
+            p_indent -= 1
 
-        return cls(vocab, word_level, cleaners = cleaners, **kwargs)
+        str_template += ' ' * p_indent * 4 + '{' + part + '\n'
+    return str_template
 
 def _create_token_name(token):
-    return ''.join([c for c in token.lower() if c.isalnum()]) + '_token'
+    name = ''.join([c for c in token.lower() if c.isalnum() or c == '_'])
+    for suffix in ('_id', '_tag'):
+        if name.endswith(suffix): name = name.replace(suffix, '_token')
+    if 'token' not in name: name += '_token'
+    return name
 
 def _can_split(encoded, idx, encoded_not_split):
     if idx >= len(encoded): return 0, 0
@@ -1198,6 +1251,13 @@ def _get_split_index(encoded, last_end, idx, _can_split_fn, _decrease = True):
     return _get_split_index(encoded, last_end, idx, _can_split_fn, False)
 
 
+def apply_format(format, ** kwargs):
+    if '{%' not in format:
+        return format.format(** kwargs)
+    
+    compiled_format = compile_jinja_template(format)
+
+    return compiled_format.render(** kwargs)
 
 @cache
 def compile_jinja_template(template):

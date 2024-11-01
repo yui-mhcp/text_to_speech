@@ -91,18 +91,15 @@ class WaveGlow(BaseModel):
         des += "- Mel channels : {}\n".format(self.n_mel_channels)
         return des
     
-    def prepare_for_xla(self, mel, * args, padding_multiple = 512, ** kwargs):
-        return (
-            self, pad_to_multiple(mel, padding_multiple, 1, constant_values = self.pad_mel_value)
-        ), {}
+    def prepare_for_xla_inference(self, *, inputs, padding_multiple = 256, ** kwargs):
+        if padding_multiple and inputs.shape[1] % padding_multiple != 0:
+            inputs = pad_to_multiple(
+                inputs, padding_multiple, 1, constant_values = self.pad_mel_value
+            )
+        
+        return {'inputs' : inputs}
 
-    @graph_compile(
-        prepare_for_graph = lambda self, * a, ** kw: self.prepare_for_xla(* a, ** kw)
-    )
-    def compiled_infer(self, spect):
-        return self.vocoder.infer(spect)
-
-    def call(self, spect, * args, training = False, ** kwargs):
+    def __call__(self, spect, * args, training = False, ** kwargs):
         return self.infer(spect, ** kwargs)
     
     @timer(name = 'inference WaveGlow')
@@ -131,6 +128,8 @@ class WaveGlow(BaseModel):
                 win_len = max(1, seq_len // win_len) * int(win_len)
 
         if max_win_len is not None: win_len = min(max_win_len, win_len)
+        
+        kwargs['padding_multiple'] = win_len
         
         if seq_len <= win_len:
             win_len = max(win_len, seq_len)
@@ -165,10 +164,9 @@ class WaveGlow(BaseModel):
         if batch:
             audio_parts = self.compiled_infer(ops.concatenate(parts, axis = 0), ** kwargs)
         else:
-            audio_parts = []
-            for p in parts:
-                with time_logger.timer('single mel inference'):
-                    audio_parts.append(self.compiled_infer(p, ** kwargs)[0])
+            audio_parts = [
+                self.compiled_infer(p, ** kwargs)[0] for p in parts
+            ]
 
         audio = []
         for i, part in enumerate(audio_parts):

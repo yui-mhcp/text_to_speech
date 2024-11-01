@@ -12,13 +12,11 @@
 import os
 import keras
 import numpy as np
-import pandas as pd
 
 from tqdm import tqdm
-from keras import tree
 
-from utils import load_data, dump_data
-from utils.keras_utils import ops
+from utils import load_data, dump_data, is_dataframe
+from utils.keras_utils import ops, tree
 
 class FileCacheGenerator(keras.utils.PyDataset):
     def __init__(self,
@@ -45,7 +43,7 @@ class FileCacheGenerator(keras.utils.PyDataset):
                 ):
         super().__init__(workers = workers)
         
-        assert isinstance(dataset, pd.DataFrame)
+        assert is_dataframe(dataset), 'Dataset must be a DataFrame\n  Got : {}'.format(dataset)
         self.dataset    = dataset
         self.load_fn    = load_fn
         self._output_signature  = output_signature

@@ -13,8 +13,6 @@ import keras
 import numpy as np
 import keras.ops as K
 
-from utils import plot
-
 class CustomScheduler(keras.optimizers.schedules.LearningRateSchedule):
     def __init__(self, minval = 1e-5, maxval = 0.01, ** kwargs):
         self.minval = K.convert_to_tensor(minval, 'float32')
@@ -30,7 +28,7 @@ class CustomScheduler(keras.optimizers.schedules.LearningRateSchedule):
         }
     
     def plot(self, n_step = 10000, xlabel = 'step', ylabel = 'Learning rate', ** kwargs):
-        from utils.plot_utils import plot
+        from utils import plot
         
         kwargs.setdefault('title', 'Learning rate over steps')
         

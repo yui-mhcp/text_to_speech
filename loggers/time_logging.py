@@ -180,7 +180,10 @@ def timer(fn    = None,
                 if (log_if_root and not logger._timer.running) or (force_logging):
                     logger.log_time(timer_name, level = level)
         
-        timer_name = name if name else fn.__name__
+        
+        timer_name = name
+        if not name:
+            timer_name = fn.name if hasattr(fn, 'name') else fn.__name__
         return fn_with_timer
     
     level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL

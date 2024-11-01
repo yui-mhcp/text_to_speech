@@ -9,8 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .ops_builder import build_op
+import keras
 
-__all__ = ['cholesky', 'det', 'eig', 'eigh', 'inv', 'lstsq', 'lu_factor', 'qr', 'solve', 'solve_triangular']
+from .ops_builder import _import_functions, build_op
 
-globals().update({k : build_op(k, disable_np = True) for k in __all__})
+globals().update({
+    k : build_op(k, disable_np = True)
+    for k in _import_functions(keras.ops.linalg, globals())
+})
+

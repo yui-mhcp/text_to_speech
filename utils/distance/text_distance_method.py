@@ -13,11 +13,10 @@ import logging
 import functools
 import collections
 import numpy as np
-import pandas as pd
 import keras.ops as K
 
-from utils.sequence_utils import pad_batch
-from utils.distance.distance_method import _str_distance_methods, distance_method_wrapper
+from utils import pad_batch
+from .distance_method import _str_distance_methods, distance_method_wrapper
 
 logger  = logging.getLogger(__name__)
 
@@ -134,6 +133,8 @@ def edit_distance(hypothesis,
             matrix[i, j] = min(min_costs[j-1], insertion)
     
     if verbose:
+        import pandas as pd
+        
         columns = [''] + [str(v) for v in truth]
         index = [''] + [str(v) for v in hypothesis]
         logger.info(pd.DataFrame(matrix, columns = columns, index = index))

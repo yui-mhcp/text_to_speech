@@ -13,37 +13,32 @@ import numpy as np
 import keras.ops as K
 
 from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils.wrapper_utils import dispatch_wrapper
-from utils.sequence_utils import pad_batch
+from utils import dispatch_wrapper, pad_batch
 
 _inf = float('inf')
 
 _ctc_decoder_methods    = {}
 
 @dispatch_wrapper(_ctc_decoder_methods, 'method')
-def ctc_decode(sequence, lengths = None, blank_index = 0, method = 'greedy', ** kwargs):
+@graph_compile
+def ctc_decode(sequence : TensorSpec(shape = (None, None, None), dtype = 'float32'),
+               lengths  : TensorSpec(shape = (None, ), dtype = 'int32') = None,
+               method   = 'greedy',
+               blank_index  = 0
+              ):
     if method not in _ctc_decoder_methods:
         raise ValueError("Unknown CTC method !\n  Accepted : {}\n  Got : {}".format(
             tuple(_ctc_decoder_methods.keys()), method
         ))
     
-    if len(ops.shape(sequence)) == 2: sequence = ops.expand_dims(sequence, axis = 0)
-    
     if lengths is None:
-        lengths = ops.fill((len(sequence), ), ops.shape(sequence)[1])
-    else:
-        lengths = ops.cast(lengths, 'int32')
-        if len(ops.shape(lengths)) == 0: lengths = ops.expand_dims(lengths, axis = 0)
+        lengths = ops.fill((ops.shape(sequence)[0], ), ops.shape(sequence)[1])
     
     return _ctc_decoder_methods[method](
         sequence, lengths = lengths, blank_index = blank_index
     )
 
 @ctc_decode.dispatch('greedy')
-@graph_compile(input_signature = [
-    TensorSpec(shape = (None, None, None), dtype = 'float32'),
-    TensorSpec(shape = (None, ), dtype = 'int32')
-])
 def ctc_greedy_decoder(sequence, lengths, blank_index):
     tokens, scores = K.ctc_decode(
         sequence, lengths, strategy = 'greedy', mask_index = blank_index
@@ -51,18 +46,14 @@ def ctc_greedy_decoder(sequence, lengths, blank_index):
     return tokens[0], scores[:, 0] / K.cast(lengths, scores.dtype)
 
 @ctc_decode.dispatch(('beam', 'beam_search'))
-@graph_compile(input_signature = [
-    TensorSpec(shape = (None, None, None), dtype = 'float32'),
-    TensorSpec(shape = (None, ), dtype = 'int32')
-])
-def tf_ctc_beam_search_decoder(sequence, lengths, blank_index = 0):
+def ctc_beam_search_decoder(sequence, lengths, blank_index = 0):
     tokens, scores = K.ctc_decode(
         sequence, lengths, strategy = 'beam_search', mask_index = blank_index
     )
     tokens = K.transpose(tokens, [1, 0, 2])
     return tokens, scores / K.cast(lengths, scores.dtype)[:, None]
 
-def ctc_beam_search_decoder(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
+def ctc_beam_search_decoder_np(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
     def build_beam(p_tot = - _inf, p_b = - _inf, p_nb = - _inf, p_text = 0):
         return {'p_tot' : p_tot, 'p_b' : p_b, 'p_nb' : p_nb, 'p_text' : p_text}
     

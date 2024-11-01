@@ -12,7 +12,7 @@
 import keras
 import keras.ops as K
 
-from utils.hparams import HParams
+from utils import HParams
 
 HParamsLSA = HParams(
     attention_dim   = 128,
@@ -23,6 +23,7 @@ HParamsLSA = HParams(
     cumulative      = True
 )
 
+@keras.saving.register_keras_serializable('custom_layers')
 def LocationLayer(input_channels, attention_dim, filters, kernel_size, name = 'location_layer'):
     return keras.Sequential([
         keras.layers.Input(shape = (None, input_channels)),

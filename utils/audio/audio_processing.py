@@ -15,9 +15,9 @@ import librosa.util as librosa_util
 
 from scipy.signal import get_window
 
+from loggers import timer
 from utils.keras_utils import ops
-from utils.generic_utils import get_enum_item, convert_to_str
-from utils.wrapper_utils import dispatch_wrapper
+from utils import get_enum_item, convert_to_str, dispatch_wrapper
 
 _trimming_methods = {}
 
@@ -27,6 +27,7 @@ class WindowType(enum.IntEnum):
     TRIANGULAR  = 2
 
 @dispatch_wrapper(_trimming_methods, 'method', default = 'window')
+@timer
 def trim_silence(audio, method = 'window', ** kwargs):
     """
         Removes silence with the given `method` (see below for available techniques)
@@ -187,6 +188,7 @@ def trim_silence_mel(mel, mode = 'start_end', min_factor = 0.5, ** kwargs):
                 
         return mel[start : stop]
     
+@timer
 def reduce_noise(audio, noise_length = 0.2, rate = None, noise = None, use_v1 = True, ** kwargs):
     """
         Use the noisereduce.reduce_noise method in order to reduce audio noise
@@ -207,6 +209,7 @@ def reduce_noise(audio, noise_length = 0.2, rate = None, noise = None, use_v1 = 
         return nr.reduce_noise(audio, sr = rate, y_noise = noise)
     
 
+@timer
 def convert_audio_dtype(audio, dtype):
     """ Converts `audio` to `dtype` by normalizing by the `dtype` or `audio.dtype` max value """
     if audio.dtype == dtype: return audio
@@ -218,6 +221,7 @@ def convert_audio_dtype(audio, dtype):
     
     return audio.astype(dtype)
 
+@timer
 def normalize_audio(audio, max_val = 32767, dtype = np.int16, normalize_by_mean = False):
     """
         Normalize audio either to np.int16 (default) or on [-1, 1] range (max_val = 1.) with dtype np.float32

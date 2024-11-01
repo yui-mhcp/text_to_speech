@@ -36,6 +36,7 @@ class FileSaver(Callback):
                  index_key  = None,
                  
                  save_fn    = dump_data,
+                 additional_keys    = (),
                  use_multithreading = False,
                  
                  name   = 'saving',
@@ -46,6 +47,7 @@ class FileSaver(Callback):
         
         self.data_key   = data_key
         self.file_format    = file_format
+        self.additional_keys    = additional_keys
 
         self.index  = index
         self.index_key  = index_key
@@ -80,7 +82,9 @@ class FileSaver(Callback):
         else:
             filename = self.format_filename(infos, output)
         
-        self.save(filename, output[self.data_key])
+        self.save(filename, output[self.data_key], ** {
+            k : output[k] for k in self.additional_keys
+        })
         
         return filename
 
@@ -109,16 +113,17 @@ class FileSaver(Callback):
         self.index += 1
         return idx
     
-    def _save(self, filename, data):
+    def _save(self, filename, data, ** kwargs):
         with time_logger.timer(self.name):
-            self.save_fn(filename, data)
+            self.save_fn(filename, data, ** kwargs)
 
 class AudioSaver(FileSaver):
     def __init__(self, data_key = 'audio', file_format = 'audio-{}.mp3', ** kwargs):
         if 'save_fn' not in kwargs:
-            from utils.audio import save_audio
-            kwargs['save_fn'] = save_audio
+            from utils.audio import write_audio
+            kwargs['save_fn'] = write_audio
         
+        kwargs['additional_keys'] = ['rate']
         super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
 
 class ImageSaver(FileSaver):
@@ -129,11 +134,21 @@ class ImageSaver(FileSaver):
         
         super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
 
+class SpectrogramSaver(FileSaver):
+    def __init__(self, data_key = 'mel', file_format = 'mel-{}.npy', ** kwargs):
+        super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
+
+    def _save(self, filename, data):
+        if isinstance(data, list): data = ops.concatenate(data, axis = 0)
+        return super()._save(filename, data)
+    
 class JSonSaver(FileSaver):
     def __init__(self,
                  filename,
                  data,
                  primary_key,
+                 
+                 force_keys = (),
                  
                  use_multithreading = False,
 
@@ -150,6 +165,7 @@ class JSonSaver(FileSaver):
         
         self.data   = data
         self.filename   = filename
+        self.force_keys = force_keys
         self.primary_key    = primary_key
     
         if self.use_multithreading:
@@ -163,7 +179,7 @@ class JSonSaver(FileSaver):
         if isinstance(key, str):
             _updated    = []
             for k, v in output.items():
-                if ops.is_array(v): continue
+                if k not in self.force_keys and _is_array(v): continue
                 v = to_json(v)
                 if k in infos and infos[k] == v:
                     continue
@@ -186,7 +202,7 @@ class JSonSaver(FileSaver):
             if self.use_multithreading:
                 with self.mutex: self.updated = True
             return True
-        
+
         return False
     
     def apply(self, infos, output):
@@ -204,3 +220,9 @@ class JSonSaver(FileSaver):
                 data = self.data
             dump_json(self.filename, data, indent = 4)
     
+def _is_array(v):
+    if isinstance(v, list):
+        return any(_is_array(vi) for vi in v)
+    elif isinstance(v, dict):
+        return any(_is_array(vi) for vi in v.values())
+    return not isinstance(v, (int, float, str, bool)) and ops.is_array(v)

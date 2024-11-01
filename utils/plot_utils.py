@@ -9,19 +9,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import math
 import logging
 import datetime
 import matplotlib
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 try:
-    from keras.ops import is_tensor, convert_to_numpy
+    from .pandas_utils import is_dataframe
+    from .keras_utils.ops import is_tensor, convert_to_numpy
 except ImportError as e:
     is_tensor = lambda x: False
+    def is_dataframe(v):
+        if 'pandas' not in sys.modules: return False
+        import pandas as pd
+        return isinstance(v, pd.DataFrame)
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +491,7 @@ def plot(x, y = None, * args, ax = None, figsize = None, xlim = None, ylim = Non
 
 def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nrows = None,
                   use_subplots = False, horizontal = False,
-                  # for pd.DataFrame grouping
+                  # for DataFrame grouping
                   by = None, corr = None,
                   color_corr = None, color_order = None,
                   shape_corr = None, shape_order = None,
@@ -523,7 +528,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
             datas.append(v)
         elif isinstance(v, dict):
             datas.append((v.pop('name', v.pop('label', None)), v))
-        elif isinstance(v, pd.DataFrame):
+        elif is_dataframe(v):
             if by is not None:
                 for value, datas_i in v.groupby(by):
                     datas_i.pop(by)
@@ -623,7 +628,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
         
     datas = []
     for v in args:
-        if isinstance(v, pd.DataFrame): use_subplots = True
+        if is_dataframe(v): use_subplots = True
         _parse_arg(datas, v)
     
     data_names = [
@@ -965,7 +970,7 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
     assert embeddings is not None or x is not None
     if embeddings is None: embeddings = x
 
-    if isinstance(embeddings, pd.DataFrame):
+    if is_dataframe(embeddings):
         from .embeddings import embeddings_to_np
         
         if 'id' in embeddings and ids is None:

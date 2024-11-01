@@ -104,17 +104,18 @@ def tensorflow_nms(boxes  : TensorSpec(shape = (None, None, 4), dtype = 'float')
     return boxes, scores, valids
 
 @timer
-def _pad_boxes_to_tile_size(boxes, scores = None, * args, tile_size = 512, ** kwargs):
-    kwargs['tile_size'] = tile_size
+def _pad_boxes_to_tile_size(*, boxes, scores = None, tile_size = 512, ** kwargs):
+    if tile_size: kwargs['tile_size'] = tile_size
 
     num_boxes = boxes.shape[1]
-    if num_boxes % tile_size != 0:
+    if tile_size and num_boxes % tile_size != 0:
         num_padding = (num_boxes // tile_size + 1) * tile_size - num_boxes
         
         boxes   = ops.pad(boxes, [(0, 0), (0, num_padding), (0, 0)])
         if scores is not None: scores = ops.pad(scores, [(0, 0), (0, num_padding)])
     
-    return (boxes, scores) + args, kwargs
+    kwargs.update({'boxes' : boxes, 'scores' : scores})
+    return kwargs
 
 @nms.dispatch(('nms', 'standard', 'fast'))
 @timer

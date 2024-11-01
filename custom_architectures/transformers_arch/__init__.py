@@ -52,7 +52,7 @@ _huggingface_config_mapping = {
 def download_hf_model(model_name, reload = False, ** kwargs):
     path    = os.environ.get('HF_HUB_CACHE', _hf_path)
     path    = os.path.join(path, 'models--{}'.format(model_name.replace('/', '--')), 'snapshots')
-    if not os.path.exists(path) or reload:
+    if not os.path.exists(path) or not glob.glob(path + '/**/config.json') or reload:
         from huggingface_hub import snapshot_download
         return snapshot_download(
             model_name, allow_patterns = ('*.json', '*.bin', '*.pt'), ** kwargs
@@ -111,7 +111,7 @@ def get_hf_equivalent_class(model_name = None, model_class = None, ** _):
         if name.lower() in model_class:
             return obj
     raise ValueError('No matching class found for {}\n  Candidates : {}'.format(
-        model_class, tuple(_models.keys())
+        model_class, _transformers
     ))
 
 def get_pretrained_transformer(pretrained, ** kwargs):

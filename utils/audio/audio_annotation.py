@@ -14,11 +14,10 @@ import json
 import time
 import shutil
 import numpy as np
-import pandas as pd
 
 from utils import dump_json, load_json, var_from_str, time_to_string, plot, plot_embedding
-from utils.audio.audio_io import display_audio, read_audio, write_audio
-from utils.audio.mkv_utils import extract_audio, extract_subtitles, parse_subtitles
+from .audio_io import display_audio, read_audio, write_audio
+from .mkv_utils import extract_audio, extract_subtitles, parse_subtitles
 
 _min_time       = 0.05
 _timing_keys    = ('start', 'end', 'time')
@@ -239,6 +238,7 @@ class AudioAnnotation(object):
     
     @property
     def alignment(self):
+        import pandas as pd
         return pd.DataFrame(self._alignment)
     
     @property

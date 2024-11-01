@@ -13,9 +13,8 @@ import keras
 import logging
 import numpy as np
 
-from utils.keras_utils import TensorSpec, graph_compile, ops
-from utils.sequence_utils import pad_batch
-from utils.generic_utils import convert_to_str
+from utils import convert_to_str, pad_batch
+from utils.keras_utils import TensorSpec, ops, graph_compile
 
 logger  = logging.getLogger(__name__)
 
@@ -26,11 +25,30 @@ def get_pairs(text, n = 2):
     """ Creates a n-gram """
     return [tuple(text[i : i + n]) for i in range(0, len(text) - n + 1)]
 
+def process_model_output(output, offset = None, lengths = None):
+    if hasattr(output, 'lengths') or hasattr(output, 'offset'):
+        lengths = ops.convert_to_numpy(output.lengths)
+        if not hasattr(output, 'offset'):
+            offset = np.zeros_like(lengths)
+        else:
+            offset = ops.convert_to_numpy(output.offset)
+            if lengths.ndim == 2 and offset.ndim == 1:
+                offset = np.tile(offset[:, None], [1, lengths.shape[1]])
+        output  = output.tokens
+    
+    if lengths.ndim:
+        return [
+            process_model_output(out, off, length)
+            for out, off, length in zip(output, offset, lengths)
+        ]
+    
+    return ops.convert_to_numpy(output[offset : lengths])
+
 def build_masking_filter(indices):
     indices = ops.reshape(ops.convert_to_tensor(indices, 'int32'), [-1])
     return lambda scores, ** _: remove_batch_tokens(scores, indices)
 
-@graph_compile()
+@graph_compile
 def remove_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'float'),
                   indices   : TensorSpec(shape = (None, 2), dtype = 'int32'),
                   value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
@@ -40,7 +58,7 @@ def remove_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'float'),
         logits, indices, ops.full((ops.shape(indices)[0], ), value)
     )
 
-@graph_compile()
+@graph_compile
 def remove_batch_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'float'),
                         indices   : TensorSpec(shape = (None, ), dtype = 'int32'),
                         value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
@@ -53,10 +71,10 @@ def remove_batch_tokens(logits    : TensorSpec(shape = (None, None), dtype = 'fl
     ], axis = 1)
     return remove_tokens(logits, indices, value)
 
-@graph_compile(support_xla = False)
+@graph_compile
 def remove_slice_tokens(logits  : TensorSpec(shape = (None, None), dtype = 'float'),
                         index   : TensorSpec(shape = (), dtype = 'int32'),
-                        remove_after    : TensorSpec(shape = (), dtype = 'bool'),
+                        remove_after    : TensorSpec(shape = (), dtype = 'bool', static = True),
                         value     : TensorSpec(shape = (), dtype = 'float') = float('-inf')
                        ):
     """
@@ -65,11 +83,11 @@ def remove_slice_tokens(logits  : TensorSpec(shape = (None, None), dtype = 'floa
         - `logits[:, index:] = value` (`remove_after = True`)
         compatible in `tensorflow graph`
     """
-    start_idx, length   = ops.cond(
-        remove_after,
-        lambda: (index, ops.shape(logits)[1] - index),
-        lambda: (0, index)
-    )
+    if remove_after:
+        start_idx, length = index, ops.shape(logits)[1] - index
+    else:
+        start_idx, length = 0, index
+    
     update = ops.full((ops.shape(logits)[0], length), value, dtype = logits.dtype)
     return ops.slice_update(
         logits, ops.array([0, 1], dtype = 'int32') * start_idx, update

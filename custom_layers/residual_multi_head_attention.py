@@ -13,7 +13,7 @@ import keras
 import keras.ops as K
 
 from loggers import timer
-from utils.hparams import HParams
+from utils import HParams
 
 HParamsMHA = HParams(
     num_heads   = -1,

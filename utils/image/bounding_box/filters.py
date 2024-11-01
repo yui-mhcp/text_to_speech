@@ -72,7 +72,7 @@ class BoxItem:
     repetition : int  = 0
 
 class RepetitionFilter(BoxFilter):
-    def __init__(self, iou_threshold = 0.5, n_repeat = 2, max_unseen = 2, use_memory = False):
+    def __init__(self, iou_threshold = 0.5, n_repeat = 2, max_unseen = 3, use_memory = False):
         """
             This filter keeps boxes that are repeated `n_repeat` consecutive frames at the same position (up to `iou_threshold` tolerance)
             This allows to ensure the box is repeated multiple times, and is a fiable prediction
@@ -95,7 +95,7 @@ class RepetitionFilter(BoxFilter):
         self.new_boxes = None
     
     def __len__(self):
-        return len(self.memory) + len(self.waiting_boxes)
+        return len(self.waiting)
     
     def start(self):
         self.index += 1

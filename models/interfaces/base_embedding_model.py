@@ -12,12 +12,10 @@
 import os
 import logging
 import numpy as np
-import pandas as pd
 
+from utils import *
 from .base_model import BaseModel
-from utils.hparams import HParams
 from utils.keras_utils import TensorSpec, ops, execute_eagerly
-from utils import convert_to_str, load_embeddings, save_embeddings, select_embedding, sample_df
 
 logger  = logging.getLogger(__name__)
 
@@ -29,6 +27,10 @@ def _load_np_embedding(filename):
     return np.load(filename)
 
 class BaseEmbeddingModel(BaseModel):
+    _directories    = {
+        ** BaseModel._directories, 'embedding_dir' : '{root}/{self.name}/embeddings'
+    }
+
     def _init_embedding(self,
                         encoder_name,
                         embedding_dim,
@@ -49,16 +51,20 @@ class BaseEmbeddingModel(BaseModel):
         self.use_label_embedding    = use_label_embedding
     
     @property
-    def embedding_dir(self):
-        return os.path.join(self.directory, 'embeddings')
-    
-    @property
     def has_default_embedding(self):
-        return os.path.exists(self.embedding_dir) and len(os.listdir(self.embedding_dir)) > 0
+        return os.path.exists(self.default_embedding_file)
     
     @property
     def default_embedding_file(self):
-        return os.path.join(self.embedding_dir, _default_embeddings_filename)
+        if not os.path.exists(self.embedding_dir):
+            return os.path.join(self.embedding_dir, _default_embeddings_filename)
+        
+        candidates = os.listdir(self.embedding_dir)
+        if len(candidates) > 1:
+            candidates = [c for c in candidates if c.startswith(_default_embeddings_filename)]
+        
+        filename = candidates[0] if len(candidates) == 1 else _default_embeddings_filename
+        return os.path.join(self.embedding_dir, filename)
     
     @property
     def embedding_signature(self):
@@ -73,8 +79,16 @@ class BaseEmbeddingModel(BaseModel):
                 
     @property
     def embeddings(self):
+        if self.__embeddings is None and self.has_default_embedding:
+            self.load_embeddings()
         return self.__embeddings
     
+    @embeddings.setter
+    def embeddings(self, value):
+        self.__embeddings = value
+        if not self.has_default_embedding:
+            self.set_default_embeddings(value)
+
     @property
     def encoder(self):
         if self.__encoder is None:
@@ -116,26 +130,15 @@ class BaseEmbeddingModel(BaseModel):
         save_embeddings(self.embedding_dir, embeddings, embedding_name = name)
     
     def set_embeddings(self, embeddings):
-        self.__embeddings = embeddings
-        if not self.has_default_embedding:
-            self.set_default_embeddings(embeddings)
+        self.embeddings = embeddings
     
-    def load_embeddings(self, directory = None, filename = None, ** kwargs):
-        if not self.has_default_embedding and directory is None:
+    def load_embeddings(self, filename = None, ** kwargs):
+        if not filename and not self.has_default_embedding:
             raise ValueError("No default embeddings available !\n  Use the 'set_default_embeddings()' or 'set_embeddings()' method")
         
-        if directory is None:
-            directory = self.embedding_dir
-            if len(os.listdir(directory)) == 1:
-                filename = os.listdir(directory)[0]
-        if filename is None:
-            filename = _default_embeddings_filename
+        if not filename: filename = self.default_embedding_file
         
-        embeddings = load_embeddings(
-            directory, embedding_dim = directory, embedding_name = filename, ** kwargs
-        )
-        
-        self.set_embeddings(embeddings)
+        self.embeddings = load_embeddings(filename, ** kwargs)
         
     def embed(self, data, ** kwargs):
         return self.encoder.embed(data, ** kwargs)
@@ -147,12 +150,12 @@ class BaseEmbeddingModel(BaseModel):
                       embed_if_not_exist = True, ** kwargs):
         """ This function is used in `encode_data` and must return a single embedding """
         if isinstance(data, list):
-            return ops.stack([self.get_embedding(d) for d in data], axis = 0)
-        elif isinstance(data, pd.DataFrame):
-            return ops.stack([self.get_embedding(row) for _, row in data.iterrows()], axis = 0)
+            return stack_batch([self.get_embedding(d) for d in data])
+        elif is_dataframe(data):
+            return stack_batch([self.get_embedding(row) for _, row in data.iterrows()])
         
         embedding = data
-        if isinstance(data, (dict, pd.Series)):
+        if isinstance(data, dict):
             embedding_key = label_embedding_key
             if not self.use_label_embedding and key in data:
                 embedding_key = key

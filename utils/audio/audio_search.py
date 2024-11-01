@@ -14,10 +14,9 @@ import datetime
 import itertools
 import numpy as np
 
-from utils import time_to_string, plot
-from utils.audio.audio_io import display_audio
-from utils.distance.distance_method import distance
-from utils.audio.audio_annotation import AudioAnnotation
+from .audio_io import display_audio
+from .audio_annotation import AudioAnnotation
+from utils import time_to_string, plot, distance
 
 _zero_time = datetime.datetime(2000, 1, 1)
 

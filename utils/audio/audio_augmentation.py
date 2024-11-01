@@ -12,8 +12,8 @@
 import numpy as np
 import random as py_random
 
+from .audio_io import load_audio
 from utils.keras_utils import ops
-from utils.audio.audio_io import load_audio
 
 def silence(duration, rate):
     return np.zeros((int(duration * rate),))

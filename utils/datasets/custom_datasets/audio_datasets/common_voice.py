@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import os
-import pandas as pd
 
 from .. import Task
 from .processing import audio_dataset_wrapper, _get_processed_name
@@ -37,6 +36,8 @@ def load_data(directory,
         if not isinstance(values, (list, tuple)): values = [values]
         values = [str(v).lower() for v in values]
         return dataset[dataset[col].apply(lambda v: isinstance(v, str) and v.lower() in values)]
+    
+    import pandas as pd
     
     new_columns = {
         'client_id' : 'id', 'path' : 'filename', 'sentence' : 'text'

@@ -9,21 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import glob
 import enum
 import json
 import timeit
-import inspect
 import logging
 import datetime
-import argparse
-import importlib
 import numpy as np
-import pandas as pd
-import keras.ops as K
 
-from keras import tree
+from .parser import *
+from .keras_utils import ops
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +39,12 @@ def time_to_string(seconds):
 def convert_to_str(x):
     """ Convert different string formats (bytes, tf.Tensor, ...) to regular `str` object """
     if isinstance(x, str) or x is None: return x
-    elif hasattr(x, 'dtype') and x.dtype.name == 'string':
+    elif hasattr(x, 'dtype') and getattr(x.dtype, 'name', None) == 'string':
         x = x.numpy()
-    elif K.is_tensor(x): return x # non-tensorflow Tensors do not support string type
     elif isinstance(x, np.ndarray) and np.issubdtype(x.dtype, np.number): return x
     
     if isinstance(x, np.ndarray) and x.ndim == 0: x = x.item()
-    if isinstance(x, bytes): x = x.decode('utf-8')
+    if isinstance(x, bytes): return x.decode('utf-8')
     
     if isinstance(x, (list, tuple, set, np.ndarray)):
         return [convert_to_str(xi) for xi in x]
@@ -67,13 +60,25 @@ def get_entry(data, keys):
     for k in keys:
         if k in data: return data[k]
     return None
-    
+
+def normalize_keys(kwargs, key_alternatives):
+    kwargs = kwargs.copy()
+    for k, alternatives in key_alternatives.items():
+        if k in kwargs: continue
+        
+        for ki in alternatives:
+            if ki in kwargs:
+                kwargs[k] = kwargs[ki]
+                break
+        
+    return kwargs
+
 def to_json(data):
     """ Converts a given data to json-serializable (if possible) """
     if data is None: return data
     if isinstance(data, enum.Enum): data = data.value
-    if K.is_tensor(data):           data = K.convert_to_numpy(data)
-    if isinstance(data, bytes): data = data.decode('utf-8')
+    if ops.is_tensor(data):         data = ops.convert_to_numpy(data)
+    if isinstance(data, bytes):     data = data.decode('utf-8')
     if isinstance(data, np.ndarray) and len(data.shape) == 0: data = data.item()
     
     if isinstance(data, bool): return data
@@ -85,7 +90,7 @@ def to_json(data):
     elif isinstance(data, dict):
         return {to_json(k) : to_json(v) for k, v in data.items()}
     elif isinstance(data, str):
-        from utils.file_utils import is_path, path_to_unix
+        from .file_utils import is_path, path_to_unix
         return data if not is_path(data) else path_to_unix(data)
     elif hasattr(data, 'get_config'):
         return to_json(data.get_config())
@@ -104,149 +109,6 @@ def var_from_str(v):
 def to_lower_keys(data):
     """ Returns the same dict with lowercased keys"""
     return {k.lower() : v for k, v in data.items() if k.lower() not in data}
-
-def normalize_key(key, mapping):
-    normalized  = [k for k, alt in mapping.items() if key in alt]
-    return normalized if normalized else [key]
-
-def normalize_keys(mapping, alternatives):
-    normalized = {}
-    for key, value in mapping.items():
-        for norm in normalize_key(key, alternatives):
-            normalized[norm] = value
-    return normalized
-
-def is_object(o):
-    return not isinstance(o, type) and not is_function(o)
-
-def is_function(f):
-    return f.__class__.__name__ == 'function'
-
-def get_annotations(fn):
-    if hasattr(inspect, 'get_annotations'):
-        return inspect.get_annotations(fn)
-    elif hasattr(fn, '__annotations__'):
-        return fn.__annotations__
-    else:
-        return {}
-
-def get_args(fn, include_args = True, ** kwargs):
-    """ Returns a `list` of the positional argument names (even if they have default values) """
-    kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    if include_args: kinds += (inspect.Parameter.VAR_POSITIONAL, )
-    return [
-        name for name, param in inspect.signature(fn, ** kwargs).parameters.items()
-        if param.kind in kinds
-    ]
-
-def get_kwargs(fn, ** kwargs):
-    """ Returns a `dict` containing the kwargs of `fn` """
-    return {
-        name : param.default for name, param in inspect.signature(fn, ** kwargs).parameters.items()
-        if param.default is not inspect._empty
-    }
-
-def has_args(fn, ** kwargs):
-    return any(
-        param.kind == inspect.Parameter.VAR_POSITIONAL
-        for param in inspect.signature(fn, ** kwargs).parameters.values()
-    )
-
-def has_kwargs(fn, ** kwargs):
-    return any(
-        param.kind == inspect.Parameter.VAR_KEYWORD
-        for param in inspect.signature(fn, ** kwargs).parameters.values()
-    )
-
-def signature_to_str(fn, add_doc = False, ** kwargs):
-    return '{}{}{}'.format(
-        fn.__name__,
-        str(inspect.signature(fn, ** kwargs)),
-        '\n{}'.format(fn.__doc__) if add_doc else ''
-    )
-
-def import_objects(modules,
-                   exclude  = (),
-                   filters  = None,
-                   classes  = None,
-                   types    = None,
-                   err_mode = 'raise',
-                   allow_modules    = False,
-                   allow_functions  = True,
-                   signature    = None,
-                   fn   = None
-                  ):
-    if fn is None: fn = lambda v: v
-    def is_valid(name, val, module):
-        if not hasattr(val, '__module__'):
-            if not allow_modules or not val.__package__.startswith(module): return False
-            return True
-
-        if filters is not None and not filters(name, val): return False
-        if not isinstance(val, type):
-            if types is not None and isinstance(val, types): return True
-            
-            if not val.__module__.startswith(module): return False
-            if allow_functions and callable(val):
-                if signature:
-                    return get_args(val)[:len(signature)] == signature
-                return True
-            return False
-        if not val.__module__.startswith(module): return False
-        if classes is not None and not issubclass(val, classes):
-            return False
-        return True
-            
-    if types is not None:
-        if not isinstance(types, (list, tuple)): types = (types, )
-        if type in types: allow_functions = False
-    
-    if signature: signature = list(signature)
-    if isinstance(exclude, str):        exclude = [exclude]
-    if not isinstance(modules, list): modules = [modules]
-    
-    all_modules = []
-    for module in modules:
-        if isinstance(module, str):
-            all_modules.extend(_expand_path(module))
-        else:
-            all_modules.append(module)
-
-    objects = {}
-    for module in all_modules:
-        if isinstance(module, str):
-            if module.endswith(('__init__.py', '_old.py')): continue
-            elif os.path.basename(module).startswith(('.', '_')): continue
-            try:
-                module = module.replace(os.path.sep, '.')[:-3]
-                module = importlib.import_module(module)
-            except Exception as e:
-                logger.debug('Import of module {} failed due to {}'.format(module, str(e)))
-                if err_mode == 'raise': raise e
-                continue
-        
-        root_module = module.__name__.split('.')[0]
-        objects.update({
-            k : fn(v) for k, v in vars(module).items() if (
-                (hasattr(v, '__module__') or hasattr(v, '__package__'))
-                and not k.startswith('_')
-                and not k in exclude
-                and is_valid(k, v, root_module)
-            )
-        })
-    
-    return objects
-
-def _expand_path(path):
-    expanded = []
-    for f in os.listdir(path):
-        if f.startswith(('.', '_')): continue
-        f = os.path.join(path, f)
-        if os.path.isdir(f):
-            expanded.extend(_expand_path(f))
-        else:
-            expanded.append(f)
-    return expanded
 
 def print_objects(objects, print_name = 'objects', _logger = logger):
     """ Displays the list of available objects (i.e. simply prints `objects.keys()` :D ) """
@@ -333,39 +195,6 @@ def get_enum_item(value, enum, upper_names = True):
             raise KeyError('{} is not a valid {} : {}'.format(value, enum.__name__, tuple(enum)))
         return getattr(enum, value)
     return enum(value)
-    
-def should_predict(predicted,
-                   data,
-                   data_key = 'filename',
-                   overwrite    = False,
-                   timestamp    = -1,
-                   required_keys    = []
-                  ):
-    """
-        Returns whether `data` has already been predicted or not
-        
-        Arguments :
-            - predicted : mapping (`dict`) of filename to a `dict` of information (the result)
-            - data  : the data to predict
-            - data_key  : the key to use if `data` is a `dict` / `pd.Series`
-            - overwrite : whether to overwrite if `data` is already in `predicted`
-            - timestamp : if provided, only overwrites if `predicted[data]['timestamp'] < timestamp`
-            - required_keys : the keys that must be in `predicted[data]`
-        Return :
-            - should_predict    : whether the data should be predicted or not
-        
-        /!\ The keys in `predicted` should be in Unix style (i.e. with '/' instead of '\')
-    """
-    if isinstance(data, (dict, pd.Series)) and data_key in data: data = data[data_key]
-    if not isinstance(data, str): return True
-    
-    from utils.file_utils import path_to_unix
-    
-    data = path_to_unix(data)
-    if data in predicted and all(k in predicted[data] for k in required_keys):
-        if not overwrite or (timestamp != -1 and timestamp <= predicted[data].get('timestamp', -1)):
-            return False
-    return True
 
 def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = False):
     """
@@ -392,9 +221,9 @@ def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = Fa
 
         if not isinstance(inp, tuple): inp = (inp, )
         def _g():
-            if force_gpu_sync: one = K.ones(())
+            if force_gpu_sync: one = ops.ones(())
             f(* inp)
-            if force_gpu_sync: one = K.convert_to_numpy(one)
+            if force_gpu_sync: one = ops.convert_to_numpy(one)
         
         _g() # warmup 
         t = timeit.timeit(_g, number = number)
@@ -405,86 +234,3 @@ def benchmark(f, inputs, number = 30, force_gpu_sync = True, display_memory = Fa
     return times
 
     
-def get_metric_names(obj, default_if_not_list = None):
-    """ Returns the associated name for `obj` (e.g., `metric_names`, `loss_names`, `name`, ...) """
-    if isinstance(obj, dict):
-        default_if_not_list = list(obj.keys())
-        obj = list(obj.values())
-    
-    if isinstance(obj, (list, tuple)):
-        if not isinstance(default_if_not_list, (list, tuple)):
-            default_if_not_list = [default_if_not_list] * len(obj)
-        return tree.flatten(tree.map_structure(
-            get_metric_names, obj, default_if_not_list
-        ))
-    if hasattr(obj, 'metric_names'):
-        return obj.metric_names
-    elif hasattr(obj, 'loss_names'):
-        return obj.loss_names
-    elif default_if_not_list is not None:
-        return default_if_not_list
-    elif hasattr(obj, 'name'):
-        return obj.name
-    elif hasattr(obj, '__name__'):
-        return obj.__name__
-    elif hasattr(obj, '__class__'):
-        return obj.__class__.__name__
-    else:
-        raise ValueError("Cannot extract name from {} !".format(obj))
-
-def parse_args(* args, allow_abrev = True, add_unknown = False, ** kwargs):
-    """
-        Not tested yet but in theory it parses arguments :D
-        Arguments : 
-            - args  : the mandatory arguments
-            - kwargs    : optional arguments with their default values
-            - allow_abrev   : whether to allow abreviations or not (will automatically create abreviations as the 1st letter of the argument if it is the only argument to start with this letter)
-    """
-    def get_abrev(keys):
-        abrev_count = {}
-        for k in keys:
-            abrev = k[0]
-            abrev_count.setdefault(abrev, 0)
-            abrev_count[abrev] += 1
-        return [k for k, v in abrev_count.items() if v == 1 and k != 'h']
-    
-    parser = argparse.ArgumentParser()
-    for arg in args:
-        name, config = arg, {}
-        if isinstance(arg, dict):
-            name, config = arg.pop('name'), arg
-        parser.add_argument(name, ** config)
-    
-    allowed_abrev = get_abrev(kwargs.keys()) if allow_abrev else {}
-    for k, v in kwargs.items():
-        abrev = k[0]
-        names = ['--{}'.format(k)]
-        if abrev in allowed_abrev: names += ['-{}'.format(abrev)]
-        
-        config = v if isinstance(v, dict) else {'default' : v}
-        if not isinstance(v, dict) and v is not None: config['type'] = type(v)
-        
-        parser.add_argument(* names, ** config)
-    
-    parsed, unknown = parser.parse_known_args()
-    
-    parsed_args = {}
-    for a in args + tuple(kwargs.keys()): parsed_args[a] = getattr(parsed, a)
-    if add_unknown:
-        k, v = None, None
-        for a in unknown:
-            if not a.startswith('--'):
-                if k is None:
-                    raise ValueError("Unknown argument without key !\n  Got : {}".format(unknown))
-                a = var_from_str(a)
-                if v is None: v = a
-                elif not isinstance(v, list): v = [v, a]
-                else: v.append(a)
-            else: # startswith '--'
-                if k is not None:
-                    parsed_args.setdefault(k, v if v is not None else True)
-                k, v = a[2:], None
-        if k is not None:
-            parsed_args.setdefault(k, v if v is not None else True)
-    
-    return parsed_args

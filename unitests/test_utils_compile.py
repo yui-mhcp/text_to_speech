@@ -40,12 +40,18 @@ class TestXLACompilation(CustomTestCase):
         xla_foo = compile_function(foo, jit_compile = True)
         self.assertTrue(ops.executing_eagerly())
         with XLAExecution():
+            # The context manager has no effect in tensorflow backend
+            if ops.is_tensorflow_backend():
+                self.assertTrue(ops.executing_eagerly())
+            else:
+                self.assertFalse(ops.executing_eagerly())
             xla_foo(2)
+        
         self.assertTrue(ops.executing_eagerly())
         
-        xla_foo = graph_compile(foo, prefer_xla = True)
+        xla_foo2 = graph_compile(foo, prefer_xla = True)
         self.assertTrue(ops.executing_eagerly())
-        xla_foo(2)
+        xla_foo2(2)
         self.assertTrue(ops.executing_eagerly())
     
     def test_run_eagerly(self):
@@ -132,18 +138,33 @@ class TestXLACompilation(CustomTestCase):
         foo_with_spec()
         foo_with_spec_no_default_cast()
     
-    def test_nested_cast_default(self):
+    def test_nested_cast(self):
         @graph_compile(cast_defaults = True)
-        def nested_foo(x, weighted : TensorSpec(dtype = 'bool') = True):
+        def nested_foo(x, is_casted, weighted : TensorSpec(dtype = 'bool') = True):
             self.assertTensor(x)
-            self.assertTensor(weighted)
-            return ops.cond(weighted, lambda: x, lambda: x)
+            if is_casted:
+                self.assertTensor(weighted)
+                return ops.cond(weighted, lambda: x, lambda: x)
+            else:
+                self.assertTrue(isinstance(weighted, bool))
+                return x
         
-        @graph_compile
-        def foo(x : TensorSpec(dtype = 'int32') = 2):
-            return nested_foo(x)
+        @graph_compile(cast_defaults = True)
+        def nested_foo_no_cast(x, y = 2):
+            self.assertTrue(isinstance(y, int))
+            return x + y
+
+        @graph_compile(internal_functions = [nested_foo, nested_foo_no_cast])
+        def foo(x : TensorSpec(dtype = 'int32') = 2, ** kwargs):
+            self.assertTrue('weighted' in kwargs)
+            self.assertTrue('y' in kwargs)
+            self.assertTrue('is_casted' not in kwargs)
+            nested_foo(x, False)
+            return nested_foo_no_cast(nested_foo(x, True, ** kwargs), ** kwargs)
 
         foo()
+        foo(y = 3)
+        foo(is_casted = False, recompile = True)  # the argument should be removed
 
     def test_cast_kwargs(self):
         @graph_compile(cast_kwargs = True)

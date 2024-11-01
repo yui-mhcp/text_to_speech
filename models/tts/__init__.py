@@ -203,7 +203,7 @@ def tts_stream(stream = None, save = False, display = True, play = True, ** kwar
     if 'gpu_memory' in kwargs:  limit_gpu_memory(kwargs.pop('gpu_memory'))
     if 'gpu_growth' in kwargs:  set_memory_growth(kwargs.pop('gpu_growth'))
     
-    if 'model' in kwargs: load_tts_models(tf_compile = True, ** kwargs)
+    if 'model' in kwargs: load_tts_models(compile = True, ** kwargs)
     if stream is None:
         model = get_tts_model(
             lang    = kwargs.pop('lang', None),

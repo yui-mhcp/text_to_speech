@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import numpy as np
-import pandas as pd
 
 from functools import wraps
 from multiprocessing import cpu_count
@@ -57,6 +56,8 @@ def image_dataset_wrapper(name, task, ** default_config):
                               ** kwargs
                              ):
             assert not (one_line_per_box and one_line_per_caption)
+            
+            import pandas as pd
             
             dataset = dataset_loader(directory, * args, ** kwargs)
             if return_raw: return dataset

@@ -16,6 +16,8 @@ import collections
 import numpy as np
 import keras.ops as K
 
+from functools import cached_property
+
 from utils import HParams, pad_to_multiple
 from utils.keras_utils import TensorSpec, ops, graph_compile
 from custom_layers import CustomRNNDropoutCell, CustomEmbedding, ConcatEmbedding, ConcatMode, HParamsLSA, LocationSensitiveAttention
@@ -48,7 +50,7 @@ Tacotron2DecoderState = collections.namedtuple(
 
 Tacotron2InferenceOutput    = collections.namedtuple(
     "Tacotron2InferenceOutput", [
-        "decoder_output", "mel", "stop_tokens", "attention_weights", "lengths", "state"
+        "decoder_output", "mel", "stop_tokens", "attention_weights", "lengths"
     ]
 )
 
@@ -845,7 +847,7 @@ class Tacotron2(keras.Model):
         
         return decoder_output, mel_outputs, stop_tokens
 
-    def prepare_for_xla(self, inputs, * args, max_length = None, padding_multiple = 64, ** kwargs):
+    def prepare_for_xla(self, *, inputs, max_length = None, padding_multiple = 64, ** kwargs):
         tokens = inputs[0] if isinstance(inputs, list) else inputs
         tokens = pad_to_multiple(
             tokens, padding_multiple, axis = 1, constant_values = self.pad_token
@@ -854,25 +856,38 @@ class Tacotron2(keras.Model):
         
         if max_length is not None:
             if ops.is_int(max_length):
-                max_length + max_length % padding_multiple
+                max_length += max_length % padding_multiple
             else:
                 max_length = K.cast(max_length * tokens.shape[1], 'int32')
             kwargs['max_length'] = max_length
         
-        return (self, inputs) + args, kwargs
+        kwargs['inputs'] = inputs
+        return kwargs
 
-    @graph_compile(
-        prefer_xla  = True,
-        prepare_for_xla = lambda self, * a, ** kw: self.prepare_for_xla(* a, ** kw)
-    )
-    def infer(self,
-              inputs    : TensorSpec(nested = True),
+    @cached_property
+    def infer(self):
+        signature = TensorSpec(shape = (None, None), dtype = 'int32')
+        if self.speaker_embedding_dim:
+            signature = [
+                signature,
+                TensorSpec(shape = (None, self.speaker_embedding_dim), dtype = 'float32')
+            ]
+        
+        return graph_compile(
+            self._infer,
+            prefer_xla  = True,
+            input_signature = [signature],
+            prepare_for_xla = self.prepare_for_xla
+        )
+    
+    def _infer(self,
+              inputs    : TensorSpec(),
               training  = False,
               
               attn_mask_offset  = 0.5,
               attn_mask_win_len = None,
               
-              max_length    = None,
+              max_length    : TensorSpec(shape = (), static = True) = None,
               early_stopping    = True,
               
               return_state  = False
@@ -923,9 +938,7 @@ class Tacotron2(keras.Model):
             lengths = last_state.lengths,
             stop_tokens = stop_tokens,
             attention_weights   = last_state.attention_weights,
-            decoder_output  = decoder_output,
-            state   = last_state.cell_state if return_state else None
-            
+            decoder_output  = decoder_output
         )
     
     def get_config(self):

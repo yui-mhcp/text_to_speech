@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class HTTPScreenMirror:
     """ This class allows to stream based on the `http screen mirror` mobile app """
-    def __init__(self, url, min_time = 1. / 16.):
+    def __init__(self, url, min_time = 0.1):
         self.url    = url
         self.prefix = HTTPScreenMirror.get_prefix(url)
         self.min_time   = min_time
@@ -38,6 +38,8 @@ class HTTPScreenMirror:
             img = requests.get(
                 '{}/{}{}.jpg'.format(self.url, self.prefix, int(time.time() * 1000))
             )
+            if not img.content: return False, None
+            return True, np.array(Image.open(BytesIO(img.content)))[..., ::-1]
         except requests.ConnectionError as e:
             logger.warning('Server connection has been closed !')
             return False, None
@@ -46,9 +48,6 @@ class HTTPScreenMirror:
             return False, None
         finally:
             self.last_time = time.time()
-        
-        if not img.content: return False, None
-        return np.array(Image.open(BytesIO(img.content)))[..., ::-1]
     
     def release(self):
         pass

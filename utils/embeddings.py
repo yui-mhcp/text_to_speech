@@ -10,27 +10,26 @@
 # limitations under the License.
 
 import os
-import keras
 import random
 import logging
 import numpy as np
-import pandas as pd
 
 from tqdm import tqdm
 from multiprocessing import cpu_count
 
+from .pandas_utils import is_dataframe
 from .sequence_utils import pad_batch
 from .file_utils import load_data, dump_data, path_to_unix, remove_path
-from .keras_utils import TensorSpec, graph_compile, ops
+from .keras_utils import TensorSpec, ops, graph_compile
 
 logger = logging.getLogger(__name__)
 
 _embeddings_file_ext    = {'.csv', '.npy', '.pkl', 'pdpkl', '.embeddings.h5', '.h5'}
 _default_embeddings_ext = '.embeddings.h5'
 
-def get_embedding_file_ext(filename):
+def get_embeddings_file_ext(filename):
     """ Returns a valid extension for `filename` such that `filename + ext` exists """
-    for ext in _allowed_embeddings_ext:
+    for ext in _embeddings_file_ext:
         if os.path.exists(filename + ext): return ext
     return None
 
@@ -58,7 +57,7 @@ def save_embeddings(filename, embeddings, *, directory = None, remove_file_prefi
     
     if '{}' in filename:
         embedding_dim   = embeddings_to_np(
-            embeddings.iloc[:1] if isinstance(embeddings, pd.DataFrame) else embeddings
+            embeddings.iloc[:1] if is_dataframe(embeddings) else embeddings
         ).shape[-1]
         filename        = filename.format(embedding_dim)
     
@@ -89,28 +88,18 @@ def load_embeddings(filename,
         Load embeddings from file (csv / npy / pkl) and create an aggregation version (if expected)
         
         Arguments :
-            - directory     : directory in which embeddings are stored (must be 'embeddings' or have a sub-directory named 'embeddings')
-                It can also be the embeddings' filename
-            - embedding_name    : the embeddings' filename (can contains '{}' which will be formatted by `embedding_dim`)
-            - embedding_dim : dimension of the embedding (used to format `filename` if required)
+            - filename  : the file containing the embeddings
             
+            - dataset   : the dataset on which to merge embeddings
             - filename_prefix   : a path to add at all filenames' start (i.e. each value in result['filename'])
                 if `True`, it adds the `get_dataset_dir` as prefix
                 Note that if the filename exists as is, it will have no effect
-            
-            - dataset       : the dataset on which to merge embeddings
             
             - aggregate_on  : the column to aggregate on
             - aggregate_mode    : the mode for the aggregation
             - aggregate_name    : the name for the aggregated embeddings' column (default to `speaker_embedding` for retro-compatibility)
         Return :
             - embeddings or dataset merged with embeddings (merge is done on columns that are both in `dataset` and `embeddings`)
-        
-        Note : the effective loading filename is
-            - directory : if `os.path.isfile(directory)`
-            - embedding_name    : if `os.path.exists(embedding_name)`
-            - else  : `os.path.join(directory, embedding_name)`
-        
     """
     if not os.path.exists(filename):
         ext = get_embeddings_file_ext(filename)
@@ -121,7 +110,7 @@ def load_embeddings(filename,
         filename += ext
     
     embeddings  = load_data(filename)
-    if not isinstance(embeddings, pd.DataFrame): return embeddings
+    if not is_dataframe(embeddings): return embeddings
     
     if any('Unnamed:' in col for col in embeddings.columns):
         embeddings = embeddings.drop(
@@ -164,7 +153,7 @@ def load_embeddings(filename,
             dataset[col]    = dataset[col].apply(path_to_unix)
     
     logger.debug('Merging embeddings with dataset on columns {}'.format(intersect))
-    dataset = pd.merge(dataset, embeddings, on = intersect)
+    dataset = dataset.merge(embeddings, on = intersect)
 
     if len(dataset) == 0:
         raise ValueError('Merge resulted in an empty dataframe !\n  Columns : {}\n  Embeddings : {}'.format(intersect, embeddings))
@@ -212,7 +201,7 @@ def embeddings_to_np(embeddings, col = 'embedding', dtype = float, force_np = Tr
         return embeddings
     elif ops.is_tensor(embeddings):
         return ops.convert_to_numpy(embeddings) if force_np else embeddings
-    elif isinstance(embeddings, pd.DataFrame):
+    elif is_dataframe(embeddings):
         embeddings = [embeddings_to_np(e) for e in embeddings[col].values]
         if len(embeddings[0].shape) == 1: return np.array(embeddings)
         
@@ -270,7 +259,7 @@ def select_embedding(embeddings, mode = 'random', ** kwargs):
         Return :
             - embedding : 1D `np.ndarray`
     """
-    if isinstance(embeddings, pd.DataFrame):
+    if is_dataframe(embeddings):
         filtered_embeddings = embeddings
         if any(k in embeddings.columns for k in kwargs.keys()):
             from utils.pandas_utils import filter_df
@@ -318,10 +307,12 @@ def embed_dataset(directory,
                   
                   ** kwargs
                  ):
+    import pandas as pd
+    
     if load_fn is None:
         cache_size, round_tqdm, tqdm = batch_size, tqdm, None
     else:
-        from utils.threading import Consumer
+        from .threading import Consumer
         
         round_tqdm      = lambda x: x
         cache_size      = max(cache_size, batch_size)
@@ -465,7 +456,7 @@ def visualize_embeddings(embeddings,
     ckpt = tf.train.Checkpoint(embedding = embeddings_var)
     ckpt.save(os.path.join(log_dir, 'embedding.ckpt'))
     
-    if isinstance(metadata, pd.DataFrame):
+    if is_dataframe(metadata):
         metadata = metadata[[label_col] + [c for c in metadata.columns if c != label_col]]
 
         metadata.to_csv(os.path.join(log_dir, metadata_filename), sep = '\t', index = False)

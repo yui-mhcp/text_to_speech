@@ -11,23 +11,25 @@
 
 import keras
 import logging
+import inspect
 
 from utils import import_objects, get_object, print_objects, dispatch_wrapper
 from custom_train_objects.optimizers import lr_schedulers
 
 logger = logging.getLogger(__name__)
 
-def _maybe_use_legacy(name):
+def filter_old_kwargs(name):
     def optimizer_init(* args, ** kwargs):
-        try:
-            return getattr(keras.optimizers, name)(* args, ** kwargs)
-        except Exception:
-            logger.info('Optimizer initialization failed, trying legacy optimizer')
-            return getattr(keras.optimizers.legacy, name)(* args, ** kwargs)
+        opt_class = getattr(keras.optimizers, name)
+        kwargs  = {
+            k : v for k, v in kwargs.items()
+            if k in inspect.signature(opt_class).parameters
+        }
+        return opt_class(* args, ** kwargs)
     return optimizer_init
 
 _optimizers = {
-    k : _maybe_use_legacy(k) for k in import_objects(
+    k : filter_old_kwargs(k) for k in import_objects(
         keras.optimizers,
         classes = keras.optimizers.Optimizer,
         exclude = ('Optimizer', 'LossScaleOptimizer'),

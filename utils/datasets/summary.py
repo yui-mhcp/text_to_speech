@@ -15,12 +15,12 @@ import time
 import keras
 import logging
 import numpy as np
-import pandas as pd
 
 from tqdm import tqdm
 
 from .builder import prepare_dataset
 from utils.keras_utils import ops
+from utils.pandas_utils import is_dataframe
 from utils.generic_utils import time_to_string
 
 logger  = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ benchmark_message = """
 """
 
 def summarize_dataset(dataset, columns = None, limit = 0.25, ** kwargs):
-    if not isinstance(dataset, pd.DataFrame): return {}
+    if not is_dataframe(dataset): return {}
     
     if isinstance(limit, float): limit = int(limit * len(dataset))
     

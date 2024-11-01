@@ -9,8 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pandas as pd
-
 from functools import wraps
 
 from loggers import timer
@@ -28,6 +26,8 @@ def text_dataset_wrapper(name, task, ** default_config):
                               
                               ** kwargs
                              ):
+            import pandas as pd
+            
             dataset = dataset_loader(directory, * args, ** kwargs)
             
             if any('answers' in d for d in dataset):
@@ -52,7 +52,7 @@ def _select_answer(dataset, mode, skip_impossible = False):
         elif mode == 'all':
             new_data.append(data)
         elif mode in ('longest', 'shortest'):
-            indexes = sorted(range(len(data['answers']), key = lambda i: len(data['answers'][i])))
+            indexes = sorted(range(len(data['answers'])), key = lambda i: len(data['answers'][i]))
             if mode == 'longest': indexes = list(reversed(indexes))
             data.update({
                 k : v[indexes[0]] for k, v in data.items() if 'answer' in k

@@ -16,7 +16,6 @@ import keras
 import logging
 import collections
 import numpy as np
-import pandas as pd
 
 from utils import dump_json, load_json, to_json, plot_multiple
 
@@ -56,6 +55,7 @@ class History(keras.callbacks.Callback):
     """
     def __init__(self, filename = None, ** kwargs):
         super().__init__(** kwargs)
+        
         self.filename   = filename
         self.__history  = collections.OrderedDict()
         self.__trainings    = []
@@ -138,6 +138,7 @@ class History(keras.callbacks.Callback):
         raise ValueError('Unsupported index {}'.format(idx))
     
     def __str__(self):
+        import pandas as pd
         return "===== History =====\n{}".format(pd.DataFrame(self.history))
     
     def __repr__(self):

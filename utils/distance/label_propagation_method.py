@@ -12,9 +12,9 @@
 import numpy as np
 
 from utils.keras_utils import ops
-from utils.distance.knn_method import knn
-from utils.distance.distance_method import tf_distance
-from utils.distance.clustering import clustering_wrapper
+from .knn_method import knn
+from .distance_method import tf_distance
+from .clustering import clustering_wrapper
 
 def _label_propagation(points,
                        k,

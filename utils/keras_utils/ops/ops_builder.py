@@ -9,64 +9,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import keras
 import logging
 import importlib
-import threading
 import numpy as np
 import keras.ops as K
 
 from functools import wraps
 
 from loggers import timer
+from .execution_contexts import *
 
 logger  = logging.getLogger(__name__)
 
 _is_np_backend_available    = False
 
-get_backend     = keras.backend.backend
-is_tensorflow_backend   = lambda: get_backend() == 'tensorflow'
-is_torch_backend        = lambda: get_backend() == 'torch'
-is_jax_backend          = lambda: get_backend() == 'jax'
+def _import_functions(module, _globals = set()):
+    return [
+        k for k, v in vars(module).items()
+        if not k.startswith('_') and getattr(v, '__module__', '').startswith(module.__name__) and not isinstance(v, type) and k not in _globals
+    ]
 
-_is_executing_xla = {}
-
-def get_backend_module():
-    return importlib.import_module(get_backend())
-
-def get_backend_version():
-    return get_backend_module().__version__
-
-def is_tensorflow_graph():
-    """
-        This function is equivalent to `tf.executing_eagerly` while enabling to not import tensorflow by default
-    """
-    if is_tensorflow_backend() or  'tensorflow' in sys.modules:
-        import tensorflow as tf
-        return not tf.executing_eagerly()
-    return False
-
-def executing_eagerly():
-    """
-        This function returns whether the code is executing eagerly or not (i.e., XLA compiled)
-        Note that there is no equivalent to `tf.executing_eagerly()` in other backends. To overcome this, the `graph_compile` function calls the `set_xla_execution` when running a code in XLA
-        This function will only detect XLA-codes executed by `graph_compile`, and not regular compilation (like `jax.jit` or `torch.compile`)
-        In the `tensorflow` backend, this function is equivalent to `tf.executing_eagerly()`
-        
-        Note that the function is thread-safe (for other backends), meaning that executing it in a separate thread that is executing eagerly will correctly return True, no matter if another thread is running XLA code at the same time
-    """
-    if is_tensorflow_backend(): # shortcut to speed up for tensorflow backend
-        return not is_tensorflow_graph()
-    elif is_tensorflow_graph(): # should return False if executing in `tf.data` (for all backends)
-        return False
-    return _get_thread_id() not in _is_executing_xla
-
-def set_xla_execution(use_xla):
-    if is_tensorflow_backend(): return
-    if use_xla: _is_executing_xla[_get_thread_id()] = True
-    else:       _is_executing_xla.pop(_get_thread_id())
-        
 def _is_numpy(args, kwargs, nested = False):
     if nested: args = args[0]
     return not (
@@ -136,7 +99,7 @@ def build_op(k_op,
                 if tf_op is None:
                     if is_tensorflow_backend():
                         if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug('Using the keras function for {}'.format(tf_op))
+                            logger.debug('Using the keras function for {}'.format(name))
                         tf_fn = keras_fn
                     elif isinstance(k_op, str):
                         tf_fn = _get_backend_function(k_op, keras_fn, 'tensorflow')
@@ -224,5 +187,3 @@ def _import_function(module, fn):
         module, fn = importlib.import_module('.'.join([module.__name__] + parts[:-1])), parts[-1]
     return getattr(module, fn, None)
 
-def _get_thread_id():
-    return threading.current_thread().ident

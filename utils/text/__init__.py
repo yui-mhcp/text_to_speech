@@ -12,14 +12,14 @@
 import os
 import logging
 
-from utils.text.byte_pair_encoding import bytes_to_unicode, bpe
-from utils.text.text_encoder import TextEncoder
-from utils.text.sentencepiece_encoder import SentencePieceTextEncoder
-from utils.text.ctc_decoder import ctc_decode
-from utils.text.text_processing import *
-from utils.text.text_augmentation import random_mask
+from .byte_pair_encoding import bytes_to_unicode, bpe
+from .text_encoder import TextEncoder
+from .sentencepiece_encoder import SentencePieceTextEncoder
+from .ctc_decoder import ctc_decode
+from .text_processing import *
+from .text_augmentation import random_mask
 
-from utils.text.document_parser import _wiki_cleaner, parse_document
+from .document_parser import _wiki_cleaner, parse_document
 
 logger = logging.getLogger(__name__)
 

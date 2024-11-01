@@ -102,7 +102,7 @@ def apply_callbacks_raw(data, callbacks, ** kwargs):
             callback.update_data(store, output)
 
         try:
-            callback(infos = store, output = output, ** kwargs) or side_effect
+            callback(infos = store, output = output, ** kwargs)
         except Exception as e:
             logger.error('- An exception occured while calling {} : {}'.format(
                 callback, e

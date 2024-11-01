@@ -18,7 +18,7 @@ from keras import tree
 from functools import cache
 
 from loggers import timer
-from .ops_builder import _is_numpy, build_op, build_custom_op, executing_eagerly, is_tensorflow_backend
+from .ops_builder import _is_numpy, _import_functions, build_op, build_custom_op, executing_eagerly, is_tensorflow_backend, is_torch_backend
 
 class TensorflowNotAvailable(Exception):
     def __init__(self):
@@ -58,8 +58,10 @@ def convert_to_numpy(x, dtype = None, copy = False):
         elif not executing_eagerly():
             return convert_to_tensor(x, dtype)
         
-        if not isinstance(x, np.ndarray): # if it was not a `tf.Tensor`
-            if not K.is_tensor(x): return np.array(x, dtype = dtype)
+        if not isinstance(x, np.ndarray): # if it was not a `Tensor`
+            if not K.is_tensor(x):
+                if hasattr(x, 'cpu'):   x = x.cpu().numpy()
+                else:   return np.array(x, dtype = dtype)
             x = K.convert_to_numpy(x)
     elif copy:
         x = x.copy()
@@ -118,6 +120,27 @@ def convert_to_tf_tensor(x, dtype = None):
     if K.is_tensor(x): x = convert_to_numpy(x)
     return tf.convert_to_tensor(x, dtype)
 
+def convert_to_torch_tensor(x, dtype = None):
+    if is_torch_backend(): return convert_to_tensor(x, dtype)
+    
+    import keras.src.backend.torch as torch_backend
+    
+    if isinstance(x, dict): return {k : convert_to_torch_tensor(v, dtype) for k, v in x.items()}
+    if dtype is not None:
+        if not torch_backend.is_tensor(x):
+            if K.is_tensor(x): x = convert_to_numpy(x)
+            return torch_backend.convert_to_tensor(x, dtype_to_str(dtype))
+        elif (dtype == 'float' and is_float(x)) or (dtype == 'int' and is_int(x)):
+            return x
+        else:
+            return torch_backend.cast(x, dtype)
+    
+    elif x is None or torch_backend.is_tensor(x): return x
+    
+    dtype = get_convertion_dtype(x)
+    if K.is_tensor(x): x = convert_to_numpy(x)
+    return torch_backend.convert_to_tensor(x, dtype)
+
 def get_convertion_dtype(x):
     if is_tensor(x): return dtype_to_str(x.dtype)
     elif isinstance(x, (list, tuple)):
@@ -138,6 +161,10 @@ def get_convertion_dtype(x):
         else: raise ValueError('Unknown data dtype : {}'.format(data.dtype))
     else: raise ValueError('Unknown data type : {}\n{}'.format(type(data), data))
 
+def is_torch_tensor(x):
+    if 'torch' not in sys.modules: return False
+    import torch
+    return torch.is_tensor(x)
 
 convert_to_tensor_op    = build_op('convert_to_tensor', disable_np = True)
 is_tensor   = build_op('is_tensor', disable_np = True)
@@ -306,7 +333,5 @@ unstack = build_op('unstack', np_op = _np_unstack)
 
 while_loop  = build_op('while_loop', np_op = _np_while, is_numpy_check = _check_numpy_while)
 
-globals().update({
-    k : build_op(k) for k in ('custom_gradient', 'fori_loop', 'map', 'scan', 'stop_gradient', 'switch', 'vectorized_map')
-})
+globals().update({k : build_op(k) for k in _import_functions(keras.src.ops.core, globals())})
 

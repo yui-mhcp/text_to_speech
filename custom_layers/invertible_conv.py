@@ -12,6 +12,7 @@
 import keras
 import keras.ops as K
 
+@keras.saving.register_keras_serializable('custom_layers')
 class Invertible1x1Conv(keras.layers.Layer):
     """
     The layer outputs both the convolution, and the log determinant

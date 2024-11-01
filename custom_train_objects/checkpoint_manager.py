@@ -12,6 +12,7 @@
 import os
 import copy
 import logging
+import warnings
 
 from functools import cache
 
@@ -220,13 +221,12 @@ class CheckpointManager:
                     from models.weights_converter import (
                         name_based_partial_transfer_learning, load_saved_model_variables
                     )
-                except:
-                    logger.info('Unable to load `tf.saved_model` as `tensorflow` is not available')
-                    pass
                 
-                name_based_partial_transfer_learning(
-                    model, load_saved_model_variables(filename), source = 'saved_model'
-                )
+                    name_based_partial_transfer_learning(
+                        model, load_saved_model_variables(filename), source = 'saved_model'
+                    )
+                except Exception as e:
+                    warnings.warn('Unable to restore weights from tensorflow checkpoint : {}\nMake sure to manually restore weights, as the model is currently randomly initialized !'.format(e))
             else:
                 raise RuntimeError('Unsupported checkpoint file format : {}'.format(filename))
         

@@ -10,14 +10,12 @@
 # limitations under the License.
 
 import numpy as np
-import pandas as pd
 
 from functools import cached_property
 
-from utils import pad_to_multiple, get_entry
-from utils.hparams import HParams
+from utils import *
+from utils.image import *
 from utils.keras_utils import TensorSpec, ops
-from utils.image import load_image, pad_image, get_image_normalization_fn, augment_image, augment_box
 from models.utils import infer_downsampling_factor, infer_upsampling_factor
 from .base_model import BaseModel
 
@@ -126,11 +124,11 @@ class BaseImageModel(BaseModel):
         """ Calls `utils.image.load_image` on the given `filename` """
         if isinstance(filename, (list, tuple)):
             return [self.get_image(f, use_box, ** kwargs) for f in filename]
-        elif isinstance(filename, pd.DataFrame):
+        elif is_dataframe(filename):
             return [self.get_image(row, use_box, ** kwargs) for idx, row in filename.iterrows()]
         
         bbox_kwargs = {}
-        if isinstance(filename, (dict, pd.Series)):
+        if isinstance(filename, dict):
             if use_box and 'boxes' in filename:
                 for key in ('boxes', 'source', 'dezoom_format'):
                     if key in filename: bbox_kwargs[key] = filename[key]

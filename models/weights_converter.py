@@ -17,7 +17,6 @@ import logging
 import warnings
 import collections
 import numpy as np
-import pandas as pd
 
 class PartialInitializer(enum.IntEnum):
     NONE    = -1
@@ -90,6 +89,7 @@ _int_distance = {
 }
 
 def _is_torch_module(x):
+    """ Returns whether `x` is a `nn.Module` but not a `keras.Model` """
     if 'torch' not in sys.modules: return False
     import keras
     import torch.nn
@@ -97,7 +97,23 @@ def _is_torch_module(x):
         return all(isinstance(v, torch.Tensor) for v in x.values())
     return isinstance(x, torch.nn.Module) and not isinstance(x, (keras.Model, keras.layers.Layer))
 
+def load_saved_model_variables(path):
+    """ Returns a mapping `{var_name : variable}` from the given `tf.saved_model` `path` """
+    import tensorflow as tf
+    
+    if os.path.isdir(path): path = tf.train.latest_checkpoint(path)
+    names   = tf.train.list_variables(path)
+    weights = {n : tf.train.load_variable(path, n) for n, _ in names}
+    weights = {k : v for k, v in weights.items() if isinstance(v, np.ndarray) and v.ndim}
+    logger.info('Loaded {} variables from {}'.format(len(weights), path))
+    return {
+        k.replace('/.ATTRIBUTES/VARIABLE_VALUE', '') : v for k, v in weights.items()
+    }
+
 def get_model_name(variables, model = None, threshold = 0.6):
+    """
+        Infers the model's name based on its variables. If `model` is provided, return `model.name`
+    """
     if model is not None and hasattr(model, 'name'): return model.name
     
     parts = {}
@@ -112,6 +128,7 @@ def get_model_name(variables, model = None, threshold = 0.6):
     return ''
 
 def remove_model_name(variables, ** kwargs):
+    """ Updates `variables` to remove the model's names from the start of variable names """
     model_name = get_model_name(variables, ** kwargs)
     if model_name:
         variables = {
@@ -122,6 +139,7 @@ def remove_model_name(variables, ** kwargs):
     return variables
 
 def variable_to_numpy(var):
+    """ Converts `var` to a `np.ndarray` by calling `detach, cpu, numpy` sequentially (if defined) """
     if isinstance(var, dict): return {k : variable_to_numpy(v) for k, v in var.items()}
     if isinstance(var, list): return [variable_to_numpy(v) for v in var]
     
@@ -130,28 +148,33 @@ def variable_to_numpy(var):
     return var
 
 def normalize_var_name(name):
+    """ Replaces '.' and '-' by '/' """
     if isinstance(name, dict): return {normalize_var_name(k) : v for k, v in name.items()}
     return name.replace('.', '/').replace('-', '/')
 
 def get_var_name(var):
+    """ Returns the variable name (either `path` or `name` attribute) """
     return var.path if hasattr(var, 'path') else var.name
 
 def get_var_mapping(model):
-    """ Returns a dict {var_name : var} """
+    """ Returns a dict `{var_name : var}` """
     if hasattr(model, 'state_dict'):    model = model.state_dict()
     elif hasattr(model, 'weights'):     model = model.weights
-    if isinstance(model, dict): return model
+    if isinstance(model, dict):
+        return model
 
     mapping = collections.OrderedDict()
     for v in model: mapping[get_var_name(v)] = v
     return mapping
 
 def get_variables(model):
+    """ Returns a `list` of model variables """
     return list(get_var_mapping(model).values())
 
 def get_weights(model):
+    """ Returns a `list` of model variables (as `np.ndarray`) """
     if hasattr(model, 'get_weights'): return model.get_weights()
-    return [variable_to_numpy(v) for v in get_variables(model)]
+    return variable_to_numpy(get_variables(model))
 
 def get_layer_name(name):
     """ Returns the layer's name based on variable's name `name` """
@@ -159,6 +182,7 @@ def get_layer_name(name):
     return '/'.join(name.split('/')[:-1])
 
 def get_layers_mapping(model,
+                       *,
                        
                        transpose    = False,
                        to_numpy     = True,
@@ -168,14 +192,20 @@ def get_layers_mapping(model,
                        ** _
                       ):
     """
-        Returns a dict {layer_name : list_of_vars}
+        Returns a dict `{layer_name : list_of_vars}`
         A layer is identified by removing the last part from its name
-        Layer's name parts are identified by splitting the name by `sep` ('/' inf tensorflow and '.' in pytorch's models)
+        Layer's name parts are identified by splitting the name by '/' after normalizing the names
         
         Arguments :
-            - model : a valid type for `get_var_mapping` (dict, list, Model, torch.nn.Module)
-            - sep   : either '/' (tensorflow) or '.' (pytorch) (determined based on the 1st variable's name if not provided)
-            - kwargs    : forwarded to `_get_layer_name` to determine the layer's key in the mapping
+            - model : a valid type for `get_var_mapping` (`dict, list, Model, torch.nn.Module`)
+            
+            - transpose : whether to transpose the weights
+            - to_numpy  : whether to convert weights to `np.ndarray`
+            - skip_root : whether to remove model's name for matching
+            
+            - source    : the source format (see `arrange_weights` for more information)
+        Return :
+            - mapping   : a `dict` of `{layer_name : list_of_layer_variables}`
     """
     layers = model
     if not isinstance(model, dict) or not isinstance(list(model.values())[0], list):
@@ -206,9 +236,21 @@ def print_vars(model, ** kwargs):
     msg += '\n\n'
     print(msg)
 
+def print_layers(model, ** kwargs):
+    """ Displays all layers of `model` (name with shape of each variable) """
+    layers = get_layers_mapping(model, to_numpy = False, ** kwargs)
+
+    msg = '# layers : {}'.format(len(layers))
+    for name, list_vars in layers.items():
+        msg += '\nName : {}\t- Shape : {}'.format(
+            name, [tuple(var.shape) for var in list_vars]
+        )
+    msg += '\n\n'
+    print(msg)
+
 
 def transpose_weights(weights):
-    """ Returns the transposed version of `weights` (for pt / tf convertion) """
+    """ Returns the transposed version of `weights` (for `torch` to `keras` convertion) """
     if isinstance(weights, dict):
         return {k : transpose_weights(v) for k, v in weights.items()}
     
@@ -217,18 +259,19 @@ def transpose_weights(weights):
     
     if len(weights.shape) <= 1:
         return weights
-    elif len(weights.shape) == 2:
+    elif len(weights.shape) == 2:   # Dense weights
         return weights.T
-    elif len(weights.shape) == 3:
+    elif len(weights.shape) == 3:   # Conv1D weights
         return np.transpose(weights, [2, 1, 0])
-    elif len(weights.shape) == 4:
+    elif len(weights.shape) == 4:   # Conv2D weights
         return np.transpose(weights, [2, 3, 1, 0])
-    elif len(weights.shape) == 5:
+    elif len(weights.shape) == 5:   # Conv3D weights
         return np.transpose(weights, [2, 3, 4, 1, 0])
     else:
         raise ValueError("Unknown weights shape : {}".format(weights.shape))
 
 def arrange_weights(weights, source, target = 'keras'):
+    """ Rearrange `weights` from `source` format to `target` format """
     if source == target: return weights
     
     if isinstance(weights, dict):
@@ -255,15 +298,15 @@ def arrange_weights(weights, source, target = 'keras'):
         raise ValueError('Unsupported target format : {}'.format(target))
 
 def arrange_torch_weights(weights, expand_bidirectional = True):
-    if len(weights) == 2:
+    if len(weights) == 2:   # In keras, the bias should be the 2nd variable
         weights = sorted(weights, key = lambda w: len(w.shape), reverse = True)
     elif len(weights) < 4:
         pass
-    elif len(weights) == 4:
+    elif len(weights) == 4: # LSTM layer
         weights = weights[:2] + [weights[2] + weights[3]]
-    elif len(weights) == 5:
+    elif len(weights) == 5: # BatchNormalization layer
         weights = weights[:4]
-    elif len(weights) == 8:
+    elif len(weights) == 8: # Bidirectional layer
         if expand_bidirectional:
             return {
                 'forward'   : weights[:2] + [weights[2] + weights[3]],
@@ -281,7 +324,7 @@ def arrange_torch_weights(weights, expand_bidirectional = True):
 def arrange_keras_weights(weights):
     if len(weights) < 3 or len(weights) == 4:
         pass
-    elif len(weights) == 3:
+    elif len(weights) == 3: # LSTM layer
         weights = weights[:2] + [weights[2] / 2., weights[2] / 2.]
     else:
         raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(
@@ -293,7 +336,7 @@ def arrange_keras_weights(weights):
 def arrange_saved_model_weights(weights):
     if len(weights) < 4:
         return sorted(weights, key = lambda w: len(w.shape), reverse = True)
-    elif len(weights) == 4:
+    elif len(weights) == 4: # Normalization layer
         return [weights[1], weights[0]] + weights[2:]
     raise ValueError("Unknown weights length : {}\n  Shapes : {}".format(
         len(weights), [tuple(v.shape) for v in weights]
@@ -419,19 +462,6 @@ def find_layers_mapping(model,
 
     return mapping, pretrained_layers
 
-def load_saved_model_variables(path):
-    import tensorflow as tf
-    
-    if os.path.isdir(path): path = tf.train.latest_checkpoint(path)
-    names   = tf.train.list_variables(path)
-    weights = {n : tf.train.load_variable(path, n) for n, _ in names}
-    weights = {k : v for k, v in weights.items() if isinstance(v, np.ndarray) and v.ndim > 0}
-    logger.info('Loaded {} variables from {}'.format(len(weights), path))
-    return {
-        k.replace('/.ATTRIBUTES/VARIABLE_VALUE', '') : v for k, v in weights.items()
-    }
-
-
 def name_based_partial_transfer_learning(target_model,
                                          pretrained_model,
                                          
@@ -461,6 +491,8 @@ def name_based_partial_transfer_learning(target_model,
         
         Note : see `help(find_layers_mapping)` for more information about mappings' creation
     """
+    import pandas as pd
+    
     from utils.generic_utils import get_enum_item
     
     def partial_weight_transfer(target, pretrained_v):
@@ -468,6 +500,8 @@ def name_based_partial_transfer_learning(target_model,
             return pretrained_v
         elif target.shape == np.squeeze(pretrained_v).shape:
             return np.squeeze(pretrained_v), {'transform' : 'squeeze'}
+        elif pretrained_v.shape == np.squeeze(target).shape:
+            return np.broadcast_to(pretrained_v, target.shape), {'transform' : 'expand_dims'}
         elif len(target.shape) == 2 and target.shape == pretrained_v.T.shape:
             return pretrained_v.T, {'transform' : 'T'}
         elif not partial_transfer:

@@ -11,10 +11,9 @@
 
 import os
 import logging
-import pandas as pd
 
 from .base_model import BaseModel
-from utils.hparams import HParams
+from utils import HParams, is_dataframe
 from utils.keras_utils import TensorSpec, ops
 from utils.audio import MelSTFT, load_audio, load_mel
 from utils.audio import random_pad, random_shift, random_noise
@@ -173,6 +172,12 @@ class BaseAudioModel(BaseModel):
         n_samples   = int(time * self.audio_rate)
         return n_samples if self.mel_fn is None else self.mel_fn.get_length(n_samples)
 
+    def _get_sample_time(self, samples):
+        if samples is None: return None
+        elif samples == 0:  return 0.
+        elif self.mel_fn is not None: samples = self.mel_fn.get_audio_length(samples)
+        return samples / self.audio_rate
+    
     def get_audio_input(self, data, ** kwargs):
         """
             Loads the audio with the `utils.audio.load_audio` method
@@ -233,15 +238,12 @@ class BaseAudioModel(BaseModel):
         """ Either calls `get_mel_input` or `get_audio_input` depending on `audio_format` """
         if isinstance(data, list):
             return [self.get_audio(data_i, ** kwargs) for data_i in data]
-        elif isinstance(data, pd.DataFrame):
+        elif is_dataframe(data):
             return [self.get_audio(row, ** kwargs) for idx, row in data.iterrows()]
         
         if self.use_mel_fn:
-            input_data = self.get_mel_input(data, ** kwargs)
-        else:
-            input_data = self.get_audio_input(data, ** kwargs)
-        
-        return input_data
+            return self.get_mel_input(data, ** kwargs)
+        return self.get_audio_input(data, ** kwargs)
     
     def _augment_audio(self, audio, max_length = -1):
         """

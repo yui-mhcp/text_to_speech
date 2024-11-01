@@ -9,12 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
-import pandas as pd
-
 from .tacotron2 import Tacotron2
 from utils.keras_utils import ops
-from utils import select_embedding
+from utils import select_embedding, is_dataframe
 from models.interfaces.base_embedding_model import BaseEmbeddingModel
 
 class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
@@ -82,26 +79,26 @@ class SV2TTSTacotron2(BaseEmbeddingModel, Tacotron2):
         
         super().compile(loss_config = loss_config, ** kwargs)
     
-    def infer(self, text, spk_embedding = None, ** kwargs):
+    def infer(self, inputs, spk_embedding = None, ** kwargs):
         if spk_embedding is None or isinstance(spk_embedding, (int, str, dict)):
             spk_embedding = self.select_embedding(spk_embedding)
         
-        if not isinstance(text, (list, tuple)):
-            if isinstance(text, str):
-                text    = ops.expand_dims(self.encode_text(text), axis = 0)
-            elif len(ops.shape(text)) == 1:
-                text    = ops.expand_dims(text, axis = 0)
+        if not isinstance(inputs, (list, tuple)):
+            if isinstance(inputs, str):
+                inputs = ops.expand_dims(self.get_input(inputs), axis = 0)
+            elif ops.ndim(inputs) == 1:
+                inputs = ops.expand_dims(inputs, axis = 0)
         
-        if len(ops.shape(spk_embedding)) == 1:
+        if ops.rank(spk_embedding) == 1:
             spk_embedding = ops.expand_dims(spk_embedding, axis = 0)
-        if ops.shape(spk_embedding)[0] < ops.shape(text)[0]:
-            spk_embedding = ops.tile(spk_embedding, [ops.shape(text)[0], 1])
+        if ops.shape(spk_embedding)[0] < ops.shape(inputs)[0]:
+            spk_embedding = ops.tile(spk_embedding, [ops.shape(inputs)[0], 1])
         
-        return super().infer([text, spk_embedding], ** kwargs)
+        return super().infer([inputs, spk_embedding], ** kwargs)
     
     def select_embedding(self, embeddings = None, mode = None):
         # load embeddings if needed
-        if isinstance(embeddings, (np.ndarray, pd.DataFrame)) or ops.is_tensor(embeddings):
+        if ops.is_array(embeddings) or is_dataframe(embeddings):
             self.set_embeddings(embeddings)
         elif self.embeddings is None:
             if embeddings is not None: embeddings, mode = None, embeddings

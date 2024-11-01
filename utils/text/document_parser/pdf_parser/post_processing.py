@@ -30,7 +30,6 @@ def split_in_columns(boxes, indices):
     if np.count_nonzero(r_col_mask) < len(boxes) * 0.25:
         return (indices, [], [])
 
-    middle_mask = np.abs((boxes[:, 0] + boxes[:, 2]) / 2. - 0.5) <= 0.05
     middle_mask = np.logical_and(
         boxes[:, 0] < 0.3,
         np.abs((boxes[:, 0] + boxes[:, 2]) / 2. - 0.5) <= 0.1
@@ -86,14 +85,14 @@ def group_words(blocks, boxes, indices):
     return lines, line_boxes
 
 @timer
-def group_lines(lines, boxes):
+def group_lines_v1(lines, boxes):
     if len(lines) == 0: return []
     
     para_boxes, groups, group_para_boxes = combine_boxes_vertical(boxes)
 
     col_left = 1.
     if len(lines) > 5:
-        col_left = np.mean(boxes[:, 0]) + 1e-3
+        col_left = np.median(boxes[:, 0]) + 1e-3
     
     with time_logger.timer('grouping lines'):
         paragraphs = []
@@ -121,6 +120,58 @@ def group_lines(lines, boxes):
 
     paragraphs = [p for p in paragraphs if _is_valid_line(p['text'])]
     return paragraphs
+
+@timer
+def group_lines_v2(lines, boxes, h_threshold = 1e-2, y_threshold = 75):
+    if len(lines) <= 1: return lines
+    
+    def _is_same_block(i):
+        same = abs(h[i] - h[i - 1]) < h_threshold and boxes[i, 1] - boxes[i - 1, 3] < y_threshold_
+        if logger.isEnabledFor(logging.DEBUG) and not same:
+            logger.debug('New block detected at index #{} : {}'.format(i, lines[i]['text']))
+        return same
+    
+    def _is_indented(i):
+        if (x_center[i] - x_center[i - 1]) < 1e-3: return False
+        indent = boxes[i, 0] > boxes[i - 1, 0] + 1e-3
+        if logger.isEnabledFor(logging.DEBUG) and indent:
+            print(np.around(boxes[i - 1 : i + 1], decimals = 3))
+            logger.debug('Indentation detected at index #{} : {}'.format(i, lines[i]['text']))
+        return indent
+        
+    
+    indexes = np.argsort(boxes[:, 1])
+    boxes   = boxes[indexes]
+    lines   = [lines[idx] for idx in indexes]
+    
+    h = boxes[:, 3] - boxes[:, 1]
+    x_center    = (boxes[:, 0] + boxes[:, 2]) / 2.
+    
+    with time_logger.timer('grouping lines'):
+        paragraphs, current = [], [0]
+        for i, (line, box) in enumerate(zip(lines[1:], boxes[1:]), start = 1):
+            y_threshold_ = y_threshold
+            if y_threshold_ > 1: y_threshold_ = h[i] * y_threshold_ / 100.
+            
+            if not _is_same_block(i) or _is_indented(i):
+                paragraphs.append({
+                    'text'  : '\n'.join([lines[idx]['text'] for idx in current]),
+                    'box'   : compute_union(boxes[current])
+                })
+                current = []
+            
+            current.append(i)
+        
+        if current:
+            paragraphs.append({
+                'text'  : '\n'.join([lines[idx]['text'] for idx in current]),
+                'box'   : compute_union(boxes[current])
+            })
+
+    paragraphs = [p for p in paragraphs if _is_valid_line(p['text'])]
+    return paragraphs
+
+group_lines = group_lines_v2
 
 def group_column(blocks, boxes, indices):
     lines, line_boxes = group_words(blocks, boxes, indices)

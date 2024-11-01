@@ -11,10 +11,10 @@
 
 import os
 import numpy as np
-import pandas as pd
-import keras.ops as K
 
-from keras import tree
+from .keras_utils import ops, tree
+from .file_utils import load_data, _load_file_fn
+from .generic_utils import is_function
 
 def is_in(target, value, nested_test = False, ** kwargs):
     if nested_test:
@@ -59,14 +59,16 @@ def is_diff(target, value, ** kwargs):
 def compare(target, value, ** kwargs):
     """ Compare 2 items and raises an AssertionError if their value differ """
     target = tree.map_structure(
-        lambda v: K.convert_to_numpy(v) if K.is_tensor(v) else v, target
+        lambda v: ops.convert_to_numpy(v) if ops.is_tensor(v) else v, target
     )
     value = tree.map_structure(
-        lambda v: K.convert_to_numpy(v) if K.is_tensor(v) else v, value
+        lambda v: ops.convert_to_numpy(v) if ops.is_tensor(v) else v, value
     )
     
     for t, compare_fn in _comparisons.items():
-        if isinstance(target, t):
+        if is_function(t) and t(target):
+            compare_fn(target, value, ** kwargs)
+        elif isinstance(t, (type, tuple)) and isinstance(target, t):
             compare_fn(target, value, ** kwargs)
             return
 
@@ -95,7 +97,7 @@ def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
             Otherwise : raw string equality
     """
     try:
-        from models.model_utils import is_model_name
+        from models import is_model_name
     except:
         is_model_name = lambda n: False
 
@@ -251,7 +253,7 @@ def compare_file(target, value, ** kwargs):
 
 def compare_base_model(target, value, ** kwargs):
     """ Compare the result of `get_model_infos` of the 2 models """
-    from models.model_utils import is_model_name, get_model_infos
+    from models import is_model_name, get_model_infos
     
     assert is_model_name(target), "Target {} is not a valid model !".format(target)
     assert is_model_name(value), "Value {} is not a valid model name !".format(value)
@@ -264,8 +266,6 @@ def compare_base_model(target, value, ** kwargs):
     assert eq, 'Models {} and {} differ : {}'.format(target, value, msg)
 
 def _load_file(filename):
-    from utils.file_utils import load_data, _load_file_fn
-    
     assert os.path.exists(filename), "Filename {} does not exist !".format(filename)
 
     ext = os.path.splitext(filename)[1][1:]
@@ -279,7 +279,7 @@ def _load_file(filename):
 _comparisons    = {
     str     : compare_str,
     (list, tuple)   : compare_list,
-    (dict, pd.Series)   : compare_dict,
-    np.ndarray : compare_array,
-    pd.DataFrame    : compare_dataframe
+    dict   : compare_dict,
+    np.ndarray  : compare_array,
+    lambda v: hasattr(v, 'columns') : compare_dataframe
 }

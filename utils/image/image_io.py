@@ -21,11 +21,10 @@ import logging
 import warnings
 import collections
 import numpy as np
-import pandas as pd
 
 from loggers import timer, time_logger
 from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils import Producer, Consumer, time_to_string, partial
+from utils import Producer, Consumer, create_iterator, time_to_string, partial
 from utils.threading import Producer, Consumer
 from utils.image.image_utils import resize_image
 
@@ -36,6 +35,24 @@ DELAY_SEC   = DELAY_MS / 1000.
 
 _resize_kwargs  = set(list(inspect.signature(resize_image).parameters.keys())[1:])
 
+_streams    = {}
+
+def add_stream(name, stream):
+    if not isinstance(name, (int, str)): name = str(stream)
+    _streams[name] = stream
+
+def get_stream(stream):
+    if stream is None: stream = list(_streams.keys())[0]
+    if not isinstance(stream, (int, str)): stream = str(stream)
+    return _streams[stream]
+
+def remove_stream(stream):
+    if not isinstance(stream, (int, str)): stream = str(stream)
+    return _streams.pop(stream, None)
+
+def set_fps(fps, stream = None):
+    get_stream(stream).set_item_rate(fps)
+    
 def display_image(image):
     """
         Displays the image with `IPython.display.Image`
@@ -103,7 +120,7 @@ def load_image(filename : TensorSpec(),
     """
     assert mode in (None, 'rgb', 'gray')
     # Get filename / image from dict (if dict)
-    if isinstance(filename, (dict, pd.Series)):
+    if isinstance(filename, dict):
         filename = filename['image' if 'image' in filename else 'filename']
 
     # Convert filename to a Tensor (if necessary)
@@ -170,7 +187,7 @@ def save_image(filename, image, ** kwargs):
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
 
-def frame_generator(cam_id,
+def frame_generator_old(cam_id,
                     fps         = None,
                     max_time    = None,
                     
@@ -244,6 +261,73 @@ def frame_generator(cam_id,
             start_iter_time = time.time()
     
     return seen
+
+def frame_generator(cam_id,
+                    fps         = None,
+                    max_time    = None,
+                    
+                    nb_frames   = -1,
+                    frames_step = 1,
+                    frames_offset   = 0,
+                    
+                    add_copy    = False,
+                    return_index    = False,
+                    
+                    max_failure = 5,
+                    
+                    ** kwargs
+                   ):
+    """
+        Yields `fps` frames per second from the given camera (`cam_id`)
+        
+        Arguments :
+            - cam_id    : the camera id (any value supported by `cv2.VideoCapture`) or the raw object
+            - fps       : the number of frames to generate per second
+            - max_time  : the maximum generation time
+            - nb_frames : the maximum number of frames to generate
+            - kwargs    : forwarded to `cv2.VideoCapture`
+        Return :
+            - n     : the number of generated frames
+    """
+    def _generate_frames():
+        idx = frames_offset
+        failed  = 0
+        prev_data = None
+        while failed <= max_failure:
+            ret, frame = camera.read()
+            if not ret:
+                print('failed')
+                failed += 1
+                yield prev_data
+            elif frames_step > 0 and idx % frames_step != 0:
+                print('skip')
+                pass
+            else:
+                frame = frame[..., ::-1]
+                if add_copy or return_index:
+                    data = {'image' : frame, 'frame_index' : idx - 1}
+                    if add_copy: data['image_copy'] = frame.copy()
+                    yield data
+                    prev_data = data
+                else:
+                    yield frame
+                    prev_data = frame
+            
+            idx += 1
+            
+            
+    
+    if not max_time: max_time = -1
+    if not nb_frames: nb_frames = -1
+    if max_time == -1 and nb_frames == -1: max_time = 60
+    
+    camera  = cam_id
+    if isinstance(cam_id, (int, str)):
+        camera = cv2.VideoCapture(cam_id, ** kwargs)
+    
+    return create_iterator(
+        _generate_frames(), max_time = max_time, max_items = nb_frames, item_rate = fps
+    )
 
 @timer
 def stream_camera(cam_id    = 0,
@@ -400,6 +484,8 @@ def stream_camera(cam_id    = 0,
         return_index = add_index
     ), run_main_thread = not use_multithreading, stop_listener = cap.release)
     
+    add_stream(cam_id, prod)
+    
     transformer = prod.add_consumer(
         transform_fn,
         start   = True,
@@ -480,6 +566,7 @@ def stream_camera(cam_id    = 0,
     
     # waits until all consumers are finished
     prod.join(recursive = True)
+    remove_stream(cam_id)
     
     total_time = time.time() - start_time
     logger.info("Streaming processed {} frames in {} ({:.2f} fps)".format(

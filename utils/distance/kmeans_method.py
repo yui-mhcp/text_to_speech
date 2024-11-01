@@ -11,10 +11,10 @@
 
 import keras
 
+from utils import compute_centroids
 from utils.keras_utils import TensorSpec, graph_compile, ops
-from utils.embeddings import compute_centroids
-from utils.distance.distance_method import distance
-from utils.distance.clustering import clustering_wrapper, get_assignment, compute_score
+from .distance_method import distance
+from .clustering import clustering_wrapper, get_assignment, compute_score
 
 @graph_compile
 def _kmeans(points  : TensorSpec(shape = (None, None), dtype = 'float'),

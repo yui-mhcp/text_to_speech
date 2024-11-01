@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import keras
 import numpy as np
 
 from functools import wraps
@@ -16,11 +17,7 @@ from functools import wraps
 from loggers import timer
 from .core import arange, cast, ones, dtype_to_str, shape, zeros
 from .numpy import argsort, bincount, cumsum, concatenate, divide_no_nan, einsum, expand_dims, repeat, swapaxes, take
-from .ops_builder import build_op, build_custom_op, executing_eagerly, is_tensorflow_backend, is_tensorflow_graph
-
-__keras_all__ = ['erf', 'erfinv', 'extract_sequences', 'fft', 'fft2', 'in_top_k', 'irfft', 'istft', 'logsumexp', 'rfft', 'stft']
-
-globals().update({k : build_op(k, disable_np = True) for k in __keras_all__})
+from .ops_builder import _import_functions, build_op, build_custom_op, executing_eagerly, is_tensorflow_backend, is_tensorflow_graph
 
 def _np_top_k(x, k, sorted = True):
     indices = np.argsort(x, axis = -1)[..., ::-1][..., :k]
@@ -34,45 +31,41 @@ def _np_segment_reduction_fn(data, segment_ids, reduction_method, num_segments, 
     if num_segments is None:
         num_segments = np.max(segment_ids) + 1
 
-    valid_indices = segment_ids >= 0  # Ignore segment_ids that are -1
-    valid_data = data[valid_indices]
-    valid_segment_ids = segment_ids[valid_indices]
+    valid_indices   = segment_ids >= 0  # Ignore segment_ids that are -1
+    valid_data      = data[valid_indices]
+    valid_segment_ids   = segment_ids[valid_indices]
 
-    data_shape = list(valid_data.shape)
-    data_shape[0] = (
-        num_segments  # Replace first dimension (which corresponds to segments)
-    )
+    data_shape      = list(valid_data.shape)
+    data_shape[0]   = num_segments  # Replace first dimension (which corresponds to segments)
 
     if reduction_method == np.minimum:
         result = np.full(data_shape, np.max(data))
     elif reduction_method == np.maximum:
-        result = np.ones(data_shape, dtype=valid_data.dtype) * -np.inf
+        result = np.ones(data_shape, dtype = valid_data.dtype) * - np.inf
     else:
-        result = np.zeros(data_shape, dtype=valid_data.dtype)
+        result = np.zeros(data_shape, dtype = valid_data.dtype)
 
     if sorted:
         reduction_method.at(result, valid_segment_ids, valid_data)
     else:
-        sort_indices = np.argsort(valid_segment_ids)
-        sorted_segment_ids = valid_segment_ids[sort_indices]
-        sorted_data = valid_data[sort_indices]
+        sort_indices    = np.argsort(valid_segment_ids)
 
-        reduction_method.at(result, sorted_segment_ids, sorted_data)
+        reduction_method.at(result, valid_segment_ids[sort_indices], valid_data[sort_indices])
 
     return result
 
 
-def _np_segment_sum(data, segment_ids, num_segments=None, sorted=False):
+def _np_segment_sum(data, segment_ids, num_segments = None, sorted = False):
     return _np_segment_reduction_fn(
         data, segment_ids, np.add, num_segments, sorted
     )
 
-def _np_segment_min(data, segment_ids, num_segments=None, sorted=False):
+def _np_segment_min(data, segment_ids, num_segments = None, sorted = False):
     return _np_segment_reduction_fn(
         data, segment_ids, np.minimum, num_segments, sorted
     )
 
-def _np_segment_max(data, segment_ids, num_segments=None, sorted=False):
+def _np_segment_max(data, segment_ids, num_segments = None, sorted = False):
     return _np_segment_reduction_fn(
         data, segment_ids, np.maximum, num_segments, sorted
     )
@@ -142,8 +135,8 @@ def segment_argsort_op(data, segment_ids, num_segments = None, sorted = None):
     return indices - first_segment_idx
 
 
-def _segment_op_wrapper(segment_fn):
-    @timer(debug = True, name = segment_fn.__name__)
+def _segment_op_wrapper(segment_fn, name = None):
+    @timer(debug = True, name = name or segment_fn.__name__)
     def inner(data, segment_ids, num_segments = None, sorted = False, axis = 0):
         if sorted: sorted = executing_eagerly()
         if axis != 0: data = swapaxes(data, 0, axis)
@@ -154,8 +147,8 @@ def _segment_op_wrapper(segment_fn):
         
         return data
     
-    inner.__name__ = segment_fn.__name__
-    inner.__doc__  = segment_fn.__doc__
+    inner.__name__  = name or segment_fn.__name__
+    inner.__doc__   = segment_fn.__doc__
     return inner
 
 segment_sum = _segment_op_wrapper(segment_sum_op)
@@ -169,3 +162,9 @@ def segment_repeat(data, segment_ids, num_segments, axis = 0):
     if num_segments == 1:
         return repeat(data, shape(segment_ids)[0], axis = axis)
     return take(data, segment_ids, axis = axis)
+
+
+globals().update({
+    k : build_op(k, disable_np = True)
+    for k in _import_functions(keras.src.ops.math, globals())
+})

@@ -9,25 +9,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import numpy as np
+
 from .base_vectors_db import BaseVectorsDB
 from .dense_vectors import DenseVectors
 
+from utils.file_utils import load_data
 from utils.keras_utils import ops
 
-def build_vectors_db(vectors, data = None, *, mode = None, ** kwargs):
-    assert ops.is_array(vectors) and ops.rank(vectors) in (1, 2, 3)
-    if ops.ndim(vectors) == 1: vectors = ops.expand_dims(vectors, axis = 0)
+def build_vectors_db(data, vectors = None, primary_key = None, *, mode = None, ** kwargs):
+    if isinstance(data, str):
+        return load_vectors_db(data)
     
-    if mode is None:
-        if len(vectors.shape) == 2: mode = 'dense'
-        elif vectors.shape[2] == 1: mode = 'sparse'
-        else:                       mode = 'colbert'
+    if mode is None:    mode = 'dense'
     
     if mode == 'dense':
-        return DenseVectors(vectors, data = data, ** kwargs)
+        return DenseVectors(data, vectors = vectors, primary_key = primary_key, ** kwargs)
     elif mode == 'colbert':
         raise NotImplementedError()
     elif mode == 'sparse':
         raise NotImplementedError()
     else:
         raise ValueError('Unsupported vectors mode : {}'.format(mode))
+        
+def load_vectors_db(filename):
+    if not os.path.exists(filename): return None
+    
+    config = load_data(filename)
+    if isinstance(config, np.ndarray):  config = {'vectors' : config}
+    elif hasattr(config, 'to_dict'):    config = config.to_dict('list')
+    elif not config:    return None
+    
+    return DenseVectors(** config)

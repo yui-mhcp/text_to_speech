@@ -17,11 +17,7 @@ import functools
 
 from threading import Thread, Event, RLock
 
-from utils.keras_utils import ops, tree
-from utils.stream_utils import create_iterator
-from utils.generic_utils import get_enum_item
-from utils.parser import get_args, signature_to_str
-from utils.wrapper_utils import partial
+from . import locked_property, get_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,33 +33,6 @@ class Event(enum.IntEnum):
     STOP    = 3
 
 ITEM_EVENTS = (Event.ITEM, Event.APPEND)
-
-def locked_property(name):
-    def getter(self):
-        with self.mutex: return getattr(self, '_' + name)
-    
-    def setter(self, value):
-        with self.mutex: setattr(self, '_' + name, value)
-    
-    return property(fget = getter, fset = setter)
-
-def _item_to_str(it):
-    if isinstance(it, (list, tuple, dict)):
-        return tree.map_structure(_item_to_str, it)
-    elif ops.is_array(it):
-        return '<{} shape={} dtype={}>'.format(it.__class__.__name__, tuple(it.shape), it.dtype)
-    return it
-
-def _get_thread_name(generator, name):
-    if name is not None: return name
-    if hasattr(generator, 'name'): return generator.name
-    elif hasattr(generator, '__name__'): return generator.__name__
-    return None
-
-def _get_listener_name(listener):
-    if hasattr(listener, 'name'): return listener.name
-    elif hasattr(listener, '__name__'): return listener.__name__
-    else: return listener.__class__.__name__
 
 class Producer(Thread):
     """
@@ -112,12 +81,14 @@ class Producer(Thread):
                 Listeners are simple callables that are called in the class' thread.
                 A`consumer` is a `Producer`-subclass (automatically created if needed) which can therefore run in a separate thread.  
         """
-        Thread.__init__(self, name = _get_thread_name(generator, name), daemon = daemon)
+        from utils.stream_utils import create_iterator
+
+        Thread.__init__(self, name = get_name(generator, name, error = False), daemon = daemon)
 
         self.generator  = generator
         self._iterator  = create_iterator(self.generator, ** kwargs)
         
-        self.doc    = generator.__doc__ if not doc and hasattr(generator, '__doc__') else doc
+        self.doc    = doc or getattr(generator, '__doc__', '')
         
         self.run_main_thread    = run_main_thread
         self.raise_if_error     = raise_if_error
@@ -126,9 +97,9 @@ class Producer(Thread):
         self._listeners     = {}
 
         self.mutex  = RLock()
+        self._count = 0
         self._stopped   = False
         self._finished  = False
-        self._count = 0
         
         for event, listeners in [
             (Event.START, start_listener),
@@ -183,8 +154,7 @@ class Producer(Thread):
         self.on_start()
         for item in self:
             if self.stopped:
-                if hasattr(self, '_iterator') and hasattr(self._iterator, 'close'):
-                    self._iterator.close()
+                if hasattr(self._iterator, 'close'): self._iterator.close()
                 break
             self.on_item_produced(item)
         self.on_stop()
@@ -195,24 +165,92 @@ class Producer(Thread):
         return self
 
     def stop(self):
-        logger.debug('[STOP {}]'.format(self.name))
+        if logger.isEnabledFor(logging.DEBUG): logger.debug('[STOP {}]'.format(self.name))
         self.stopped = True
         
         if hasattr(self.generator, 'qsize') and self.generator.qsize() == 0:
             self.generator.put(None)
 
+    def join(self, * args, recursive = False, wakeup_timeout = 0.25, ** kwargs):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[JOIN {}] Waiting...'.format(self.name))
+        
+        if not self.run_main_thread:
+            if not kwargs.get('timeout', 1): kwargs.pop('timeout')
+            try:
+                while super().is_alive():
+                    super().join(timeout = kwargs.get('timeout', wakeup_timeout))
+                    if 'timeout' in kwargs: break
+            except KeyboardInterrupt:
+                logger.info('Thread stopped while being joined !')
+                self.stop()
+        
+        if recursive:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('[RECURSIVE JOIN {}] JOIN {} consumers'.format(
+                    self.name, len(self.item_listeners)
+                ))
+            for l, infos in self.item_listeners:
+                if 'consumer_class' not in infos: continue
+                infos['consumer_class'].join(* args, recursive = True, ** kwargs)
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[JOIN {}] Joined !'.format(self.name))
+
+    def on_start(self):
+        """ Function called when starting the thread """
+        if logger.isEnabledFor(logging.DEBUG): logger.debug('[STATUS {}] Start'.format(self.name))
+        for l, _ in self.start_listeners: l()
+
+    def on_stop(self):
+        """ Function called when stopping the thread """
+        self.finished = True
+        if logger.isEnabledFor(logging.DEBUG): logger.debug('[STATUS {}] Stop'.format(self.name))
+        for l, _ in self.stop_listeners: l()
+
+    def on_append(self, * args, ** kwargs):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[APPEND {}] {}'.format(self.name, _item_to_str(args)))
+        for l, _ in self.append_listeners: l(item)
+
+    def on_item_produced(self, item):
+        """ Function called when a new item is generated """
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[ITEM PRODUCED {}] {}'.format(self.name, _item_to_str(item)))
+
+        self._count += 1
+        
+        to_remove = []
+        for i, (consumer, infos) in enumerate(self.item_listeners):
+            try:
+                stopped = getattr(consumer, 'stopped', False)
+                if not stopped: consumer(item)
+            except Exception as e:
+                stopped     = isinstance(e, (StoppedException, StopIteration))
+                log_level   = logging.DEBUG if stopped else logging.ERROR
+                if logger.isEnabledFor(log_level):
+                    logger.log(log_level, '[CONSUMER {} {}] : consumer {}{}'.format(
+                        'STOPPED' if stopped else 'ERROR', self.name, infos['name'],
+                        '' if stopped else '\n  {}'.format(e)
+                    ))
+                if self.raise_if_error and not stopped:
+                    self.stop()
+                    raise e
+            
+            if stopped: to_remove.append(i)
+        
+        if to_remove:
+            for idx in reversed(to_remove): self.item_listeners.pop(idx)
+
+        if self.stop_no_more_listeners and to_remove and not self.item_listeners:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('[STATUS {}] no more consumers, stopping the thread'.format(self.name))
+            self.stop()
+
     def set_item_rate(self, item_rate):
         self._iterator.set_item_rate(item_rate)
         
-    def add_listener(self,
-                     listener,
-                     * args,
-                     
-                     event  = Event.ITEM,
-                     name   = None,
-
-                     ** kwargs
-                    ):
+    def add_listener(self, listener, * args, event = Event.ITEM, name = None, ** kwargs):
         """
             Add a `listener` (callable) called at the given `event`
             If the event is `item`, the first argument received is the produced item
@@ -220,27 +258,25 @@ class Producer(Thread):
             
             /!\ Listeners are executed in the Producer's thread so make sure to use `Consumer`'s running on separated threads to ensure a correct parallelization
         """
-        if listener is None: return
+        from utils import get_enum_item, get_args, signature_to_str, partial
         
-        if isinstance(listener, list):
+        if listener is None: return
+        elif isinstance(listener, list):
             for l in listener: self.add_listener(l, event = event)
             return
-        
-        if not callable(listener):
+        elif not callable(listener):
             raise ValueError('`listener` must be a callable ! Got type {}'.format(type(listener)))
 
         event = get_enum_item(event, Event)
+        if logger.isEnabledFor(logging.DEBUG):
+            if isinstance(listener, Producer) and event == Event.ITEM:
+                logger.debug('[LISTENER {}] consumer added !'.format(self.name))
+            else:
+                logger.debug('[LISTENER {}] listener added on `{}` event !'.format(
+                    self.name, event.name
+                ))
         
-        if isinstance(listener, Producer) and event == Event.ITEM:
-            logger.debug('[LISTENER {}] consumer added !'.format(self.name))
-        else:
-            logger.debug('[LISTENER {}] listener added on `{}` event !'.format(
-                self.name, Event(event).name
-            ))
-        
-        infos = {
-            'name' : _get_listener_name(listener) if name is None else name
-        }
+        infos = {'name' : get_name(listener, name)}
         
         if event in ITEM_EVENTS:
             try:
@@ -294,75 +330,6 @@ class Producer(Thread):
         if start and not consumer.is_alive(): consumer.start()
 
         return consumer
-    
-    def join(self, * args, recursive = False, wakeup_timeout = 0.2, ** kwargs):
-        logger.debug('[JOIN {}] Waiting...'.format(self.name))
-        if not self.run_main_thread:
-            try:
-                while super().is_alive():
-                    super().join(timeout = kwargs.get('timeout', wakeup_timeout))
-                    if 'timeout' in kwargs: break
-            except KeyboardInterrupt:
-                logger.info('Thread stopped while being joined !')
-                self.stop()
-        
-        if recursive:
-            logger.debug('[RECURSIVE JOIN {}] JOIN {} consumers'.format(
-                self.name, len(self.item_listeners)
-            ))
-            for l, infos in self.item_listeners:
-                if 'consumer_class' not in infos: continue
-                infos['consumer_class'].join(* args, recursive = True, ** kwargs)
-        logger.debug('[JOIN {}] Joined !'.format(self.name))
-    
-    def on_start(self):
-        """ Function called when starting the thread """
-        logger.debug('[STATUS {}] Start'.format(self.name))
-        for l, _ in self.start_listeners: l()
-
-    def on_stop(self):
-        """ Function called when stopping the thread """
-        logger.debug('[STATUS {}] Stop'.format(self.name))
-        self.finished = True
-        for l, _ in self.stop_listeners: l()
-
-    def on_append(self, * args, ** kwargs):
-        logger.debug('[APPEND {}] {}'.format(self.name, _item_to_str(args)))
-        for l, _ in self.append_listeners: l(item)
-
-    def on_item_produced(self, item):
-        """ Function called when a new item is generated """
-        logger.debug('[ITEM PRODUCED {}] {}'.format(self.name, _item_to_str(item)))
-
-        self._count += 1
-        
-        to_remove = []
-        consumers = self.item_listeners
-        for i, (consumer, infos) in enumerate(consumers):
-            try:
-                stopped = getattr(consumer, 'stopped', False)
-                if not stopped: consumer(item)
-            except Exception as e:
-                stopped = isinstance(e, (StoppedException, StopIteration))
-                logger.log(
-                    logging.DEBUG if stopped else logging.ERROR,
-                    '[CONSUMER {} {}] : consumer {}{}'.format(
-                        'STOPPED' if stopped else 'ERROR', self.name, infos['name'],
-                        '' if stopped else '\n  {}'.format(e)
-                    )
-                )
-                if self.raise_if_error and not stopped:
-                    self.stop()
-                    raise e
-            
-            if stopped: to_remove.append(i)
-        
-        if self.stop_no_more_listeners and consumers and len(to_remove) == len(consumers):
-            logger.debug('[STATUS {}] no more consumers, stopping the thread'.format(self.name))
-            self.stop()
-        
-        if to_remove:
-            for idx in reversed(to_remove): consumers.pop(idx)
     
     def plot(self, filename = None, name = None, view = True, graph = None,
              node_graph = None, node_id = 0, node_name = None, str_id = None):
@@ -426,4 +393,11 @@ class Producer(Thread):
             )
         
         return graph, str_id, next_id
-    
+def _item_to_str(it):
+    if isinstance(it, (list, tuple)):
+        return it.__class__(_item_to_str(i) for i in it)
+    elif isinstance(it, dict):
+        return {k : _item_to_str(v) for k, v in it.items()}
+    elif hasattr(it, 'shape') and hasattr(it, 'dtype'):
+        return '<{} shape={} dtype={}>'.format(it.__class__.__name__, tuple(it.shape), it.dtype)
+    return it

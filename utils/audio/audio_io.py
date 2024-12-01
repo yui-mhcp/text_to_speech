@@ -20,17 +20,16 @@ import numpy as np
 from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
+from .audio_player import AudioPlayer
+from .audio_recorder import AudioRecorder
 from loggers import timer, time_logger
 from utils.audio import audio_processing
 from utils.keras_utils import TensorSpec, ops, execute_eagerly
-from utils import StoppedException, Consumer, convert_to_str, dispatch_wrapper 
+from utils import convert_to_str, dispatch_wrapper 
 
 logger = logging.getLogger(__name__)
 
 MAX_DISPLAY_TIME = 600
-
-_player_lock    = threading.Lock()
-_audio_player   = None
 
 _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
 _pydub_ext  = ('m4a', 'ogg')
@@ -43,6 +42,71 @@ _write_ffmpeg_ext   = ()
 
 _load_fn    = {}
 _write_fn   = {}
+
+""" Streaming functions (microphone recording / speakers playing) """
+
+_audio_player   = None
+_audio_player_lock  = threading.Lock()
+_audio_player_buffer    = queue.Queue()
+
+def display_audio(filename, rate = None, play = False, ** kwargs):
+    """
+        Displays the audio with the `IPython.display.Audio` object, and returns `(rate, audio)`
+        The function internally calls `read_audio`, meaning that all processing can be applied before display (i.e. `kwargs` are forwarded to `read_audio`)
+    """
+    from IPython.display import Audio, display
+    
+    rate, audio = read_audio(filename, target_rate = rate, rate = rate, ** kwargs)
+    
+    display(Audio(audio[: int(MAX_DISPLAY_TIME * rate)], rate = rate, autoplay = play))
+    
+    return rate, audio
+
+def play_audio(audio, rate = None, blocking = True, raw = False, add_silence = True, ** kwargs):
+    """ Plays `audio` on speakers """
+    if isinstance(audio, str) or not raw:
+        rate, audio = read_audio(audio, target_rate = rate, rate = rate, ** kwargs)
+    
+    global _audio_player, _audio_player_lock, _audio_player_buffer
+    
+    with _audio_player_lock:
+        if _audio_player is None:
+            _audio_player = AudioPlayer(_audio_player_buffer, rate = rate, ** kwargs)
+        
+        if isinstance(audio, np.ndarray):
+            for s in range(0, len(audio), _audio_player.chunk_size):
+                _audio_player_buffer.put(audio[s : s + _audio_player.chunk_size])
+        else:
+            _audio_player_buffer.put(audio)
+        
+        if blocking:
+            event = threading.Event()
+            _audio_player_buffer.put(event)
+        
+        if add_silence:
+            _audio_player_buffer.put(None)
+
+        _audio_player.start()
+    
+    if blocking: event.wait()
+    
+def record_audio(** kwargs):
+    """ Plays `audio` on speakers """
+    recorder = AudioRecorder(** kwargs).start()
+    recorder.join()
+    return recorder.audio
+
+def stream_audio(audio = None, rate = None, callback = None, ** kwargs):
+    if audio is None: return record_audio(rate = rate, callback = callback, ** kwargs)
+    
+    rate, audio = read_audio(audio, target_rate = rate, rate = rate, ** kwargs)
+    
+    if callback is not None:
+        chunk_size = rate // kwargs.get('fps', 10)
+        for s in range(0, len(audio), chunk_size):
+            callback(audio[s : s + chunk_size])
+    
+    return audio
 
 """ Generic functions to load audio and mel """
 
@@ -140,54 +204,6 @@ def resample_file(filename, new_rate, filename_out = None, normalize = False, **
         return None
     
     return filename_out
-
-def get_audio_player(create = False):
-    def _play(audio, rate = None, event = None, ** kwargs):
-        import sounddevice as sd
-        
-        if isinstance(audio, str):
-            rate, audio = read_audio(audio, ** kwargs)
-        
-        sd.play(audio, rate, blocking = True, device = kwargs.get('device', None))
-        if event is not None: event.set()
-        time.sleep(0.1)
-    
-    def _finalize():
-        logger.info('Finalize audio player !')
-        global _audio_player, _player_lock
-        with _player_lock:
-            if _audio_player.stopped: _audio_player = None
-
-    global _audio_player, _player_lock
-    with _player_lock:
-        if create and (_audio_player is None or _audio_player.stopped):
-            _audio_player = Consumer(
-                _play, daemon = True, stop_listener = _finalize
-            ).start()
-        
-        return _audio_player
-
-def play_audio(audio, rate = None, blocking = True, ** kwargs):
-    event  = None if not blocking else threading.Event()
-    player = get_audio_player(create = True)
-    try:
-        player(audio, rate = rate, event = event, device = kwargs.get('device', None))
-        if blocking: event.wait()
-    except StoppedException:
-        return play_audio(audio, rate, blocking, ** kwargs)
-
-def display_audio(filename, rate = None, play = False, ** kwargs):
-    """
-        Displays the audio with the `IPython.display.Audio` object, and returns `(rate, audio)`
-        The function internally calls `read_audio`, meaning that all processing can be applied before display (i.e. `kwargs` are forwarded to `read_audio`)
-    """
-    from IPython.display import Audio, display
-    
-    rate, audio = read_audio(filename, target_rate = rate, rate = rate, ** kwargs)
-    
-    display(Audio(audio[: int(MAX_DISPLAY_TIME * rate)], rate = rate, autoplay = play))
-    
-    return rate, audio
 
 """
     Methods for audio loading (with optional processing in `read_audio`)

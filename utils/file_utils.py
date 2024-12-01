@@ -11,6 +11,7 @@
 
 import os
 import re
+import sys
 import glob
 import json
 import pickle
@@ -18,9 +19,12 @@ import logging
 import numpy as np
 
 from tqdm import tqdm
+from functools import wraps
 
-from .keras_utils import ops
-from .pandas_utils import is_dataframe
+try:
+    from .keras_utils.ops import is_tensor, convert_to_numpy
+except:
+    from keras.ops import is_tensor, convert_to_numpy
 from .generic_utils import to_json, convert_to_str
 from .wrapper_utils import dispatch_wrapper, partial
 
@@ -55,7 +59,7 @@ def expand_path(path, recursive = True, unix = True):
             - file(s)   : `list` of files or single file if `path` is a file
     """
     if '*' not in path:
-        if not os.path.isdir(path): return path
+        if not is_path(path) or not os.path.isdir(path): return path
         path = path + '/*'
     
     files = []
@@ -70,7 +74,7 @@ def expand_path(path, recursive = True, unix = True):
 
 def contains_index_format(path):
     """ Returns whether `path` has a `{}`, `{i}` or `{i:..d}` format """
-    return '{}' in path or _index_file_format_re.search(path) is not None
+    return path.count('{}') == 1 or _index_file_format_re.search(path) is not None
 
 def get_path_index(path):
     if '{}' in path: path = path.replace('{}', '*')
@@ -82,7 +86,8 @@ def format_path_index(path):
     return path.format(idx, i = idx)
 
 def sort_files(filenames):
-    if isinstance(filenames, str): filenames = expand_path(filename)
+    if isinstance(filenames, str):               filenames = expand_path(filename)
+    if not isinstance(filenames, (list, tuple)): filename = [filename]
     return sorted(filenames, key = lambda f: (len(f), f))
 
 def hash_file(filename):
@@ -102,16 +107,16 @@ def remove_path(data, path):
 
     if isinstance(data, str):
         data, path = path_to_unix(data), path_to_unix(path)
-        if not path.endswith('/'): prefix += '/'
+        if not path.endswith('/'): path += '/'
         return data[len(path):] if data.startswith(path) else data
+    elif isinstance(data, (list, tuple)):
+        return [remove_path(d, path) for d in data]
     elif isinstance(data, dict):
-        for col in data:
-            if 'filename' not in col: continue
-            data[col] = [remove_path(f, path) for f in data[col]]
-    elif isinstance(data, pd.DataFrame):
+        return {k : remove_path(v, path) if 'filename' in k else v for k, v in data.items()}
+    elif hasattr(data, 'columns'):
         for col in data.columns:
-            if 'filename' not in col: continue
-            data[col] = data[col].apply(lambda f: remove_path(f, path))
+            if 'filename' in col:
+                data[col] = data[col].apply(lambda f: remove_path(f, path))
     
     return data
 
@@ -191,6 +196,7 @@ def load_json(filename, default = {}, ** kwargs):
     """ Safely load data from a json file """
     if not filename.endswith('.json'): filename += '.json'
     if not os.path.exists(filename): return default
+    
     with open(filename, 'r', encoding = 'utf-8') as file:
         result = file.read()
     return json.loads(result)
@@ -212,12 +218,18 @@ def load_h5(filename, keys = None, ** kwargs):
     import h5py
     
     def get_data(v):
-        return v.asstr()[:] if v.dtype == object else np.array(v)
+        if v.dtype == object:
+            if len(v.shape) == 0:   return np.array(v).item().decode()
+            return v.asstr()[:]
+        v = np.array(v)
+        return v if v.ndim > 0 else v.item()
     
     def load_group(group):
         res = {}
         for k, v in group.items():
             if '\\' in k: k = k.replace('\\', '/')
+            if logger.isEnabledFor(logging.DEBUG) and not isinstance(v, h5py.Group):
+                logger.debug('Loading data for key {} : {}'.format(k, v))
             res[k] = get_data(v) if not isinstance(v, h5py.Group) else load_group(v)
         return res
 
@@ -241,6 +253,11 @@ def _pd_read_method(name, ** defaults):
     def wrapped(* args, ** kwargs):
         import pandas as pd
         return getattr(pd, name)(* args, ** {** defaults, ** kwargs})
+    
+    if 'pandas' in sys.modules:
+        import pandas as pd
+        wrapped = wraps(getattr(pd, name))(wrapped)
+    
     return wrapped
 
 load_data.dispatch(np.load, 'npy')
@@ -253,12 +270,12 @@ load_data.dispatch(_pd_read_method('read_pickle'), 'pdpkl')
 @dispatch_wrapper(_dump_file_fn, 'Filename extension')
 def dump_data(filename, data, overwrite = True, ** kwargs):
     """ Dumps `data` into `filename`. The saving function differ according to the extension. """
-    if ops.is_tensor(data): data = ops.convert_to_numpy(data)
+    if is_tensor(data): data = convert_to_numpy(data)
     ext = os.path.splitext(filename)[1][1:]
     
     if not ext:
         for types, default_ext in _default_ext.items():
-            if callable(types) and types(data):
+            if types.__class__.__name__ in ('function', 'method') and types(data):
                 filename, ext = '{}.{}'.format(filename, default_ext), default_ext
                 break
             elif isinstance(data, types):
@@ -281,6 +298,7 @@ def dump_data(filename, data, overwrite = True, ** kwargs):
 def dump_json(filename, data, ** kwargs):
     """ Safely save data to a json file """
     if not filename.endswith('.json'): filename += '.json'
+    
     data = json.dumps(to_json(data), ** kwargs)
     with open(filename, 'w', encoding = 'utf-8') as file:
         file.write(data)
@@ -289,23 +307,29 @@ def dump_json(filename, data, ** kwargs):
 def dump_h5(filename, data, mode = 'w', overwrite = False, ** kwargs):
     def _create_datasets(group, data):
         for k, v in data.items():
-            if '/' in k: k.replace(k, '/', '\\')
+            if v is None: continue
+            if '/' in k: k.replace('/', '\\')
             
             if isinstance(v, dict):
                 _create_datasets(group.create_group(k), v)
                 continue
             elif k in group and not overwrite:
                 continue
+            elif isinstance(v, list) and v and isinstance(v[0], list):
+                from .sequence_utils import pad_batch
+                v = pad_batch(v, pad_value = -1)
             elif not isinstance(v, np.ndarray):
-                v = ops.convert_to_numpy(v)
+                v = convert_to_numpy(v)
             
-            dtype = h5py.string_dtype() if not ops.is_numeric(v) else None
-            if dtype is not None: v = v.astype(dtype)
+            dtype = None
+            if 'str' in v.dtype.name or v.dtype == object:
+                dtype = h5py.string_dtype()
+                v = v.astype(dtype)
             group.create_dataset(k, data = v, dtype = dtype)
 
     import h5py
     
-    if is_dataframe(data): data = data.to_dict('list')
+    if hasattr(data, 'to_dict'): data = data.to_dict('list')
     
     with h5py.File(filename, mode) as file:
         _create_datasets(file, data)
@@ -350,5 +374,5 @@ _default_ext    = {
     str     : 'txt',
     (list, tuple, set, dict, int, float) : 'json',
     np.ndarray      : 'npy',
-    is_dataframe    : 'h5'
+    lambda x: hasattr(x, 'columns') : 'h5'
 }

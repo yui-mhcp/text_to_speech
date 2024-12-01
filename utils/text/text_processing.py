@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import keras
 import logging
 import numpy as np
 
@@ -17,9 +16,6 @@ from utils import convert_to_str, pad_batch
 from utils.keras_utils import TensorSpec, ops, graph_compile
 
 logger  = logging.getLogger(__name__)
-
-_max_length = 150
-_eos_chars  = ('...', '.', ' ?', ' !', '?', '!')
 
 def get_pairs(text, n = 2):
     """ Creates a n-gram """
@@ -203,117 +199,4 @@ def filter_texts(encoded_texts,
     
     if return_indices: return encoded_texts, lengths, np.where(valid_mask)[0]
     return encoded_texts, lengths
-
-def extract_sentence(text, pattern):
-    pattern = pattern.lower()
-    return [sent for sent in split_sentence(text) if pattern in sent.lower()]
-
-def split_sentence(text):
-    patterns = [pat + ' ' for pat in _eos_chars] + [pat + '\n' for pat in _eos_chars]
-    return [
-        (part.strip() + end_char).strip() for part, end_char in multi_split(text, * patterns)
-        if len(part.strip()) > 0
-    ]
-
-def split_and_join(text, pattern):
-    splitted = text.split(pattern)
-    for i in reversed(range(1, len(splitted))):
-        splitted.insert(i, pattern)
-    return splitted
-        
-def multi_split(text, * separators):
-    """
-        Split `text` based on multiple separators and returns a list of tuple (sub_text, sep)
-        Note that the last part is a tuple with an empty `sep` and a possibly empty `sub_text` (depending if `text` ends with a separator or not)
-    """
-    result = [(text, '')]
-    for sep in separators:
-        if sep not in text: continue
-        
-        new_result = []
-        for text, end_c in result:
-            parts = text.split(sep)
-            for sub_part in parts[:-1]:
-                new_result.append((sub_part, sep))
-            new_result.append((parts[-1], end_c))
-        result = new_result
-    return result
-    
-def simple_text_split(text, max_length = _max_length):
-    """
-        Split a text (word based) such that each part have at most 'max_length' characters
-    """
-    words = text.split()
-
-    parts = []
-    for word in words:
-        if len(parts) == 0 or len(parts[-1]) + len(word) > max_length:
-            parts.append(word)
-        else:
-            parts[-1] += ' ' + word
-    
-    return parts
-
-def split_text(text, max_length = _max_length):
-    """
-        Split a text such that each parts have at most 'max_length' characters. 
-        The split is based on different criteria : 
-        1) Split based on sentence ('_eos_chars' used as delimiters)
-        2) If sentences are longer than 'max_length', split them based on comma
-        3) If parts are still too long, split them on words
-    """
-    if isinstance(text, list):
-        return [split_text(t, max_length) for t in text]
-    
-    text = text.replace('\n', ' ').strip()
-    if len(text) == 0: return []
-    elif len(text) <= max_length: return [text]
-    
-    if text[-1] in _eos_chars: text += ' '
-
-    parts = []
-    for part, end_char in multi_split(text, * _eos_chars):
-        part = part.strip()
-        # Skip empty parts
-        if len(part) == 0: continue
-        
-        if len(part) <= max_length:
-            # If part <= max_length, directly add it
-            if len(parts) == 0 or len(parts[-1]) + len(part) > max_length:
-                parts.append(part + end_char)
-            else:
-                parts[-1] += ' ' + part + end_char
-        
-        elif ', ' in part:
-            # If part is longer but contains comma, split it based on commas
-            splitted_part = part.split(", ")
-            for i, sub_part in enumerate(splitted_part):
-                sub_part = sub_part.strip()
-                
-                end_sub_part = end_char if i == len(splitted_part) -1 else ","
-                if len(sub_part) <= max_length:
-                    if len(parts) == 0 or len(parts[-1]) + len(sub_part) > max_length:
-                        parts.append(sub_part + end_sub_part)
-                    else:
-                        parts[-1] += ' ' + sub_part + end_sub_part
-                else:
-                    sub_splitted = simple_text_split(sub_part, max_length)
-                    sub_splitted[-1] += end_sub_part
-                    for sub in sub_splitted:
-                        sub = sub.strip()
-                        if len(parts) == 0 or len(parts[-1]) + len(sub) > max_length:
-                            parts.append(sub)
-                        else:
-                            parts[-1] += ' ' + sub
-        else:
-            splitted_part = simple_text_split(part, max_length)
-            splitted_part[-1] += end_char
-            for sub_part in splitted_part:
-                sub_part = sub_part.strip()
-                if len(parts) == 0 or len(parts[-1]) + len(sub_part) > max_length:
-                    parts.append(sub_part)
-                else:
-                    parts[-1] += ' ' + sub_part
-    
-    return [p for p in parts if len(p) > 0]
 

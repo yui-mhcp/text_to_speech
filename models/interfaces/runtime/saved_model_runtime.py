@@ -14,42 +14,53 @@ import logging
 
 from functools import cached_property
 
-from .. import ops
 from loggers import timer
-from .compiled_function import CompiledFunction, _inp_to_str, get_args, get_kwargs, get_annotations
+from .runtime import Runtime
+from utils.keras_utils import ops
+from utils import time_to_string, get_args, get_kwargs, get_annotations, args_to_str
 
 logger  = logging.getLogger(__name__)
 
-class SavedModelFunction(CompiledFunction):
-    def __init__(self, fn, ** kwargs):
-        kwargs.update({
-            'force_tensorflow'  : True,
-            'internal_functions'    : None
-        })
-        if isinstance(fn, str):
-            import tensorflow as tf
-            fn = tf.saved_model.load(fn)
+class SavedModelRuntime(Runtime):
+    def __init__(self,
+                 * args,
+                 
+                 prepare    = None,
+                 prepare_for_xla    = None,
+                 prepare_for_graph  = None,
+                 
+                 prefer_xla = False,
+                 
+                 ** kwargs
+                ):
+        super().__init__(* args, ** kwargs)
         
-        super().__init__(fn, ** kwargs)
+        self.prepare    = prepare
+        self.prepare_for_xla    = prepare_for_xla
+        self.prepare_for_graph  = prepare_for_graph
+        
+        self.prefer_xla = prefer_xla
         
         self.signatures = {
             k : v.structured_input_signature[1]
-            for k, v in self.fn.signatures.items()
-            if hasattr(self.fn, k)
+            for k, v in self.engine.signatures.items()
+            if hasattr(self.engine, k)
         }
         
-        if hasattr(self.fn, 'serve'):
-            self._default = self.fn.serve
+        if hasattr(self.engine, 'serve'):
+            self._default = self.engine.serve
         else:
-            self._default = getattr(self.fn, list(self.signatures.keys())[0])
+            self._default = getattr(self.engine, list(self.signatures.keys())[0])
         
         self.default_kwargs = tuple(get_kwargs(self._default).items())
         self.static_kwargs  = set(self.default_kwargs.keys())
+        
+        self.xla_compiled   = {}
     
     @property
     def endpoints(self):
         return {
-            name : getattr(self.fn, name) for name in self.signatures
+            name : getattr(self.engine, name) for name in self.signatures
         }
 
     @cached_property
@@ -60,18 +71,26 @@ class SavedModelFunction(CompiledFunction):
     def kwargs(self):
         return get_kwargs(self._default)
     
-    @property
-    def supports_kwargs(self):
-        return False
+    @cached_property
+    def arg_names(self):
+        return set(list(self.args) + list(self.kwargs.keys()))
     
     @cached_property
     def input_names(self):
         return [arg for arg in self.args if arg not in self.kwargs]
     
     @cached_property
+    def prepare_fn_kwargs(self):
+        p_args = [] if self.prepare is None else list(get_kwargs(self.prepare).keys())
+        g_args = [] if self.prepare_for_graph is None else list(get_kwargs(self.prepare_for_graph).keys())
+        x_args = [] if self.prepare_for_xla is None else list(get_kwargs(self.prepare_for_xla).keys())
+        
+        return set(p_args + g_args + x_args)
+    
+    @cached_property
     def endpoint_kwargs(self):
         infos = {
-            name : (get_kwargs(getattr(self.fn, name)), signature)
+            name : (get_kwargs(getattr(self.engine, name)), signature)
             for name, signature in self.signatures.items()
         }
         
@@ -90,20 +109,22 @@ class SavedModelFunction(CompiledFunction):
         return endpoints
     
     def __repr__(self):
-        return '<SavedModel endpoints={}>'.format(tuple(self.endpoints.keys()))
+        return '<SavedModel runtime path={} endpoints={}>'.format(
+            self.path, tuple(self.endpoints.keys())
+        )
     
-    def __call__(self, * args, run_eagerly = None, use_xla = None, recompile = False, ** kwargs):
-        if run_eagerly:     raise ValueError('`saved_model` functions cannot be executed eagerly')
+    @timer(name = 'SavedModel runtime inference')
+    def __call__(self, * args, use_xla = None, recompile = False, ** kwargs):
         if use_xla is None: use_xla = self.prefer_xla
         
-        _, prep_kwargs, inputs = self.prepare_inputs(args, kwargs)
+        prep_kwargs, inputs = self.prepare_inputs(args, kwargs)
         
         if self.prepare is not None:
-            inputs = self.prepare(** inputs)
+            inputs = self.prepare(** {** prep_kwargs, ** inputs})
         if self.prepare_for_graph is not None:
-            inputs = self.prepare_for_graph(** inputs)
+            inputs = self.prepare_for_graph(** {** prep_kwargs, ** inputs})
         if use_xla and self.prepare_for_xla is not None:
-            inputs = self.prepare_for_xla(** inputs)
+            inputs = self.prepare_for_xla(** {** prep_kwargs, ** inputs})
         
         static_kwargs = {k : v for k, v in inputs.items() if k in self.static_kwargs}
         inputs        = {arg : inputs[arg] for arg in self.input_names}
@@ -114,22 +135,37 @@ class SavedModelFunction(CompiledFunction):
             k : ops.convert_to_tf_tensor(v, signature[k].dtype) for k, v in inputs.items()
         }
 
-        endpoint = getattr(self.fn, name)
+        endpoint = getattr(self.engine, name)
         
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('The endpoint {} is executed with {}'.format(name, _inp_to_str(inputs)))
+            logger.debug('The endpoint {} is executed with {}'.format(
+                name, args_to_str(kwargs = inputs)
+            ))
 
         if not use_xla or not ops.executing_eagerly():
             return endpoint(** inputs)
 
-        if recompile or name not in self._compiled:
+        if recompile or name not in self.xla_compiled:
             import tensorflow as tf
             
             self._compiled[name] = timer(
                 tf.function(endpoint, jit_compile = True), name = 'xla_{}'.format(name)
             )
 
-        return self._compiled[name](** inputs)
+        return self.xla_compiled[name](** inputs)
+
+    def prepare_inputs(self, args, kwargs):
+        args_dict   = {name : arg for name, arg in zip(self.args, args)}
+        prep_kwargs = {k : v for k, v in kwargs.items() if k in self.prepare_fn_kwargs}
+        
+        unsupported = set(kwargs.keys()) - self.arg_names
+        if unsupported:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('Removing kwargs {}'.format(unsupported))
+            for k in unsupported: kwargs.pop(k)
+        
+        kwargs.update(args_dict)
+        return prep_kwargs, kwargs
 
     def find_endpoint(self, inputs, static_kwargs):
         candidates = self.endpoint_kwargs
@@ -165,7 +201,15 @@ class SavedModelFunction(CompiledFunction):
                 inputs = {k : tf.zeros(v.shape, dtype = v.dtype) for k, v in sign.items()}
                 self(** inputs, use_xla = use_xla)
                 
-                logger.info('Endpoint {} compiled in {:.3f} sec'.format(name, time.time() - t0))
+                logger.info('Endpoint {} compiled in {:.3f} sec'.format(
+                    name, time_to_string(time.time() - t0)
+                ))
+    
+    @staticmethod
+    def load_engine(directory, ** _):
+        import tensorflow as tf
+        
+        return tf.saved_model.load(directory)
 
 def is_compatible_with(s1, s2):
     if isinstance(s1, dict):

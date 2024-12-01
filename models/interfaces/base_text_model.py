@@ -49,6 +49,7 @@ class BaseTextModel(BaseModel):
     
     @property
     def is_encoder_decoder(self):
+        if self.runtime == 'trt_llm': return self.model.is_enc_dec
         return getattr(self.model, 'decoder', None) is not None
 
     @property

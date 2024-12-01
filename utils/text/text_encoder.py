@@ -26,7 +26,8 @@ from utils.keras_utils import TensorSpec, execute_eagerly, ops
 from utils.text import cleaners as cleaners_module
 from .ctc_decoder import ctc_decode
 from .byte_pair_encoding import bytes_to_unicode, bpe
-from .text_processing import split_sentence, split_and_join, filter_texts, process_model_output
+from .text_processing import filter_texts, process_model_output
+from .text_splitter import split_sentences, split_and_join
 
 logger  = logging.getLogger(__name__)
 
@@ -890,7 +891,7 @@ class TextEncoder(object):
             )
         else:
             text    = self.clean_text(text)
-            sentences   = split_sentence(text)
+            sentences   = split_sentences(text)
             encoded_sentences   = [self.encode(
                 sent, cleaned = True, add_sos_and_eos = False, return_type = 'list', ** kwargs
             ) for sent in sentences]

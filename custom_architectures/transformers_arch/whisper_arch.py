@@ -341,7 +341,6 @@ def load_whisper(pretrained_name = 'medium', pretrained = None, ** kwargs):
                 'n_text_head'  : pretrained.config.decoder_attention_heads
             }
         }
-        print(state_dict['dims'])
     
     return state_dict
 

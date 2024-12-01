@@ -24,6 +24,7 @@ def convert_to_list(data, rank = None):
     if isinstance(data, list):              return data
     elif is_dataframe(data):                return data.to_dict('records')
     elif isinstance(data, (dict, str)):     return [data]
+    elif isinstance(data, (set, tuple)):    return list(data)
     elif ops.is_array(data):
         if rank is None:    return data
         r = ops.rank(data)
@@ -35,7 +36,7 @@ def convert_to_list(data, rank = None):
 
 def stack_batch(batch, pad_value = 0., dtype = 'float32', maybe_pad = False):
     if len(batch) == 1: return ops.expand_dims(batch[0], axis = 0)
-    elif maybe_pad and len(set(tuple(b.shape) for b in batch)):
+    elif maybe_pad and len(set(tuple(b.shape) for b in batch)) > 1:
         return ops.cast(pad_batch(batch, dtype = dtype, pad_value = pad_value), dtype)
     return ops.stack(batch, axis = 0)
 
@@ -55,23 +56,26 @@ def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
     """
     if len(batch) == 0: return batch
     if not hasattr(batch[0], 'shape'):
-        if not isinstance(batch[0], list): return np.array(batch)
-        batch = [np.array(b) for b in batch]
+        if not isinstance(batch[0], list): return np.array(batch, dtype = dtype)
+        batch = [pad_batch(b, pad_value = pad_value, dtype = dtype) for b in batch]
     
-    if dtype is None: dtype = ops.dtype_to_str(batch[0].dtype)
+    if dtype is None:   dtype = ops.dtype_to_str(batch[0].dtype)
+    else:               dtype = ops.dtype_to_str(dtype)
+    if 'str' in dtype and not isinstance(pad_value, str): pad_value = ''
     
     ndim = len(batch[0].shape)
     assert all(len(b.shape) == ndim for b in batch)
     
     max_shape = np.max(np.array([b.shape for b in batch], dtype = np.int32), axis = 0).tolist()
-    if max_length is not None: max_shape[0] = min(max_shape[0], max_length)
+    if max_length: max_shape[0] = min(max_shape[0], max_length)
     
-    padded_batch = np.full([len(batch)] + max_shape, pad_value).astype(dtype)
+    padded_batch = np.full([len(batch)] + max_shape, pad_value)
+    padded_batch = padded_batch.astype(dtype if 'str' not in dtype else object)
     for i, b in enumerate(batch):
-        slices = (i, ) + tuple([
+        slices = tuple([
             slice(0, min(s, max_l)) for s, max_l in zip(b.shape, max_shape)
         ])
-        padded_batch[slices] = b[slices[1:]]
+        padded_batch[(i, ) + slices] = b[slices]
     
     return padded_batch
 
@@ -94,7 +98,9 @@ def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
                 should_pad  = True
                 pad     = mul - rest
         
-        if pad_mode == 'before':
+        if pad == 0:
+            padding = (0, 0)
+        elif pad_mode == 'before':
             padding = (pad, 0)
         elif pad_mode == 'after':
             padding = (0, pad)
@@ -126,8 +132,13 @@ def apply_on_batch(fn = None,
         def batched_fn(*,
                        
                        batch_size   = default_batch_size,
+                       
+                       reorder  = True,
                        return_inputs    = False,
+                       initial_results  = None,
+                       
                        tqdm = None,
+                       
                        ** kwargs
                       ):
             if not isinstance(batched_argname, (list, tuple)):
@@ -141,11 +152,14 @@ def apply_on_batch(fn = None,
             if tqdm is None: tqdm = lambda x: x
             
             if isinstance(batched_argname, str):
-                inputs = _to_iterable(kwargs.pop(batched_argname))
+                inputs = _to_iterable(kwargs[batched_argname])
                 length = len(inputs)
             else:
-                inputs = {n : _to_iterable(kwargs.pop(n)) for n in batched_argname}
+                inputs = {n : _to_iterable(kwargs[n]) for n in batched_argname}
                 length = len(inputs[batched_argname[0]])
+            
+            if length <= batch_size: return fn(** kwargs)
+            
             
             if sort_key is not None:
                 if is_dataframe(inputs):
@@ -158,9 +172,8 @@ def apply_on_batch(fn = None,
                         range(length), key = lambda i: sort_key(inputs[i]), reverse = True
                     )
                     inputs = [inputs[idx] for idx in sorted_indexes]
-                invert_indexes = np.argsort(np.array(sorted_indexes, dtype = 'int32'))
             
-            results = None
+            results = initial_results
             for idx in tqdm(range(0, length, batch_size)):
                 if isinstance(batched_argname, (list, tuple)):
                     kwargs.update(_get_batch(inputs, idx, batch_size))
@@ -176,7 +189,8 @@ def apply_on_batch(fn = None,
             else:
                 results = nested_concat(results, axis = concat_axis)
             
-            if sort_key is not None:
+            if len(inputs) > 1 and sort_key is not None and reorder and initial_results is None:
+                invert_indexes = np.argsort(np.array(sorted_indexes, dtype = 'int32'))
                 results = nested_gather(results, invert_indexes, axis = concat_axis)
             
             return results

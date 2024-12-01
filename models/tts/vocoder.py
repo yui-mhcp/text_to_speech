@@ -28,14 +28,12 @@ class Vocoder(object):
         self.__vocoder      = None
     
     def set_synthesizer(self, model):
-        if isinstance(model, BaseModel):
-            self.__synthesizer = model
-        elif isinstance(model, str):
+        if isinstance(model, str):
             from models import get_pretrained
 
             self.__synthesizer = get_pretrained(model)
         else:
-            raise ValueError("Unknown synthesizer type : {}\n  {}".format(type(model), model))
+            self.__synthesizer = model
 
     def set_vocoder(self, model = None, model_class = None):
         if  model is None:
@@ -46,10 +44,8 @@ class Vocoder(object):
             from models import get_pretrained
 
             self.__vocoder = get_pretrained(model)
-        elif isinstance(model, BaseModel):
-            self.__vocoder = model
         else:
-            raise ValueError("Unknown vocoder type : {}\n  {}".format(type(model), model))
+            self.__vocoder = model
     
     @property
     def synthesizer(self):

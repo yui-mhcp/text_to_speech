@@ -45,7 +45,7 @@ class Invertible1x1Conv(keras.layers.Layer):
 
         W_inverse = K.transpose(K.inv(W))
         self.W_inverse = K.expand_dims(W_inverse, axis = 0)
-        
+
     def call(self, inputs, reverse = False):
         if reverse:
             return K.conv(inputs, self.W_inverse, padding = 'same')

@@ -36,7 +36,9 @@ class WaveglowBlock(keras.Model):
                  n_layers       = 8,
                  n_channels     = 256,
                  kernel_size    = 3,
-                 ** kwargs):
+                 fused          = False,
+                 ** kwargs
+                ):
         super().__init__(** kwargs)
         
         assert(kernel_size % 2 == 1)
@@ -47,6 +49,7 @@ class WaveglowBlock(keras.Model):
         self.n_layers       = n_layers
         self.n_channels     = n_channels
         self.kernel_size    = kernel_size
+        self.fused          = fused
         
         self.in_layers          = []
         self.res_skip_layers    = []
@@ -59,6 +62,10 @@ class WaveglowBlock(keras.Model):
         self.end = layers.Conv1D(
             2 * n_in_channels, 1, kernel_initializer = 'zeros', name = 'end_conv'
         )
+        if self.fused:
+            self.cond_layer = layers.Conv1D(
+                2 * n_channels * n_layers, 1, name = 'cond_layer'
+            )
 
         for i in range(n_layers):
             dilation = 2 ** i
@@ -66,12 +73,12 @@ class WaveglowBlock(keras.Model):
             self.in_layers.append(layers.Conv1D(
                 2 * n_channels,
                 kernel_size = kernel_size,
-                padding     = 'same',
+                padding     = 'valid',
                 dilation_rate   = dilation,
                 name    = f'in_conv-{i}'
             ))
-
-            self.cond_layers.append(layers.Conv1D(2 * n_channels, 1, name = f'cond_layer-{i}'))
+            if not self.fused:
+                self.cond_layers.append(layers.Conv1D(2 * n_channels, 1, name = f'cond_layer-{i}'))
 
             # last one is not necessary
             res_skip_channels = 2 * n_channels if i < n_layers - 1 else n_channels
@@ -85,10 +92,12 @@ class WaveglowBlock(keras.Model):
         audio_shape, spect_shape = input_shape
         
         self.start.build(audio_shape)
+        if self.fused:
+            self.cond_layer.build(spect_shape)
         
         for i in range(self.n_layers):
             self.in_layers[i].build((None, None, self.n_channels))
-            self.cond_layers[i].build(spect_shape)
+            if not self.fused: self.cond_layers[i].build(spect_shape)
             self.res_skip_layers[i].build((None, None, self.n_channels))
         
         self.end.build((None, None, self.n_channels))
@@ -97,13 +106,25 @@ class WaveglowBlock(keras.Model):
         audio, spect = forward_input
         
         audio = self.start(audio)
+        if self.fused: spect = self.cond_layer(spect)
 
         for i in range(self.n_layers):
-            acts = add_tanh_sigmoid_multiply(
-                self.in_layers[i](audio),
-                self.cond_layers[i](spect),
-                self.n_channels
-            )
+            dilation = 2 ** i
+            pad_half = (self.kernel_size * dilation - dilation) // 2
+            
+            padding = [(0, 0), (pad_half, pad_half), (0, 0)]
+            if self.fused:
+                acts = add_tanh_sigmoid_multiply(
+                    self.in_layers[i](K.pad(audio, padding)),
+                    spect[:, :, i * 2 * self.n_channels : (i + 1) * 2 * self.n_channels],
+                    self.n_channels
+                )
+            else:
+                acts = add_tanh_sigmoid_multiply(
+                    self.in_layers[i](K.pad(audio, padding)),
+                    self.cond_layers[i](spect),
+                    self.n_channels
+                )
 
             res_skip_acts = self.res_skip_layers[i](acts)
             if i < self.n_layers - 1:
@@ -129,7 +150,8 @@ class WaveglowBlock(keras.Model):
         
             'n_layers'       : self.n_layers,
             'n_channels'     : self.n_channels,
-            'kernel_size'    : self.kernel_size
+            'kernel_size'    : self.kernel_size,
+            'fused'          : self.fused,
         }
         return config
     
@@ -150,6 +172,9 @@ class WaveGlow(keras.Model):
                  n_layers       = 8,
                  n_channels     = 512,
                  kernel_size    = 3,
+
+                 fused = False,
+                 
                  ** kwargs
                 ):
         super().__init__(** kwargs)
@@ -193,6 +218,7 @@ class WaveGlow(keras.Model):
                 n_layers    = n_layers,
                 n_channels  = n_channels,
                 kernel_size = kernel_size,
+                fused       = fused,
                 name    = f'block-{k}'
             ))
         
@@ -212,28 +238,36 @@ class WaveGlow(keras.Model):
             if k % self.n_early_every == 0 and k > 0:
                 channels += self.n_early_size
 
-    def call(self, inputs, training = False):
-        return self.infer(inputs)
+    def call(self, inputs, z = None, sigma = 1.):
+        return self.infer(inputs, z, sigma)
     
-    def infer(self, inputs, sigma = 1.0, deterministic = False):
+    def infer(self, inputs, z = None, sigma = 1.0, deterministic = False):
         spect = self.upsample(inputs)
         # trim conv artifacts. maybe pad spec to kernel multiple
         time_cutoff = self.upsample.kernel_size[0] - self.upsample.strides[0]
         spect = spect[:, :-time_cutoff, :]
 
-        spect = keras.ops.image.extract_patches(
-            K.expand_dims(spect, -1),
-            size    = (self.n_group, 1),
-            strides = (self.n_group, 1),
-            dilation_rate   = 1,
-            padding = 'valid'
-        )
-        spect = K.reshape(spect, [K.shape(spect)[0], K.shape(spect)[1], -1])
+        length_spect_group = K.shape(spect)[1] // self.n_group
+        spect = K.reshape(spect, (K.shape(spect)[0], length_spect_group, self.n_group, self.n_mel_channels))
+        spect = K.transpose(spect, [0, 1, 3, 2])
+        spect = K.reshape(spect, (K.shape(spect)[0], length_spect_group, self.n_group * self.n_mel_channels))
+
+        #spect = keras.ops.image.extract_patches(
+        #    K.expand_dims(spect, -1),
+        #    size    = (self.n_group, 1),
+        #    strides = (self.n_group, 1),
+        #    dilation_rate   = 1,
+        #    padding = 'valid'
+        #)
+        #spect = K.reshape(spect, [K.shape(spect)[0], K.shape(spect)[1], -1])
         
         if deterministic:
             noise = keras.ops.zeros([
                 K.shape(spect)[0], K.shape(spect)[1], self.n_remaining_channels
             ])
+        elif z is not None:
+            noise = z[:, :, :self.n_remaining_channels]
+            z = z[:, :, self.n_remaining_channels : self.n_group]
         else:
             noise = keras.random.normal([
                 K.shape(spect)[0], K.shape(spect)[1], self.n_remaining_channels
@@ -257,14 +291,17 @@ class WaveGlow(keras.Model):
 
             if k % self.n_early_every == 0 and k > 0:
                 if deterministic:
-                    z = keras.ops.zeros([
+                    z_i = keras.ops.zeros([
                         K.shape(spect)[0], K.shape(spect)[1], self.n_early_size
                     ])
+                elif z is not None:
+                    z_i = z[:, :, : self.n_early_size]
+                    z = z[:, :, self.n_early_size : self.n_group]
                 else:
-                    z = keras.random.normal([
+                    z_i = keras.random.normal([
                         K.shape(spect)[0], K.shape(spect)[1], self.n_early_size
                     ], seed = self.seed_generator)
-                audio = K.concatenate([sigma * z, audio], axis = 2)
+                audio = K.concatenate([sigma * z_i, audio], axis = 2)
         
         return K.reshape(audio, [K.shape(audio)[0], -1])
     

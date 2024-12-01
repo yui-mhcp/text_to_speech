@@ -210,9 +210,9 @@ class BaseEncoderModel(BaseModel):
             )
         
         with time_logger.timer('embedding'):
-            out = encoder(inputs, return_mask = True, as_dict = True, ** kwargs)
+            out = encoder(inputs, return_mask = True, as_dict = True)
             if to_numpy:
-                if ops.is_tensor(out):
+                if not isinstance(out, (tuple, dict)):
                     out = ops.convert_to_numpy(out)
                 else:
                     out = tree.map_structure(ops.convert_to_numpy, out)
@@ -230,13 +230,24 @@ class BaseEncoderModel(BaseModel):
             for k, v in embeddings.items():
                 try:
                     embeddings[k] = build_vectors_db(
-                        v, mode = k, data = data, mask = out.mask, inputs = inputs, model = self
+                        vectors = embeddings[k],
+                        mode    = k,
+                        data    = data,
+                        mask    = out.mask,
+                        inputs  = inputs,
+                        model   = self,
+                        ** kwargs
                     )
                 except Exception as e:
                     embeddings[k] = v
         elif return_raw is False:
             embeddings = build_vectors_db(
-                embeddings, data = data, mask = out.mask, inputs = inputs, model = self
+                vectors = embeddings,
+                data    = data,
+                mask    = out.mask,
+                inputs  = inputs,
+                model   = self,
+                ** kwargs
             )
         
         return embeddings

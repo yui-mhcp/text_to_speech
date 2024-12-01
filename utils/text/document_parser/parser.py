@@ -111,7 +111,7 @@ def parse_document(filename,
             if not documents: documents = paragraphs
             elif isinstance(documents, list): documents.extend(paragraphs)
             else: documents.update(paragraphs)
-        return documents
+        return documents if documents is not None else []
     
     ext = filename.split('.')[-1]
     
@@ -125,9 +125,13 @@ def parse_document(filename,
     elif extract_images is False:
         image_folder = None
     
-    paragraphs = _parsing_methods[ext](
-        filename, image_folder = image_folder, ** kwargs
-    )
+    try:
+        paragraphs = _parsing_methods[ext](
+            filename, image_folder = image_folder, ** kwargs
+        )
+    except Exception as e:
+        logger.warning('An exception occured while loading {} : {}'.format(filename, e))
+        return []
     
     if isinstance(paragraphs, dict):
         _paragraphs = []

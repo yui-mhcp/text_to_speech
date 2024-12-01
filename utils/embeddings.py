@@ -25,7 +25,7 @@ from .keras_utils import TensorSpec, ops, graph_compile
 logger = logging.getLogger(__name__)
 
 _embeddings_file_ext    = {'.csv', '.npy', '.pkl', 'pdpkl', '.embeddings.h5', '.h5'}
-_default_embeddings_ext = '.embeddings.h5'
+_default_embeddings_ext = '.h5'
 
 def get_embeddings_file_ext(filename):
     """ Returns a valid extension for `filename` such that `filename + ext` exists """

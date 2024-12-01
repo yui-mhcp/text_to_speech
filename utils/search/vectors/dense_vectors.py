@@ -9,19 +9,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
+
 from .base_vectors_db import BaseVectorsDB
 from utils.keras_utils import ops
 
 class DenseVectors(BaseVectorsDB):
     @property
-    def shape(self):
-        return self.vectors.shape
+    def vectors_dim(self):
+        return self.vectors.shape[1]
     
     def append_vectors(self, vectors):
-        self.vectors = ops.concat([self.vectors, vectors], axis = 0)
+        if self.vectors is None: self.vectors = vectors
+        else:   self.vectors = ops.concat([self.vectors, vectors], axis = 0)
+
+    def update_vectors(self, indices, vectors):
+        self.vectors = ops.scatter_update(self.vectors, np.array(indices).reshape(-1, 1), vectors)
     
-    def top_k(self, query, k = 10, ** kwargs):
-        scores  = self.compute_scores(query, ** kwargs)
+    def get_vectors(self, indices):
+        return ops.take(self.vectors, indices, axis = 0)
+    
+    def top_k(self, inputs, k = 10, ** kwargs):
+        scores  = self.compute_scores(inputs, ** kwargs)
         
         scores, indices = ops.top_k(scores, k)
         return indices, scores

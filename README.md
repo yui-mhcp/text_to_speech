@@ -88,10 +88,7 @@ You can also find some audio generated in `example_outputs/`, or directly in the
 
 ### Installation and usage
 
-1. Clone this repository : `git clone https://github.com/yui-mhcp/text_to_speech.git`
-2. Go to the root of this repository : `cd text_to_speech`
-3. Install requirements : `pip install -r requirements.txt`
-4. Open `text_to_speech` notebook and follow the instruction !
+Check [this installagion guide](https://github.com/yui-mhcp/yui-mhcp/blob/main/INSTALLATION.md) for the step-by-step instructions !
 
 You may have to install `ffmpeg` for audio loading / saving.
 

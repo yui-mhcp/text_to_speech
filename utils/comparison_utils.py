@@ -12,9 +12,10 @@
 import os
 import numpy as np
 
-from .keras_utils import ops, tree
-from .file_utils import load_data, _load_file_fn
-from .generic_utils import is_function
+try:
+    from .keras_utils import ops, tree
+except:
+    from keras import ops, tree
 
 def is_in(target, value, nested_test = False, ** kwargs):
     if nested_test:
@@ -66,7 +67,7 @@ def compare(target, value, ** kwargs):
     )
     
     for t, compare_fn in _comparisons.items():
-        if is_function(t) and t(target):
+        if t.__class__.__name__ in ('function', 'method') and t(target):
             compare_fn(target, value, ** kwargs)
         elif isinstance(t, (type, tuple)) and isinstance(target, t):
             compare_fn(target, value, ** kwargs)
@@ -266,6 +267,8 @@ def compare_base_model(target, value, ** kwargs):
     assert eq, 'Models {} and {} differ : {}'.format(target, value, msg)
 
 def _load_file(filename):
+    from .file_utils import _load_file_fn, load_data
+    
     assert os.path.exists(filename), "Filename {} does not exist !".format(filename)
 
     ext = os.path.splitext(filename)[1][1:]

@@ -108,9 +108,12 @@ class WaveGlow(BaseModel):
               *,
               win_len   = None,
               hop_len   = -64,
+              force_pad = None,
+              
               batch     = False,
               use_slice = False,
               max_win_len   = None,
+              
               ** kwargs
              ):
         if isinstance(mel, str):    mel = np.load(mel)
@@ -132,6 +135,9 @@ class WaveGlow(BaseModel):
         kwargs['padding_multiple'] = win_len
         
         if seq_len <= win_len:
+            if force_pad is None: force_pad = self.runtime == 'keras'
+            if not force_pad: return self.compiled_infer(mel)
+            
             win_len = max(win_len, seq_len)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('Padding mel with shape {} to {} frames'.format(
@@ -163,10 +169,12 @@ class WaveGlow(BaseModel):
 
         if batch:
             audio_parts = self.compiled_infer(ops.concatenate(parts, axis = 0), ** kwargs)
+            audio_parts = ops.convert_to_numpy(audio_parts)
         else:
             audio_parts = [
                 self.compiled_infer(p, ** kwargs)[0] for p in parts
             ]
+            audio_parts = [ops.convert_to_numpy(a) for a in audio_parts]
 
         audio = []
         for i, part in enumerate(audio_parts):

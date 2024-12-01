@@ -122,6 +122,7 @@ def create_stream(fn,
                   logger    = None,
                   return_results    = False,
                   dict_as_kwargs    = True,
+                  
                   ** kwargs
                  ):
     """
@@ -159,13 +160,20 @@ def create_stream(fn,
     results = [] if return_results else None
     for data in create_iterator(stream, timeout = timeout):
         if isinstance(data, str) and data == KEEP_ALIVE: continue
-        if dict_as_kwargs and isinstance(data, dict):
-            res = fn(** {** kwargs, ** data})
+        
+        inp = data if not hasattr(data, 'data') else data.data
+        if dict_as_kwargs and isinstance(inp, dict):
+            res = fn(** {** kwargs, ** inp})
         else:
-            res = fn(data, ** kwargs)
+            res = fn(inp, ** kwargs)
         
         if return_results: results.append(res)
-        if callback is not None: callback(res)
+        if callback is not None:
+            if not hasattr(data, 'data'):
+                callback(res)
+            else:
+                data.result = res
+                callback(data)
     
     if stop_callback is not None: stop_callback()
     

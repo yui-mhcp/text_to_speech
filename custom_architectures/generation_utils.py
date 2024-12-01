@@ -388,7 +388,7 @@ def infer_beam_search(self,
         finished    = K.take(loop_state.finished, beam_index, axis = 0)
         
         logits_with_scores  = K.take(logits_with_scores, beam_index, axis = 0)
-        scores      = K.take_along_axis(logits_with_scores, next_token[:, None], axis = 1)[:, 0]
+        scores      = ops.take_along_axis(logits_with_scores, next_token[:, None], axis = 1)[:, 0]
         
         next_token  = K.where(finished, self.pad_token, next_token)
 
@@ -584,13 +584,13 @@ def select_next_token(logits, n, *, temperature = None, ** kwargs):
     if temperature is None:
         if n <= 1:
             indices = K.argmax(logits, axis = 1)[:, None]
-            return indices, K.take_along_axis(logits, indices, axis = 1)
+            return indices, ops.take_along_axis(logits, indices, axis = 1)
         
         values, indices = K.top_k(logits, k = n)
         return indices, values
     
     indices = keras.random.categorical(logits, n)
-    scores  = K.take_along_axis(logits, indices, axis = 1)
+    scores  = ops.take_along_axis(logits, indices, axis = 1)
     return indices, scores
 
 def update_logits(prev_logits, logits, config, state, beam_index = None):

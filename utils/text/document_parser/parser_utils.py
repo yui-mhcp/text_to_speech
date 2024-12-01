@@ -11,7 +11,7 @@
 
 import re
 
-from ..text_processing import split_text
+from ..text_splitter import split_text
 
 _reference_re   = r'\[\d+\]\s*'
 

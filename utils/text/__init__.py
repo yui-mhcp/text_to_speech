@@ -15,7 +15,9 @@ import logging
 from .byte_pair_encoding import bytes_to_unicode, bpe
 from .text_encoder import TextEncoder
 from .sentencepiece_encoder import SentencePieceTextEncoder
+
 from .ctc_decoder import ctc_decode
+from .text_splitter import *
 from .text_processing import *
 from .text_augmentation import random_mask
 

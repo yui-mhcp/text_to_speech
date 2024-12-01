@@ -21,7 +21,7 @@ from loggers import timer, time_logger
 from utils.keras_utils import TensorSpec, ops
 from custom_architectures import get_architecture
 from models.utils import prepare_prediction_results
-from utils.text import default_english_encoder, split_text, split_sentence
+from utils.text import default_english_encoder, split_text, split_sentences
 from models.interfaces.base_text_model import BaseTextModel
 from models.interfaces.base_audio_model import BaseAudioModel
 from utils.audio import write_audio, load_audio, display_audio, play_audio

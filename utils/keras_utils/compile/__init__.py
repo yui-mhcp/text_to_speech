@@ -18,7 +18,6 @@ from functools import wraps
 from .. import ops, tree
 from .exporter import *
 from .compiled_function import *
-from .saved_model_function import *
 
 _py_types   = (str, int, float, bool, np.ndarray)
 

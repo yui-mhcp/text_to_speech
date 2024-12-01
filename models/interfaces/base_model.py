@@ -19,9 +19,10 @@ import inspect
 from functools import cached_property
 from keras.models import load_model, model_from_json
 
+from .runtime import runtimes
 from loggers import timer, time_logger
 from utils import HParams, copy_methods, dump_json, load_json, time_to_string, create_stream
-from utils.keras_utils import TensorSpec, CompiledFunction, SavedModelFunction, ops, tree, graph_compile
+from utils.keras_utils import TensorSpec, ops, tree, graph_compile
 from utils.datasets import prepare_dataset, summarize_dataset
 from models.utils import *
 from models.utils import _get_tracked_type
@@ -152,9 +153,7 @@ class BaseModel(metaclass = ModelInstances):
         'directory' : '{root}/{self.name}',
         'save_dir'  : '{root}/{self.name}/saving',
         'pred_dir'  : '{root}/{self.name}/predictions',
-        'train_dir' : '{root}/{self.name}/training-logs',
-        'saved_model_dir'   : '{root}/{self.name}/saved_model',
-        'trt_llm_model_dir' : '{root}/{self.name}/trt_llm'
+        'train_dir' : '{root}/{self.name}/training-logs'
     }
     _files  = {
         'config_file'   : '{self.directory}/config.json',
@@ -163,11 +162,10 @@ class BaseModel(metaclass = ModelInstances):
     }
     _tracked_types  = {
         keras.Model     : 'models',
-        TRTLLMRunner    : 'models',
-        CompiledFunction    : 'models',
         keras.losses.Loss   : 'losses',
         keras.metrics.Metric    : 'metrics',
         keras.optimizers.Optimizer  : 'optimizers',
+        ** {runtime : 'models' for runtime in runtimes.values()}
     }
     
     def __init__(self,
@@ -185,7 +183,7 @@ class BaseModel(metaclass = ModelInstances):
                  support_xla    = None,
                  graph_compile_config   = None,
                  
-                 restoration_mode   = 'keras',
+                 runtime   = 'keras',
                  
                  ** kwargs
                 ):
@@ -197,9 +195,9 @@ class BaseModel(metaclass = ModelInstances):
         self.name   = name
         self._root  = root
         self._save  = save
+        self.runtime    = runtime
         self.build_kwargs   = kwargs
         self.pretrained_name    = pretrained_name
-        self.restoration_mode   = restoration_mode
         
         self._run_eagerly   = run_eagerly
         self._support_xla   = support_xla
@@ -217,20 +215,24 @@ class BaseModel(metaclass = ModelInstances):
         self.checkpoint_manager = CheckpointManager(self, max_to_keep = max_to_keep)
         
         if is_model_name(self.name) and not force_rebuild:
-            with time_logger.timer('{} restoration'.format(restoration_mode), debug = True):
-                if restoration_mode == 'keras':
+            with time_logger.timer('{} restoration'.format(runtime), debug = True):
+                if runtime == 'keras':
                     self.restore_models()
-                elif restoration_mode == 'saved_model':
-                    self.model = SavedModelFunction(kwargs.get('directory', self.saved_model_dir))
-                elif restoration_mode == 'trt_llm':
-                    self.model = TRTLLMRunner(kwargs.get('directory', self.trt_llm_model_dir))
+                elif runtime in runtimes:
+                    self.model = runtimes[runtime](** kwargs)
+                else:
+                    raise ValueError('Unknown runtime\n  Accepted : {}\n  Got : {}'.format(
+                        ('keras', ) + tuple(runtimes.keys()), runtime
+                    ))
         else:
-            if restoration_mode == 'trt_llm':
-                self.model = TRTLLMRunner(** kwargs)
-            elif restoration_mode == 'saved_model':
-                self.model = SavedModelFunction(** kwargs)
-            else:
+            if runtime == 'keras':
                 self.build(** kwargs)
+            elif runtime in runtimes:
+                self.model = runtimes[runtime](** kwargs)
+            else:
+                raise ValueError('Unknown runtime\n  Accepted : {}\n  Got : {}'.format(
+                    ('keras', ) + tuple(runtimes.keys()), runtime
+                ))
         
             if save and not os.path.exists(self.config_file):
                 self._init_directories()
@@ -388,7 +390,7 @@ class BaseModel(metaclass = ModelInstances):
     @property
     def compiled_infer(self):
         if getattr(self, '_compiled_infer', None) is None:
-            if self.restoration_mode != 'keras':
+            if self.runtime != 'keras':
                 self._compiled_infer = self.model
             elif hasattr(self.model, 'infer'):
                 self._compiled_infer = graph_compile(self.model.infer, ** self.infer_compile_config)
@@ -721,10 +723,10 @@ class BaseModel(metaclass = ModelInstances):
     def get_config(self):
         return {
             'name'  : self.name,
+            'runtime'   : self.runtime,
             'run_eagerly'   : self._run_eagerly,
             'support_xla'   : self._support_xla,
             'graph_compile_config'  : self._graph_compile_config,
-            'restoration_mode'  : self.restoration_mode,
             'pretrained_name'   : self.pretrained_name,
             ** self.build_kwargs
         }
@@ -734,15 +736,10 @@ class BaseModel(metaclass = ModelInstances):
             raise RuntimeError('The directory `{}/{}` already exists'.format(value, name))
         shutil.move(self.directory, os.path.join(value, self.name))
         self._root = root
-
-    def export(self, directory = None, endpoints = None, ** kwargs):
-        if directory is None:   directory = self.saved_model_dir
-        
-        return self.compiled_infer.export(directory, endpoints = endpoints, ** kwargs)
         
     def save(self, ** kwargs):
         if not self._save: return
-        if self.restoration_mode == 'keras':
+        if self.runtime == 'keras':
             self.save_models_config(** kwargs)
             self.save_checkpoint(** kwargs)
             self.save_history(** kwargs)

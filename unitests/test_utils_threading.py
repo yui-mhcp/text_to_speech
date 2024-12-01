@@ -14,10 +14,12 @@ import time
 import unittest
 
 from threading import Thread
+from functools import partial
 from absl.testing import parameterized
 
 from unitests import CustomTestCase, timeout
 from utils.threading import *
+from utils import create_stream
 
 class TestConsumer(CustomTestCase):
     def _listener(self, it, wait = 0):
@@ -289,3 +291,72 @@ class TestThreadedDict(CustomTestCase):
         
         for i in range(5):
             self.assertEqual(d.wait_for_update(i), i + 1)
+class TestProcess(CustomTestCase):
+    def foo(self, it, wait = 0):
+        if wait: time.sleep(wait)
+        return it ** 2
+    
+    @timeout(0.5)
+    def test_simple(self):
+        p = Process(partial(create_stream, self.foo), add_stream = True)
+        
+        result = p.put(2)
+        
+        self.assertFalse(result.ready)
+        p.start()
+        
+        self.assertEqual(result.get(), 4)
+        self.assertTrue(result.ready)
+        
+        self.assertTrue(p.is_alive())
+        p.terminate()
+        self.assertFalse(p.is_alive())
+        self.assertTrue(p.stopped)
+    
+    @timeout(0.5)
+    def test_with(self):
+        with Process(partial(create_stream, self.foo), add_stream = True) as p:
+            self.assertTrue(p.is_alive())
+            self.assertEqual(p.put(2).get(), 4)
+
+            self.assertTrue(p.is_alive())
+
+        self.assertFalse(p.is_alive())
+        self.assertTrue(p.stopped)
+
+    @timeout(0.5)
+    def test_extend(self):
+        with Process(partial(create_stream, self.foo), add_stream = True) as p:
+            self.assertEqual(
+                [r.get() for r in p.extend(range(5))], [0, 1, 4, 9, 16]
+            )
+    
+        self.assertFalse(p.is_alive())
+        self.assertTrue(p.stopped)
+
+    @timeout(0.5)
+    def test_duplicates(self):
+        with Process(partial(create_stream, self.foo), add_stream = True, result_key = 'it', keep_results = True) as p:
+            self.assertEqual(
+                [r.get() for r in p.extend(range(5))], [0, 1, 4, 9, 16]
+            )
+            self.assertEqual(p.index, 5, 'index is not correctly updated')
+            
+            self.assertEqual(
+                [r.get() for r in p.extend(range(5))], [0, 1, 4, 9, 16]
+            )
+            self.assertEqual(
+                p.index, 5, 'Results was not used properly or index was incorrectly updated'
+            )
+            
+            self.assertEqual(
+                [r.get() for r in p.extend([{'it' : 6, 'wait' : 0.001}, {'it' : 6, 'wait' : 2}])],
+                [36, 36]
+            )
+            self.assertEqual(
+                p.index, 6, 'Results was not used properly or index was incorrectly updated'
+            )
+    
+        self.assertFalse(p.is_alive())
+        self.assertTrue(p.stopped)
+

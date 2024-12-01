@@ -9,45 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import queue
 import logging
-import threading
-import multiprocessing
-import multiprocessing.queues
 
-from utils.stream_utils import create_iterator
-from .producer import _get_thread_name, _item_to_str, Producer, Event, StoppedException, locked_property
-from .priority_queue import PriorityQueue
+from .async_result import AsyncResult
+from . import get_buffer, get_name, locked_property
+from .producer import Producer, Event, StoppedException, _item_to_str
 
 logger = logging.getLogger(__name__)
-
-STOP    = '__stop__'
-
-_buffers    = {
-    'queue' : (queue.Queue, multiprocessing.Queue),
-    'fifo'  : (queue.Queue, multiprocessing.Queue),
-    'stack' : (queue.LifoQueue, ),
-    'lifo'  : (queue.LifoQueue, ),
-    'priority'  : (PriorityQueue, multiprocessing.PriorityQueue),
-    'min_priority'  : (PriorityQueue, multiprocessing.PriorityQueue),
-    'max_priority'  : (PriorityQueue, multiprocessing.PriorityQueue),
-}
-
-def get_buffer(buffer, maxsize = 0, use_multiprocessing = False):
-    if buffer is None: buffer = 'queue'
-    if buffer is not None:
-        if isinstance(buffer, str):
-            buffer = buffer.lower()
-            if buffer not in _buffers:
-                raise ValueError('`buffer` is an unknown queue type :\n  Accepted : {}\n  Got : {}\n'.format(tuple(_buffers.keys()), buffer))
-            
-            idx = 0 if not use_multiprocessing else 1
-            buffer = _buffers[buffer][idx](maxsize)
-        
-        elif not isinstance(buffer, (queues.Queue, multiprocessing.queues.Queue)):
-            raise ValueError('`buffer` must be a Queue instance or subclass')
-
-    return buffer
 
 class Consumer(Producer):
     def __init__(self,
@@ -55,8 +23,8 @@ class Consumer(Producer):
                  *,
                  
                  buffer     = None,
-                 buffer_size    = 0,
                  timeout    = None,
+                 buffer_size    = 0,
                  
                  stateful   = False,
                  init_state = None,
@@ -86,7 +54,7 @@ class Consumer(Producer):
         """
         if hasattr(consumer, '__doc__'): kwargs.setdefault('doc', consumer.__doc__)
         
-        super().__init__(generator = self, name = _get_thread_name(consumer, name), ** kwargs)
+        super().__init__(generator = self, name = get_name(consumer, name), ** kwargs)
         
         self.consumer   = consumer
         self.buffer     = get_buffer(buffer, buffer_size)
@@ -103,9 +71,9 @@ class Consumer(Producer):
         self._out_index = 0
         self._stop_empty    = False
     
-    stop_empty  = locked_property('stop_empty')
     in_index    = locked_property('in_index')
     out_index   = locked_property('out_index')
+    stop_empty  = locked_property('stop_empty')
     
     @property
     def results(self):
@@ -148,7 +116,7 @@ class Consumer(Producer):
         self.buffer.put((args, kwds, out), ** kwargs)
         return out
     
-    def _map_async(self, items, callback = None, ** kwargs):
+    def _map_async(self, items, *, callback = None, ** kwargs):
         results = []
         for it in items:
             if not isinstance(it, tuple): it = (it, )
@@ -156,21 +124,22 @@ class Consumer(Producer):
         return results
     
     def consume(self, item = None):
-        logger.debug('[Consume {}] Waiting item'.format(self.name))
         if item is None:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('[Consume {}] Waiting item'.format(self.name))
+
             item = self.buffer.get()
             if item is None: raise StopIteration()
         
         args, kwargs, callback = item
         
-        logger.debug('[CONSUME {}] {}'.format(self.name, _item_to_str(args)))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[CONSUME {}] {}'.format(self.name, _item_to_str(args)))
+        
         if not self.stateful:
             result = self.consumer(* args, ** kwargs)
         else:
-            result, next_state = self.consumer(
-                * args, * self._state, ** kwargs
-            )
-            self._state = next_state
+            result, self._state = self.consumer(* args, * self._state, ** kwargs)
         
         if callback is not None: callback(result)
         return result
@@ -188,11 +157,27 @@ class Consumer(Producer):
         else:
             super().run()
 
-    def extend_and_wait(self, items, tqdm = lambda x: x, ** kwargs):
-        return [res.get() for res in tqdm(self.extend(items, ** kwargs))]
+    def stop(self):
+        if self._stopped or self._finished: return
+        if self.empty: self.buffer.put(None)
+        super().stop()
+        if self.run_main_thread: self.on_stop()
+
+    def stop_when_empty(self):
+        if self._stop_empty or self._stopped or self._finished: return
+        with self.mutex:
+            self._stop_empty = True
+            if self.empty: self.stop()
     
+    def join(self, * args, ** kwargs):
+        self.stop_when_empty()
+        super().join(* args, ** kwargs)
+
     def append_and_wait(self, * args, ** kwargs):
         return self.append(* args, ** kwargs).get()
+
+    def extend_and_wait(self, items, tqdm = lambda x: x, ** kwargs):
+        return [res.get() for res in tqdm(self.extend(items, ** kwargs))]
     
     def on_item_produced(self, item):
         if self.keep_result: self._results.append(item)
@@ -207,49 +192,4 @@ class Consumer(Producer):
                 ))
                 self.stop()
 
-    def stop_when_empty(self):
-        if self._stop_empty or self._stopped or self._finished: return
-        self.stop_empty = True
-        if self.empty: self.stop()
-    
-    def stop(self):
-        if self._stopped or self._finished: return
-        if self.empty: self.buffer.put(None)
-        super().stop()
-        if self.run_main_thread: self.on_stop()
-    
-    def join(self, * args, ** kwargs):
-        self.stop_when_empty()
-        super().join(* args, ** kwargs)
         
-class AsyncResult:
-    def __init__(self, callback = None):
-        self._callback  = callback
-        self._event = threading.Event()
-        self._result    = None
-    
-    @property
-    def ready(self):
-        return self._event.is_set()
-    
-    def __call__(self, result):
-        self._result    = result
-        self._success   = not isinstance(result, Exception)
-        if self._callback is not None:
-            self._callback(self._result)
-        self._event.set()
-    
-    def wait(self, timeout = None):
-        self._event.wait(timeout)
-    
-    def get(self, timeout = None):
-        self.wait(timeout)
-        if not self.ready:
-            raise TimeoutError
-        if self._success:
-            return self._result
-        else:
-            raise self._result
-    
-    
-    

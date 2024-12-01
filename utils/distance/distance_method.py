@@ -56,9 +56,11 @@ def _raise_if_not_matrix(batch_size, kwargs):
 @apply_on_batch(batched_arg = ('x', 'y'), cond = _propagate_if_matrix)
 @apply_on_batch(batched_arg = 'x', cond = _raise_if_not_matrix)
 @apply_on_batch(batched_arg = 'y', concat_axis = 1, cond = _raise_if_not_matrix)
-@graph_compile(internal_functions = _distance_methods)
-def tf_distance(x : TensorSpec(), y : TensorSpec(), method, ** kwargs):
+@graph_compile
+def compiled_distance(x : TensorSpec(), y : TensorSpec(), method, ** kwargs):
     return distance(x, y, method, ** kwargs)
+
+tf_distance = compiled_distance
 
 @apply_on_batch(batched_arg = ('x', 'y'), cond = _propagate_if_matrix)
 @apply_on_batch(batched_arg = 'x', cond = _raise_if_not_matrix)

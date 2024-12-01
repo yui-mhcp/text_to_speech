@@ -99,7 +99,7 @@ def repr_data(data):
             des += '{} : {}, '.format(k, repr_data(v))
         return des + '... [{} more]}'.format(len(data) - _max_repr_items)
 
-    elif isinstance(arg, (list, tuple)):
+    elif isinstance(data, (list, tuple)):
         if len(data) <= _max_repr_items:
             return str([repr_data(v) for v in data])
         return '[{}, ... [{} more]]'.format(

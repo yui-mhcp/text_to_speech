@@ -9,14 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import describe, prediction, saving
+from .tensorrt_runtime import TensorRTRuntime
+from .saved_model_runtime import SavedModelRuntime
+from .tensorrt_llm_runtime import TensorRTLLMRuntime
 
-from .describe import *
-from .prediction import *
-from .saving import *
-
-def _get_tracked_type(value, types):
-    if isinstance(value, (list, tuple)) and len(value) > 0: value = value[0]
-    for t in types:
-        if isinstance(value, t): return t
-    return None
+runtimes    = {
+    'trt'   : TensorRTRuntime,
+    'trt_llm'   : TensorRTLLMRuntime,
+    'saved_model'   : SavedModelRuntime
+}

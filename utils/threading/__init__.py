@@ -39,7 +39,7 @@ def get_buffer(buffer = 'fifo', maxsize = 0, use_multiprocessing = False):
         idx = 0 if not use_multiprocessing else 1
         buffer = _buffers[buffer][idx](maxsize)
     
-    elif not isinstance(buffer, (queues.Queue, multiprocessing.queues.Queue)):
+    elif not isinstance(buffer, (queue.Queue, multiprocessing.queues.Queue)):
         raise ValueError('`buffer` must be a Queue instance or subclass')
 
     return buffer

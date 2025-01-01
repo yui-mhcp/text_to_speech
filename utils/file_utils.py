@@ -220,7 +220,7 @@ def load_h5(filename, keys = None, ** kwargs):
     def get_data(v):
         if v.dtype == object:
             if len(v.shape) == 0:   return np.array(v).item().decode()
-            return v.asstr()[:]
+            return v.asstr()[:].tolist()
         v = np.array(v)
         return v if v.ndim > 0 else v.item()
     
@@ -290,6 +290,9 @@ def dump_data(filename, data, overwrite = True, ** kwargs):
                 tuple(_dump_file_fn.keys()), ext
             ))
         
+        directory = os.path.dirname(filename)
+        if directory: os.makedirs(directory, exist_ok = True)
+        
         _dump_file_fn[ext](filename, data, ** kwargs)
     
     return filename
@@ -321,11 +324,18 @@ def dump_h5(filename, data, mode = 'w', overwrite = False, ** kwargs):
             elif not isinstance(v, np.ndarray):
                 v = convert_to_numpy(v)
             
-            dtype = None
-            if 'str' in v.dtype.name or v.dtype == object:
-                dtype = h5py.string_dtype()
-                v = v.astype(dtype)
-            group.create_dataset(k, data = v, dtype = dtype)
+            try:
+                dtype = None
+                if 'str' in v.dtype.name or v.dtype == object:
+                    dtype = h5py.string_dtype()
+                    v = v.astype(dtype)
+                
+                logger.debug('Saving entry {} with dtype {}'.format(k, dtype))
+                
+                group.create_dataset(k, data = v, dtype = dtype)
+            except Exception as e:
+                logger.error('An error occured while saving entry {} : {}'.format(k, e))
+                continue
 
     import h5py
     

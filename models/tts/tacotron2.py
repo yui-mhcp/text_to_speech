@@ -340,15 +340,16 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
 
     @timer(name = 'text encoding')
     def split_and_encode(self, cleaned_text, max_text_length, cleaned = True):
-        if not cleaned: cleaned_text = self.clean_text(cleaned_text)
-        
         if isinstance(cleaned_text, list): splitted = cleaned_text
         elif isinstance(max_text_length, str):
             splitted = [p for p in cleaned_text.split(max_text_length) if p]
         elif max_text_length == -1:        splitted = [cleaned_text]
-        elif max_text_length == -2:        splitted = split_sentence(cleaned_text)
+        elif max_text_length == -2:        splitted = split_sentences(cleaned_text)
         else:                              splitted = split_text(cleaned_text, max_text_length)
 
+        if not cleaned:
+            splitted    = [self.clean_text(s) for s in splitted]
+        
         splitted    = [s for s in splitted if any(c.isalnum() for c in s)]
         encoded     = [self.encode_text(text, cleaned = True) for text in splitted]
         
@@ -368,7 +369,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                 
                 cleaners    = {},
                 expand_acronyms = True,
-                use_cleaned_as_key  = True,
+                use_cleaned_as_key  = False,
                 
                 max_length  = 10.,
                 min_fpt_ratio = 2.,

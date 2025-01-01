@@ -22,7 +22,7 @@ _comma_extended     = {
 _math_symbols   = {
     '=' : {'fr' : 'égal',       'en' : 'equal'},
     '+' : {'fr' : 'plus',       'en' : 'plus'},
-    '-' : {'fr' : 'moins',      'en' : 'minus'},
+    ' -': {'fr' : 'moins',      'en' : 'minus'},
     '*' : {'fr' : 'fois',       'en' : 'times'},
     '/' : {'fr' : 'sur',        'en' : 'divide by'},
     '^' : {'fr' : 'exposant',   'en' : 'exponent'}

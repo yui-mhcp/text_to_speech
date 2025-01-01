@@ -144,6 +144,7 @@ def build_custom_op(tf_fn   = None,
                     name    = None,
                     ** kwargs
                    ):
+    fn = keras_fn
     if is_tensorflow_backend(): fn, tf_fn = tf_fn, None
     elif is_torch_backend():    fn = torch_fn
     elif is_jax_backend():      fn = jax_fn

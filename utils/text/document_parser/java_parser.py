@@ -9,17 +9,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import glob
-import importlib
+from .parser import parse_document
 
-from .parser_utils import *
-from .parser import parse_document, first_page_to_image
-from .html_parser import _wiki_cleaner
-
-def __load():
-    for module in glob.glob(__package__.replace('.', os.path.sep) + '/*_parser*'):
-        if os.path.basename(module).startswith(('.', '_')): continue
-        importlib.import_module(module.replace('.py', '').replace(os.path.sep, '.'))
-
-__load()
+@parse_document.dispatch
+def parse_java(filename, encoding = 'utf-8', ** kwargs):
+    with open(filename, 'r', encoding = encoding) as f:
+        text = f.read()
+    
+    return [{'text' : text, 'type' : code}]

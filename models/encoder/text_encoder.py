@@ -49,10 +49,12 @@ class TextEncoder(BaseTextModel, BaseEncoderModel):
                 
                 primary_key = 'text',
                 
-                chunk_size  = 512,
-                chunk_overlap   = 0.25,
+                group_by    = 'filename',
+                chunk_size  = 256,
+                chunk_overlap   = 0.2,
                 
                 save    = True,
+                vectors = None,
                 filename    = 'embeddings.h5',
                 directory   = None,
                 overwrite   = False,
@@ -69,30 +71,33 @@ class TextEncoder(BaseTextModel, BaseEncoderModel):
             elif '*' not in text and not is_path(text):
                 paragraphs.append({'text' : text})
             else:
-                file = expand_path(text)
-                if not isinstance(file, list): file = [file]
-                for f in file:
-                    try:
-                        paragraphs.extend(parse_document(f, ** kwargs))
-                    except Exception as e:
-                        logger.warning('An exception occured while parsing file {} : {}'.format(f, e))
+                try:
+                    paragraphs.extend(parse_document(f, ** kwargs))
+                except Exception as e:
+                    logger.warning('An exception occured while parsing file {} : {}'.format(f, e))
                 
         if chunk_size:
             paragraphs = chunks_from_paragraphs(
-                paragraphs, chunk_size, max_overlap_len = chunk_overlap, tokenizer = self.text_encoder, ** kwargs
+                paragraphs,
+                chunk_size,
+                group_by    = group_by,
+                max_overlap_len = chunk_overlap,
+                
+                tokenizer   = self.text_encoder,
+                ** kwargs
             )
         
-        vectors = None
-        if save:
+        if not os.path.dirname(filename):
             if directory is None: directory = self.pred_dir
-            os.makedirs(directory, exist_ok = True)
-            
+
             filename = os.path.join(directory, filename)
+        
+        if vectors is None:
             vectors  = build_vectors_db(filename)
         
         queries = paragraphs
         if vectors is not None and not overwrite:
-            paragraphs = [p for p in paragraphs if p['text'] not in vectors]
+            paragraphs = [p for p in paragraphs if p not in vectors]
         
         if paragraphs:
             vectors = self.embed(

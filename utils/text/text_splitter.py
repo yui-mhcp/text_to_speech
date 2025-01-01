@@ -34,15 +34,12 @@ def chunks_from_paragraphs(paragraphs,
                            *,
                            
                            group_by = None,
-                           add_tokens   = False,
-                           missmatch_mode   = 'skip',
+                           missmatch_mode   = 'ignore',
                            
                            separator    = '\n\n',
                            
                            max_overlap  = 5,
                            max_overlap_len  = 0.2,
-                           
-                           tokenizer    = None,
                            
                            ** kwargs
                           ):
@@ -58,10 +55,10 @@ def chunks_from_paragraphs(paragraphs,
                           This allows to only merge paragraph with the same section or filename
                           The value should be a (list of) paragraph's entries to use to group them
             
-            - max_overlap[_len] : forwarded to `merge_chunks`
+            - max_overlap[_len] : forwarded to `merge_texts`
             
-            - tokenizer : forwarded to `split_text` and `merge_chunks`
-            - kwargs    : forwarded to `split_text` and `merge_chunks`
+            - tokenizer : forwarded to `split_text` and `merge_texts`
+            - kwargs    : forwarded to `split_text` and `merge_texts`
         Return :
             - chunks    : a list of splitted/merged paragraphs
         
@@ -89,78 +86,33 @@ def chunks_from_paragraphs(paragraphs,
             The 2nd paragraph starts with the 2 last sentences of the previous paragraph, as their cumulated length is smaller than `max_overlap_len` (45 <= 50)
             The final paragraph only contains 1 sentence without overlap because the last sentence exceeds `max_overlap_len` (150 > 50)
     """
-    if tokenizer is None:
-        tokenizer = lambda text: list(text)
-    elif hasattr(tokenizer, 'encode'):
-        _tokenizer = tokenizer
-        tokenizer = lambda text: _tokenizer.encode(text, strip = False, return_type = 'list')
-        
-    if isinstance(max_overlap_len, float): max_overlap_len = int(max_overlap_len * max_length)
+    if any(isinstance(para, str) for para in paragraphs):
+        paragraphs = [{'text' : para} if isinstance(para, str) else para for para in paragraphs]
     
-    splitted    = []
+    if group_by:
+        groups = group_paragraphs(paragraphs, group_by)
+        texts  = [separator.join([para['text'] for para in group]) for group in groups]
+        paragraphs  = [merge_paragraphs(group, missmatch_mode, skip = 'text') for group in groups]
+        
+        for para, text in zip(paragraphs, texts):
+            para['text'] = text
+    
+    splitted = []
     for para in paragraphs:
-        if isinstance(para, str): para = {'text' : para}
-        
-        if 'chunks' not in para:
-            chunks, tokens = split_text(
-                para['text'],
-                max_length  = max_overlap_len / max_overlap,
-                sent_tolerance  = max_length - max_overlap_len,
-                
-                tokenizer   = tokenizer,
-                
-                merge   = False,
-                
-                ** kwargs
-            )
-        elif 'chunk_tokens' not in para:
-            chunks  = para['chunks']
-            tokens  = [tokenizer(t) for t in para['chunks']]
-        else:
-            chunks, tokens = para['chunks'], para['chunk_tokens']
-        
-        assert isinstance(chunks, list)
-        if not chunks[-1].endswith(separator): chunks[-1] += separator
-        for c, t in zip(chunks, tokens):
-            splitted.append({** para, 'text' : c, 'tokens' : t})
-
-    groups = [splitted] if not group_by else group_paragraphs(splitted, group_by)
-    
-    result = []
-    for group in groups:
-        texts   = [para['text'] for para in group]
-        tokens  = [para['tokens'] for para in group]
-
-        chunks, chunk_tokens, chunk_indexes = merge_chunks(
-            texts,
-            max_length,
+        chunks  = split_text(
+            para['text'],
+            max_length  = max_length,
+            
             max_overlap = max_overlap,
             max_overlap_len = max_overlap_len,
-            
-            tokens  = tokens,
-            tokenizer   = tokenizer,
             
             ** kwargs
         )
         
-        merged_para = merge_paragraphs(
-            group, missmatch_mode, skip = {'text', 'tokens', 'chunks', 'chunk_tokens'}
-        )
-        for chunk, tokens, chunk_indexes in zip(chunks, chunk_tokens, chunk_indexes):
-            chunk_para = merged_para.copy()
-            chunk_para.update({
-                'text'  : chunk,
-                'chunks'    : [group[idx]['text'] for idx in chunk_indexes],
-            })
-            if add_tokens:
-                chunk_para.update({
-                    'tokens'    : tokens,
-                    'chunk_tokens'  : [group[idx]['tokens'] for idx in chunk_indexes]
-                })
-            result.append(chunk_para)
+        for text in chunks:
+            splitted.append({** para, 'text' : text})
     
-    return result
-        
+    return splitted
 
 def group_paragraphs(paragraphs, key):
     """ Group `paragraphs` into groups that have the same value for `key` entry(ies) """
@@ -175,6 +127,7 @@ def group_paragraphs(paragraphs, key):
     return list(groups.values())
 
 def merge_paragraphs(paragraphs, missmatch_mode = 'ignore', skip = None):
+    """ Takes the intersection or union of a list of paragraphs """
     if not skip:                    skip = {}
     elif isinstance(skip, str):     skip = {skip}
     else:                           skip = set(skip)
@@ -182,6 +135,8 @@ def merge_paragraphs(paragraphs, missmatch_mode = 'ignore', skip = None):
     merged = {k : v for k, v in paragraphs[0].items() if k not in skip}
     for para in paragraphs[1:]:
         for k, v in para.items():
+            if hasattr(v, 'shape') or hasattr(merged.get(k, None), 'shape'): continue
+            
             if k in skip:           continue
             elif k not in merged:   merged[k] = v
             elif merged[k] == v:    continue
@@ -212,6 +167,7 @@ def split_text(text,
                merge    = True,
                
                err_mode = 'skip',
+               return_tokens    = False,
                
                ** kwargs
               ):
@@ -240,7 +196,7 @@ def split_text(text,
                           - ignore  : ignore without warning
                           - keep    : adds the text even though it exceeds `max_length`
             
-            - kwargs    : forwarded to `merge_chunks` (if `merge == True`)
+            - kwargs    : forwarded to `merge_texts` (if `merge == True`)
         Return :
             - splitted_texts    : a list of texts
             - splitted_tokens   : a list of text tokens
@@ -258,7 +214,7 @@ def split_text(text,
     max_sent_length = max_length + sent_tolerance
     
     if tokens is None: tokens = tokenizer(text)
-    if len(tokens) <= max_text_length: return [text], [tokens]
+    if len(tokens) <= max_text_length: return [text] if not return_tokens else ([text], [tokens])
     
     splitted    = split_sentences(text, eos_pattern, strip = False)
     tokens      = [tokenizer(txt) for txt in splitted]
@@ -269,21 +225,8 @@ def split_text(text,
         if len(tok) <= max_sent_length:
             result_text.append(split)
             result_tokens.append(tok)
-        # if `sent_pattern is None`, it probably means that `split` is a single word that is too long
-        # it is therefore not possible to split it more, which may raise an error or skkip it
-        elif not sent_pattern:
-            if err_mode == 'error':
-                raise RuntimeError('It was not possible to split `{}`'.format(split))
-            elif err_mode == 'ignore':
-                continue
-            elif err_mode == 'skip':
-                warnings.warn('The text is skipped as it is too long `{}`'.format(split))
-                continue
-            elif err_mode == 'keep':
-                result_text.append(split)
-                result_tokens.append(tok)
-        # the last case is a sentence that is too long but still splittable by `sent_pattern`
-        else:
+        # if the sentence is too long, but we have a second pattern to split it
+        elif sent_pattern:
             splitted_sent, splitted_sent_tok = split_text(
                 split,
                 max_sent_length,
@@ -294,41 +237,55 @@ def split_text(text,
                 eos_pattern = sent_pattern,
                 sent_pattern    = ' ' if sent_pattern != ' ' else None,
                 
-                err_mode    = err_mode
+                err_mode    = err_mode,
+                return_tokens   = True
             )
 
             result_text.extend(splitted_sent)
             result_tokens.extend(splitted_sent_tok)
+        
+        # if `sent_pattern is None`, it probably means that `split` is a single word that is too long
+        # it is therefore not possible to split it more, which may raise an error or skkip it
+        elif err_mode == 'error':
+            raise RuntimeError('It was not possible to split `{}`'.format(split))
+        elif err_mode == 'ignore':
+            continue
+        elif err_mode == 'skip':
+            warnings.warn('The text `{}` is skipped as it is too long'.format(split))
+            continue
+        elif err_mode == 'keep':
+            result_text.append(split)
+            result_tokens.append(tok)
     
     if merge:
-        result_text, result_tokens, _ = merge_chunks(
-            result_text, max_text_length, tokens = result_tokens, ** kwargs
+        result_text, result_tokens, _ = merge_texts(
+            result_text, max_text_length, tokens = result_tokens, tokenizer = tokenizer, ** kwargs
         )
     
-    return result_text, result_tokens
+    return result_text if not return_tokens else (result_text, result_tokens)
 
-def merge_chunks(chunks,
-                 max_length,
-                 max_overlap    = 0,
-                 max_overlap_len    = 0.2,
-                 
-                 *,
-                 
-                 tokens = None,
-                 tokenizer  = None,
-                 
-                 ** _
-                ):
+def merge_texts(texts,
+                max_length,
+                max_overlap    = 0,
+                max_overlap_len    = 0.2,
+                     
+                *,
+                  
+                tokens = None,
+                tokenizer  = None,
+                
+                ** _
+               ):
     """
-        Merges `chunks` such that the total number of tokens within a chunk
+        Merges `text` such that the total number of tokens within a chunk
         is smaller or equal than `max_length`.
         The `max_overlap` controls the overlap between 2 consecutive chunks of text
         
         Arguments :
-            - chunks    : list of chunks (either texts or list of text parts)
-            - max_length    : maximum length for a given chunk
-            - max_overlap   : maximum number of chunk to use as overlap
-            - max_overlap_len   : maximum length for a text part to use as overlap
+            - texts : list of text (str)
+            - max_length    : maximum length for a given text
+            - max_overlap   : maximum number of text to use as start overlap
+            - max_overlap_len   : maximum length for the start overlap (can be relative to max_length)
             
             - tokens    : pre-computed tokens for `chunks`
             - tokenizer : the tokenization function (or a `TextEncoder` instance)
@@ -346,54 +303,39 @@ def merge_chunks(chunks,
         tokenizer = lambda text: _tokenizer.encode(text, strip = False, return_type = 'list')
 
     if tokens is None:
-        tokens = [
-            tokenizer(chunk) if isinstance(chunk, str) else [tokenizer(chunk_i) for chunk_i in chunk]
-            for chunk in chunks
-        ]
+        tokens = [tokenizer(txt) for txt in texts]
     
-    for i in range(len(chunks)):
-        if isinstance(chunks[i], str):
-            chunks[i], tokens[i] = [chunks[i]], [tokens[i]]
-    
-    merged_texts, merged_tokens, merged_indices = [chunks[0]], [tokens[0]], [[0]]
-    merged_len = sum(len(tok) for tok in tokens[0])
-    for i, (chunk, chunk_tokens) in enumerate(zip(chunks[1:], tokens[1:]), start = 1):
-        length = sum(len(tok) for tok in chunk_tokens)
+    merged_texts    = [[texts[0]]]
+    merged_tokens   = [[tokens[0]]]
+    merged_indices  = [[0]]
+    merged_len      = len(tokens[0])
+    for i, (text, tok) in enumerate(zip(texts[1:], tokens[1:]), start = 1):
         # adds `chunk` to the current group as their union is smaller than `max_length`
-        if merged_len + length <= max_length:
-            merged_texts[-1]    += chunk
-            merged_tokens[-1]   += chunk_tokens
+        if merged_len + len(tok) <= max_length:
+            merged_texts[-1].append(text)
+            merged_tokens[-1].append(tok)
             merged_indices[-1].append(i)
-            merged_len  += length
-        # computes an overlap based on the "n" last parts of the current group
-        # such that their cumulated length is smaller or equal than `max_overlap`
-        elif max_overlap > 0 and max_overlap_len > length and length < max_length:
-            _max_overlap_len = min(max_overlap_len, max_length - length)
-            
-            overlap_texts, overlap_tokens, overlap_idx, overlap_len = [], [], [], 0
-            for txt, tok, idx in zip(reversed(merged_texts[-1][- max_overlap :]),
-                                     reversed(merged_tokens[-1]),
-                                     reversed(merged_indices[-1])
-                                    ):
-                assert isinstance(txt, str) and not isinstance(tok[0], list)
-                
-                if overlap_len + len(tok) > _max_overlap_len: break
-                
-                overlap_texts.insert(0, txt)
-                overlap_tokens.insert(0, tok)
-                overlap_idx.insert(0, idx)
-                overlap_len += len(tok)
-            
-            merged_texts.append(overlap_texts + chunk)
-            merged_tokens.append(overlap_tokens + chunk_tokens)
-            merged_indices.append(overlap_idx + [i])
-            merged_len = length + overlap_len
-        # creates a new group with `chunk`
+            merged_len  += len(tok)
         else:
-            merged_texts.append(chunk)
-            merged_tokens.append(chunk_tokens)
+            merged_texts.append([text])
+            merged_tokens.append([tok])
             merged_indices.append([i])
-            merged_len = length
+            merged_len = len(tok)
+            
+            # computes an overlap based on the "n" last parts of the current group
+            # such that their cumulated length is smaller or equal than `max_overlap`
+            if max_overlap > 0 and len(tok) < max_length:
+                _max_overlap_len = min(max_overlap_len, max_length - len(tok))
+
+                overlap_len = 0
+                for i in range(min(max_overlap, len(merged_texts[-2]))):
+                    if overlap_len + len(merged_tokens[-2][- i]) > _max_overlap_len: break
+
+                    merged_texts[-1].insert(0, merged_texts[-2][- i])
+                    merged_tokens[-1].insert(0, merged_tokens[-1][- i])
+                    merged_indices[-1].insert(0, merged_indices[-2][- i])
+                    overlap_len += len(merged_tokens[-2][- i])
+                    merged_len  += len(merged_tokens[-2][- i])
 
     # transform the merged list of list into list of str by concatenating the different groups
     result_texts, result_tokens = [''] * len(merged_texts), [[] for _ in range(len(merged_tokens))]
@@ -409,7 +351,6 @@ def merge_chunks(chunks,
         if update_tokens:
             result_tokens[i] = tokenizer(result_texts[i])
 
-    
     return result_texts, result_tokens, merged_indices
     
 
@@ -460,28 +401,6 @@ def split_sentences(text, eos_pattern = _eos_chars, strip = False):
             sent = sent + splitted[i + 1] + splitted[i + 2]
             i += 2
         
-        # merge expressions like "i.e.," or "e.g., "
-        """while (i + 4 < len(splitted)
-               and splitted[i + 1] == '.'
-               and splitted[i + 2].isalpha()
-               and len(splitted[i + 2]) == 1
-               and splitted[i + 3].strip() == '.'):
-            sent = sent + '.' + splitted[i + 2] + splitted[i + 3] + splitted[i + 4]
-            i += 4"""
-        
-        # merge url / mails
-        # it has to be after the "i.e." check, because the merging sequence
-        # starts with the same pattern (so both will match), while this one is shorter
-        # so if multiple sequences are matching the same start pattern, they have to be
-        # executed in decreasing order of length
-        """while (i + 2 < len(splitted)
-               and splitted[i + 1] == '.'
-               and splitted[i + 2]
-               and splitted[i + 2][0].isalnum()
-               and splitted[i + 2][0].islower()):
-            sent = sent + splitted[i + 1] + splitted[i + 2]
-            i += 2"""
-
         sentences.append(sent)
         i += 1
     
@@ -510,5 +429,3 @@ def _is_end_of_quote(sentences, sent):
     if not sentences or not sent.strip(): return False
     prev, sent = sentences[-1], sent.strip().split()[0]
     return all(c in _closing_punctuation and _closing_punctuation[c] in prev for c in sent)
-
-    

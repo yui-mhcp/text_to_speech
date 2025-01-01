@@ -16,6 +16,7 @@ from .byte_pair_encoding import bytes_to_unicode, bpe
 from .text_encoder import TextEncoder
 from .sentencepiece_encoder import SentencePieceTextEncoder
 
+from .conversation import Conversation, Message
 from .ctc_decoder import ctc_decode
 from .text_splitter import *
 from .text_processing import *

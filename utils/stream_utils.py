@@ -21,6 +21,8 @@ from .generic_utils import time_to_string
 
 logger  = logging.getLogger(__name__)
 
+STOP    = None
+IS_RUNNING  = '__is_running__'
 KEEP_ALIVE  = '__keep_alive__'
 
 WARMUP_DELAY_MS = 1
@@ -123,6 +125,8 @@ def create_stream(fn,
                   return_results    = False,
                   dict_as_kwargs    = True,
                   
+                  raise_if_error    = True,
+                  
                   ** kwargs
                  ):
     """
@@ -159,13 +163,27 @@ def create_stream(fn,
     
     results = [] if return_results else None
     for data in create_iterator(stream, timeout = timeout):
-        if isinstance(data, str) and data == KEEP_ALIVE: continue
-        
         inp = data if not hasattr(data, 'data') else data.data
-        if dict_as_kwargs and isinstance(inp, dict):
-            res = fn(** {** kwargs, ** inp})
-        else:
-            res = fn(inp, ** kwargs)
+        
+        if inp is None: break
+        elif isinstance(inp, str) and inp == KEEP_ALIVE: continue
+        elif isinstance(inp, str) and inp == IS_RUNNING:
+            if callback is not None:
+                if not hasattr(data, 'data'):
+                    callback(True)
+                else:
+                    data.result = True
+                    callback(data)
+            continue
+        
+        try:
+            if dict_as_kwargs and isinstance(inp, dict):
+                res = fn(** {** kwargs, ** inp})
+            else:
+                res = fn(inp, ** kwargs)
+        except Exception as e:
+            if raise_if_error: raise e
+            res = e
         
         if return_results: results.append(res)
         if callback is not None:

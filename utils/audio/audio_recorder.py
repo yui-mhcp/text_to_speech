@@ -14,8 +14,8 @@ import numpy as np
 from .audio_stream import AudioStream
 
 class AudioRecorder(AudioStream):
-    def __init__(self, callback, max_time = 10., ** kwargs):
-        super().__init__(** kwargs)
+    def __init__(self, callback, format, rate = None, channels = None, max_time = 10., ** kwargs):
+        super().__init__(rate, format = format, channels = channels, ** kwargs)
         self.callback   = callback
         self.max_time   = max_time
         
@@ -32,9 +32,9 @@ class AudioRecorder(AudioStream):
     def stream_callback(self, data, frame_count, time_info, flags):
         import pyaudio
         
-        chunk = np.frombuffer(data, self.format)
-        if self.callback is not None: self.callback(chunk)
+        chunk = np.frombuffer(data, self.format).reshape((-1, self.channels)).T
         self.audio_chunks.append(chunk)
+        if self.callback is not None: self.callback(chunk)
         
         if self.max_time and len(self.audio_chunks) / self.fps >= self.max_time:
             status = pyaudio.paComplete

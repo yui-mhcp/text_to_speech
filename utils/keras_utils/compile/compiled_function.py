@@ -285,7 +285,7 @@ class CompiledFunction:
                     _compile_kwargs['static_args'] = self.get_static_args(inputs)
 
             if recompile or key not in self._compiled:
-                self._compiled[key] = timer(compile_function(
+                self._compiled[key] = timer(fn = compile_function(
                     self.fn, jit_compile = execution_mode == ExecutionMode.XLA, ** _compile_kwargs
                 ), name = '{}_{}'.format(key, self.name), debug = True)
 

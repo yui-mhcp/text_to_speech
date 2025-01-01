@@ -52,9 +52,9 @@ class TestAudio(CustomTestCase, parameterized.TestCase):
         self.assertEqual(loaded_trimmed, trimmed)
 
         self.assertEqual(load_audio(write_audio(
-            self.audio,
-            os.path.join(reproductibility_dir, 'audio_write_audio.wav'),
-            self.rate,
+            filename    = os.path.join(reproductibility_dir, 'audio_write_audio.wav'),
+            audio   = self.audio,
+            rate    = self.rate,
             normalize = False
         ), None, normalize = False), self.audio, max_err = 1e-6)
 

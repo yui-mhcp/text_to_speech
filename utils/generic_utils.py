@@ -11,8 +11,10 @@
 
 import enum
 import json
+import uuid
 import timeit
 import logging
+import argparse
 import datetime
 import numpy as np
 
@@ -76,17 +78,22 @@ def normalize_keys(kwargs, key_alternatives):
 def to_json(data):
     """ Converts a given data to json-serializable (if possible) """
     if data is None: return data
+    if hasattr(data, '__dataclass_fields__'):
+        return {k : to_json(v) for k, v in data.__dict__.items()}
     if isinstance(data, enum.Enum): data = data.value
     if ops.is_tensor(data):         data = ops.convert_to_numpy(data)
     if isinstance(data, bytes):     data = data.decode('utf-8')
     if isinstance(data, np.ndarray) and len(data.shape) == 0: data = data.item()
     
     if isinstance(data, bool): return data
+    elif isinstance(data, uuid.UUID):            return str(data)
     elif isinstance(data, datetime.datetime):    return data.strftime("%Y-%m-%d %H:%M:%S")
     elif isinstance(data, (float, np.floating)): return float(data)
     elif isinstance(data, (int, np.integer)):    return int(data)
     elif isinstance(data, (list, tuple, set, np.ndarray)):
         return [to_json(d) for d in data]
+    elif isinstance(data, argparse.Namespace):
+        return {k : to_json(v) for k, v in data.__dict__.items()}
     elif isinstance(data, dict):
         return {to_json(k) : to_json(v) for k, v in data.items()}
     elif isinstance(data, str):

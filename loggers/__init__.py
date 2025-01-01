@@ -15,7 +15,7 @@ import logging
 
 from logging.handlers import SMTPHandler
 
-from .time_logging import TIME_LEVEL, TIME_DEBUG_LEVEL, timer, time_logger
+from .time_logging import TIME_LEVEL, TIME_DEBUG_LEVEL, Timer, timer, time_logger
 from .telegram_handler import TelegramHandler
 from .utils import get_object, partial, dispatch_wrapper
 

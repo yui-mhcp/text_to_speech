@@ -136,7 +136,7 @@ def load_custom_dataset(dataset,
     
     if annotation_type not in _custom_processing:
         raise ValueError("Unknown annotation type !\n  Got : {}\n  Accepted : {}".format(
-            type_annots, list(_custom_processing.keys())
+            annotation_type, list(_custom_processing.keys())
         ))
     
     dataset_dir = get_dataset_dir()

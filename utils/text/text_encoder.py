@@ -21,7 +21,7 @@ from keras import tree
 from datetime import datetime
 from functools import cached_property, cache
 
-from utils import dump_json, load_json, pad_batch, get_enum_item, convert_to_str, download_file, is_dataframe
+from utils import dump_json, load_json, to_json, pad_batch, get_enum_item, convert_to_str, download_file, is_dataframe
 from utils.keras_utils import TensorSpec, execute_eagerly, ops
 from utils.text import cleaners as cleaners_module
 from .ctc_decoder import ctc_decode
@@ -670,52 +670,69 @@ class TextEncoder(object):
                         
                         template    = None,
                         
-                        format  = None,
-                        messages    = None,
                         system_prompt   = None,
+                        answer_start    = None,
+
+                        messages    = None,
+                        message_format  = None,
                         
                         encode  = True,
                         add_eos = False,
+                        max_length  = None,
                         add_generation_prompt   = True,
+                        
+                        format  = None,
                         
                         ** kwargs
                        ):
+        assert text or messages
+        
         template = convert_to_str(template) if template else self.template
         kwargs   = convert_to_str(kwargs)
+        kwargs.update(self.tokens)
 
-        if not messages:
-            if not text and not format:
-                raise RuntimeError('The `encode_template` requires either a list of `messages` ending by a `user` message, either a `text` or `format`, that will be used as user message')
-                
-            if format:
-                text = apply_format(
-                    format, text = text, ** kwargs, ** self.tokens
-                )
-        
-            messages = {'role' : 'user', 'content' : text}
-        
-        if isinstance(messages, dict):  messages = [messages]
-        elif isinstance(messages, str): messages = [{'role' : 'user', 'content' : messages}]
-        elif not isinstance(messages, list) or any(not isinstance(msg, dict) for msg in messages):
+        if messages is None:                messages = []
+        elif isinstance(messages, dict):    messages = [messages]
+        elif isinstance(messages, str):     messages = [{'role' : 'user', 'content' : messages}]
+        elif not isinstance(messages, list):
             raise ValueError('Unsupported `messages` argument : {}'.format(messages))
-        elif messages[-1]['role'] != 'user':
-            assert text is not None, '`messages` must end with a "user" message'
+        else:
+            messages = [to_json(msg) for msg in messages]
+        
+        if text:
             messages += [{'role' : 'user', 'content' : text}]
+
+        if message_format:
+            messages    = [{** msg, 'content' : apply_format(
+                message_format, text = msg['content'], message = msg, ** {** kwargs, ** msg}
+            )} for msg in messages]
         
         if system_prompt and messages[0]['role'] != 'system':
-            if '{' in system_prompt:
-                system_prompt = apply_format(system_prompt, ** kwargs, ** self.tokens)
-            messages = [{'role' : 'system', 'content' : system_prompt}] + messages
+            messages = [
+                {'role' : 'system', 'content' : apply_format(system_prompt, ** kwargs)}
+            ] + messages
         
         kwargs['messages'] = messages
         
         if 'date_string' in template and 'date_string' not in kwargs:
             kwargs['date_string'] = datetime.now().strftime("%d %B %Y")
         
-        text = apply_format(
-            template, add_generation_prompt = add_generation_prompt, ** kwargs, ** self.tokens
-        )
-        return self.encode(text, add_eos = add_eos, ** kwargs) if encode else text
+        for _ in range(len(kwargs['messages']) - 1):
+            text = apply_format(
+                template, add_generation_prompt = add_generation_prompt, ** kwargs
+            )
+            if answer_start: text += answer_start
+            
+            if not encode: return text
+
+            encoded = self.encode(text, add_eos = add_eos, ** kwargs)
+            if not max_length or len(encoded) <= max_length: return encoded
+            
+            kwargs['messages'].pop(1)
+        
+        raise ValueError('The message length ({}) exceeded the maximum length ({})'.format(
+            len(encoded), max_length
+        ))
 
     @execute_eagerly(signature = [
         text_signature, TensorSpec(shape = (None, ), dtype = 'int32', name = 'types')
@@ -1201,6 +1218,10 @@ class TextEncoder(object):
         return cls.from_transformers_pretrained('openai/whisper-base')
 
 
+    @staticmethod
+    def apply_format(format, ** kwargs):
+        return apply_format(format, ** kwargs)
+
 def pretty_print_template(template):
     if '\n' in template: return template
     
@@ -1253,12 +1274,17 @@ def _get_split_index(encoded, last_end, idx, _can_split_fn, _decrease = True):
 
 
 def apply_format(format, ** kwargs):
-    if '{%' not in format:
+    if '{' not in format:
+        return format
+    elif '{%' not in format and '{{' not in format:
         return format.format(** kwargs)
     
     compiled_format = compile_jinja_template(format)
 
-    return compiled_format.render(** kwargs)
+    return compiled_format.render(timestamp_to_str = timestamp_to_str, ** kwargs)
+
+def timestamp_to_str(timestamp):
+    return datetime.fromtimestamp(timestamp).strftime("%d %B %Y %Hh %Mmin %Ssec")
 
 @cache
 def compile_jinja_template(template):

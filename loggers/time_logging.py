@@ -16,40 +16,13 @@ import collections
 
 from functools import wraps
 
-from .utils import ContextManager, time_to_string, executing_eagerly
-
 logger = logging.getLogger(__name__)
 
 TIME_LEVEL      = 15
 TIME_DEBUG_LEVEL    = 13
-TIME_LOGGER_NAME    = 'timer'
+TIME_LOGGER_NAME    = None
 
 _str_indent     = '  '
-
-def create_timer(name):
-    return {'name' : name, 'runs' : [], 'start' : -1, 'children' : collections.OrderedDict()}
-
-def timer_to_str(timer, indent = 0, str_indent = _str_indent):
-    _indent = indent * str_indent
-    
-    if len(timer['runs']) > 1:
-        _infos = 'executed {} times : {} ({} / exec)'.format(
-            len(timer['runs']), time_to_string(sum(timer['runs'])),
-            time_to_string(sum(timer['runs']) / len(timer['runs']))
-        )
-    elif len(timer['runs']) == 0:
-        _infos = 'not finished yet'
-    else:
-        _infos = ': {}'.format(time_to_string(timer['runs'][0]))
-    
-    des = '{}- {} {}'.format(_indent, timer['name'], _infos)
-    for child_name, child_timer in timer['children'].items():
-        des += '\n' + timer_to_str(child_timer, indent = indent + 1, str_indent = str_indent)
-    return des
-
-def _get_thread_id():
-    thread  = threading.currentThread()
-    return '{}-{}'.format(thread.name, thread.ident)
 
 class RootTimer:
     """
@@ -63,173 +36,223 @@ class RootTimer:
         
         Note that `_runnings` only contains references to the corresponding timer in the `_timers` structure, meaning that modifying the `_runnings`'s timers will automatically modify the timer in `_timers`
     """
-    def __init__(self, name = 'timer'):
-        self.name      = name
+    def __init__(self):
+        self.mutex     = threading.Lock()
         self._timers   = collections.OrderedDict()
         self._runnings = {}
-        self.mutex     = threading.Lock()
-    
-    @property
-    def running(self):
-        return any([len(runnings) > 0 for t, runnings in self._runnings.items()])
+        self._thread_names  = {}
     
     def __str__(self, names = None):
         def thread_to_str(thread_timers, ** kwargs):
             des = ''
             for _, timer in thread_timers.items():
-                des += '\n' + timer_to_str(timer, ** kwargs)
+                des += '\n' + _timer_to_str(timer, ** kwargs)
             return des
         
-        if self.running: return "timer {} not stopped yet".format(self.name)
+        if self.is_running(): return "timer {} not stopped yet".format(self.name)
         
         with self.mutex:
-            _timers, _runnings = self._timers, self._runnings
-            self._timers, self._runnings = collections.OrderedDict(), {}
+            _timers = self._timers
+            self._timers, self._runnings, self._thread_names = collections.OrderedDict(), {}, {}
         
-        des = 'Timers for logger {} :'.format(self.name)
+        des = 'Timers :'
         if len(_timers) == 1:
             des += thread_to_str(list(_timers.values())[0])
         else:
             for thread, timers in _timers.items():
                 if len(timers) == 0: continue
-                des += '\n- Timers in thread {} :{}'.format(
-                    thread, thread_to_str(timers, indent = 1)
+                
+                des += '\n- Timers in thread {} (id {}) :{}'.format(
+                    self._thread_names[thread], thread, thread_to_str(timers, indent = 1)
                 )
         
         return des
     
-    def get_thread_timers(self, thread_id = None):
+    def get_thread_timers(self):
         """
             This method is the only one required to be thread-safe as it (possibly creates) and returns the timers for a specific thread
             Once returned, the manipulation of these timers will be, by design, thread-safe as functions are executed in a single thread then will modify in a sequential order
         """
-        with self.mutex:
-            if thread_id is None:
-                thread_id   = _get_thread_id()
-            if thread_id not in self._timers:
+        thread_id   = _get_thread_id()
+        if thread_id not in self._timers:
+            with self.mutex:
                 self._timers[thread_id]   = collections.OrderedDict()
                 self._runnings[thread_id] = collections.deque()
-            
-            return self._timers[thread_id], self._runnings[thread_id]
+                self._thread_names[thread_id] = threading.current_thread().name
+        
+        return self._timers[thread_id], self._runnings[thread_id]
     
-    def get_current_timer(self, timers, runnings):
-        return runnings[-1] if len(runnings) > 0 else timers
-    
-    def add_child(self, current, name):
-        """ Add a new child to `current` and set `start` entry to current time """
-        if name not in current: current[name] = create_timer(name)
-        current[name]['start'] = time.time()
-        return current[name]
+    def is_running(self):
+        return any(len(runnings) > 0 for t, runnings in self._runnings.items())
 
-    def stop_current_timer(self, runnings):
-        """ Pop the running thread and add a new value for the `runs` list """
-        timer = runnings.pop()
-        timer['runs'].append(time.time() - timer['start'])
-        timer['start'] = -1
-        return timer
-    
-    def start_timer(self, name):
+    def start_timer(self, name, level):
+        """
+            Add a new timer to the current running timer
+            If no timer is running for this thread (i.e., `len(runnings) == 0`, it is added to the main thread timer `timers`)
+
+            Arguments :
+                - name  : the name of the timer to start
+            Return :
+                - new_timer : a new `dict` representing the new current timer
+
+            Note : this function is thread-safe by design because it manipulates data structures belonging to the current thread. This means that other threads will necessarly modify different structures.
+        """
+        if not _should_track(level): return
+        
         timers, runnings = self.get_thread_timers()
         
-        current   = self.get_current_timer(timers, runnings)
-        new_timer = self.add_child(current.get('children', current), name)
+        if runnings:
+            current = runnings[-1]
+            if 'children' not in current: current['children'] = collections.OrderedDict()
+            current = current['children']
+        else:
+            current = timers
+
+        if name not in current: current[name] = new_timer = _create_timer(name)
+        else: new_timer = current[name]
+
+        new_timer['start'] = time.time()
         runnings.append(new_timer)
+        return new_timer
     
     def stop_timer(self, name):
         timers, runnings = self.get_thread_timers()
-        if len(runnings) == 0:
-            logger.error('empty runnings when stopping {} {}'.format(name, threading.currentThread().getName()))
-            return
-        timer = self.stop_current_timer(runnings)
+        if not runnings:
+            raise RuntimeError('No timer is running when stopping `{}` for thread `{}`'.format(
+                name, self._thread_names[_get_thread_id()]
+            ))
         
-        while len(runnings) > 0 and timer['name'] != name:
-            timer = self.stop_current_timer(runnings)
-        return timer
+        timer = runnings.pop()
+        timer['runs'].append(time.time() - timer['start'])
+        if timer['name'] != name:
+            raise RuntimeError('The currently running timer `{}` is not the stopped one `{}`. Make sure to stop them in the correct order'.format(
+                timer['name'], name
+            ))
 
+        return timer
     
-def timer(fn    = None,
-          name  = None,
-          debug = False,
-          logger    = TIME_LOGGER_NAME,
-          log_if_root   = True,
-          force_logging = False
-         ):
+
+class Timer:
+    def __init__(self, name, debug = False):
+        self.name   = name
+        self.level  = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
+        self._timer = None
+    
+    @property
+    def timers(self):
+        if not self._timer: return None
+        times = {self.name : sum(self._timer['runs'])}
+        return self.get_times(times, self._timer['children'])
+    
+    def __enter__(self):
+        self._timer = start_timer(self.name, self.level)
+        return self
+    
+    def __exit__(self, * args):
+        if self._timer: stop_timer(self.name)
+    
+    def log(self):
+        if not self._timer: return
+        time_logger.log(TIME_LEVEL, _timer_to_str(self._timer))
+    
+    def save(self, filename, overwrite = False):
+        if os.path.exists(filename) and not overwrite:
+            print('This file already exists ! To overwrite, pass `overwrite = True`')
+            return
+        
+        infos = json.dumps(self.timers)
+        with open(filename, 'w') as file:
+            file.write(infos)
+    
+    @staticmethod
+    def get_times(times, timers):
+        for name, timer in timers.items():
+            times.setdefault(name, []).extend(timer['runs'])
+            Timer.get_times(times, timer.get('children', {}))
+        return times
+
+def timer(name = None, *, debug = False, log_if_root = True, fn = None):
     """
         Decorator that will track execution time for the decorated function `fn`
         Arguments :
+            - name  : the name of the timer (by default, the name of the function)
+            - debug : whether to use TIME_LEVEL or TIME_DEBUG_LEVEL
+            - log_if_root   : whether to print if it is the root timer
             - fn    : the function to decorate
-            - name  : the timer's name (by default the function's name)
-            - logger    : which logger to use (by default 'timer')
-            - log_if_root   : whether to print if it is the root's timer
-            - force_logging : logs even if it is not the main timer (not fully supported yet)
     """
     def wrapper(fn):
         @wraps(fn)
         def fn_with_timer(* args, ** kwargs):
-            if not executing_eagerly():
-                return fn(* args, ** kwargs)
-            if not logger.isEnabledFor(level):
-                return fn(* args, ** kwargs)
-
-            logger.start_timer(timer_name, level = level)
+            if not start_timer(timer_name, level = level): return fn(* args, ** kwargs)
             try:
                 return fn(* args, ** kwargs)
             finally:
-                logger.stop_timer(timer_name, level = level)
+                stop_timer(timer_name)
 
-                if (log_if_root and not logger._timer.running) or (force_logging):
-                    logger.log_time(timer_name, level = level)
+                if log_if_root and not is_timer_running(): log_time(level)
         
         
-        timer_name = name
-        if not name:
-            timer_name = fn.name if hasattr(fn, 'name') else fn.__name__
+        timer_name = name if name else (fn.name if hasattr(fn, 'name') else fn.__name__)
         return fn_with_timer
     
     level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
-    if isinstance(logger, str): logger = logging.getLogger(logger)
-    elif logger is None:        logger = logging.getLogger()
-    
+    if callable(name): fn, name = name, None
     return wrapper if fn is None else wrapper(fn)
 
-def with_timer(self, * args, ** kwargs):
-    return ContextManager(
-        enter   = lambda: self.start_timer(* args, ** kwargs),
-        exit    = lambda *_: self.stop_timer(* args, ** kwargs)
+def log_time(level = TIME_LEVEL):
+    time_logger.log(level, _root_timer)
+
+def time_to_string(seconds):
+    """ Returns a string representation of a time (given in seconds) """
+    if seconds < 0.001: return '{} \u03BCs'.format(int(seconds * 1000000))
+    if seconds < 0.01:  return '{:.3f} ms'.format(seconds * 1000)
+    if seconds < 1.:    return '{} ms'.format(int(seconds * 1000))
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = ((seconds % 3600) % 60)
+    
+    return '{}{}{}'.format(
+        '' if h == 0 else '{}h '.format(h),
+        '' if m == 0 else '{}min '.format(m),
+        '{:.3f} sec'.format(s) if m + h == 0 else '{}sec'.format(int(s))
     )
 
-def start_timer(self, name, * args, level = -1, debug = False, ** kwargs):
-    """ Starts a new timer with the given `name`. Do not forget to call `stop_timer(name)` ! """
-    if not executing_eagerly(): return
-    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
-    if not self.isEnabledFor(level): return
-    
-    if not hasattr(self, '_timer'): self._timer = RootTimer(self.name)
-    self._timer.start_timer(name)
-    
-def stop_timer(self, name, * args, level = -1, debug = False, ** kwargs):
-    """ Stops the running timer with the given `name` """
-    if not executing_eagerly(): return
-    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
-    if not self.isEnabledFor(level): return
-    
-    if not hasattr(self, '_timer'): self._timer = RootTimer(self.name)
-    self._timer.stop_timer(name)
+def _create_timer(name):
+    return {'name' : name, 'runs' : [], 'start' : -1}
 
-def log_time(self, names = None, * args, level = -1, debug = False, ** kwargs):
-    if not executing_eagerly(): return
-    if level == -1: level = TIME_LEVEL if not debug else TIME_DEBUG_LEVEL
-    if not self.isEnabledFor(level): return
-    if not hasattr(self, 'timer'): self._timer = RootTimer(self.name)
-    des = self._timer.__str__(names)
-    self.log(level if not debug else TIME_DEBUG_LEVEL, des, * args, ** kwargs)
+def _timer_to_str(timer, indent = 0, str_indent = _str_indent):
+    _indent = indent * str_indent
+
+    if len(timer['runs']) > 1:
+        _infos = 'executed {} times : {} ({} / exec)'.format(
+            len(timer['runs']),
+            time_to_string(sum(timer['runs'])),
+            time_to_string(sum(timer['runs']) / len(timer['runs']))
+        )
+    elif len(timer['runs']) == 0:
+        _infos = 'not finished yet'
+    else:
+        _infos = ': {}'.format(time_to_string(timer['runs'][0]))
+
+    des = '{}- {} {}'.format(_indent, timer['name'], _infos)
+    for child_name, child_timer in timer.get('children', {}).items():
+        des += '\n' + _timer_to_str(child_timer, indent = indent + 1, str_indent = str_indent)
+    return des
+
+_get_thread_id  = threading.get_ident
+
+time_logger = logging.getLogger(TIME_LOGGER_NAME)
+_should_track   = time_logger.isEnabledFor
+
+_root_timer = RootTimer()
+start_timer = _root_timer.start_timer
+stop_timer  = _root_timer.stop_timer
+is_timer_running    = _root_timer.is_running
 
 logging.Logger.start_timer  = start_timer
 logging.Logger.stop_timer   = stop_timer
 logging.Logger.log_time     = log_time
-logging.Logger.timer        = with_timer
-
-time_logger = logging.getLogger(TIME_LOGGER_NAME)
+logging.Logger.timer        = Timer
 
 logging.start_timer  = time_logger.start_timer
 logging.stop_timer   = time_logger.stop_timer

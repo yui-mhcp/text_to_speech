@@ -70,13 +70,13 @@ class TestVectorsDatabase(CustomTestCase):
     
     def test_indexing(self):
         for i in range(self.n):
-            self.assertEqual(self.database[i], {** self.data[i], 'vector' : self.vectors[i]})
+            self.assertEqual(self.database[i], self.data[i])
             
         for i, item in enumerate(self.database):
-            self.assertEqual(item, {** self.data[i], 'vector' : self.vectors[i]})
+            self.assertEqual(item, self.data[i])
 
         for i, item in enumerate(self.data):
-            self.assertEqual(self.database[item['filename']], {** item, 'vector' : self.vectors[i]})
+            self.assertEqual(self.database[item['filename']], item)
         
         self.assertEqual(self.database['filename'], [d['filename'] for d in self.data])
         self.assertEqual(self.database['text'], [d['text'] for d in self.data])

@@ -14,12 +14,13 @@ import time
 import inspect
 import logging
 import collections
+import numpy as np
 
 from .runtime import Runtime
 from loggers import timer
 from utils import time_to_string, args_to_str
-from utils.keras_utils import ops
-
+from utils.keras_utils import ops        
+        
 TRTLLMInferenceOutput = collections.namedtuple(
     "TRTLLMInferenceOutput", [
         "tokens", "lengths", "offset"
@@ -32,7 +33,8 @@ _default_enc_dec_config = {
     'max_input_len' : 32,
     'max_output_len'    : 512,
     'max_batch_size'    : 16,
-    'max_beam_width'    : 3
+    'max_beam_width'    : 5,
+    'cross_kv_cache_fraction'   : 0.5
 }
 
 
@@ -48,6 +50,12 @@ class TensorRTLLMRuntime(Runtime):
         self.sos_token  = -1
         self.eos_token  = -1
         self.pad_token  = -1
+        
+        self._max_input_length  = self.engine.max_input_len
+    
+    @property
+    def max_input_length(self):
+        return self._max_input_length
     
     def set_tokens(self, sos_token = None, eos_token = None, pad_token = None):
         if sos_token not in (-1, None): self.sos_token = sos_token
@@ -62,11 +70,19 @@ class TensorRTLLMRuntime(Runtime):
                  tokens = None,
                  max_input_len  = None,
                  stream_callback    = None,
+                 add_none_at_eos    = False,
                  encoder_output_lengths = None,
-
+                 
+                 allowed_tokens = None,
+                 
+                 decode_fn  = None,
+                 
                  ** kwargs
                 ):
+        import torch
+        
         if max_input_len: self.engine.max_input_len = max_input_len
+        else:             self.engine.max_input_len = self.max_input_length
         
         inputs = self.prepare_tensor(
             inputs, self.is_enc_dec, pad_token = self.pad_token, dtype = self.engine.dtype
@@ -98,19 +114,32 @@ class TensorRTLLMRuntime(Runtime):
         
         inp_lengths = [tok.size(0) for tok in kwargs['batch_input_ids']]
         
+        if allowed_tokens is not None:
+            self.engine.logits_processor_map['token_masking'].set_tokens(allowed_tokens)
+            kwargs.update({
+                'max_new_tokens'    : len(self.engine.logits_processor_map['token_masking']),
+                'logits_processor_names'    : ['token_masking']
+            })
+        
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Calling `TRT-LLM` generate with {}'.format(args_to_str(kwargs)))
-        t0 = time.time()
-        output = self.engine.generate(** kwargs)
         
-        if stream_callback is not None:
-            stream = output
-            for output in stream:
-                stream_callback(TRTLLMInferenceOutput(
-                    tokens  = output['output_ids'],
-                    lengths = output['sequence_lengths'],
-                    offset  = inp_lengths
-                ))
+        t0 = time.time()
+        with torch.no_grad():
+            output = self.engine.generate(** kwargs)
+
+            if stream_callback is not None:
+                stream = output
+                for output in stream:
+                    out_i = TRTLLMInferenceOutput(
+                        tokens  = output['output_ids'],
+                        lengths = output['sequence_lengths'],
+                        offset  = inp_lengths
+                    )
+                    if decode_fn is not None: out_i = decode_fn(out_i)
+                    stream_callback(out_i)
+
+                if add_none_at_eos: stream_callback(None)
         
         if logger.isEnabledFor(logging.INFO):
             n = output['sequence_lengths'].sum().cpu().numpy() - sum(inp_lengths)
@@ -170,4 +199,47 @@ class TensorRTLLMRuntime(Runtime):
             k : v for k, v in kwargs.items()
             if k in inspect.signature(runner_cls.from_dir).parameters
         }
-        return runner_cls.from_dir(engine_dir = path, ** kwargs)
+        kwargs['logits_processor_map'] = TensorRTLLMRuntime.get_logits_processors()
+        
+        engine = runner_cls.from_dir(engine_dir = path, ** kwargs)
+        engine.logits_processor_map = kwargs['logits_processor_map']
+        
+        kwargs['logits_processor_map']['token_masking'].vocab_size = engine.vocab_size
+        
+        return engine
+
+    @staticmethod
+    def get_logits_processors():
+        import tensorrt_llm
+        
+        class TokenMasking(tensorrt_llm.runtime.generation.LogitsProcessor):
+            def __init__(self, value = float('-inf')):
+                super().__init__()
+                self.value  = value
+
+                self.tokens = None
+                self.mask   = None
+                self.step   = 0
+
+            def __len__(self):
+                return self.tokens.shape[-1]
+
+            def __call__(self, req_id, logits, ids, stream_ptr, clint_id):
+                import torch
+                
+                with torch.cuda.stream(torch.cuda.ExternalStream(stream_ptr)):
+                    logits[self.mask[:, :, self.step, :]] = self.value
+                    self.step += 1
+
+                return logits
+
+            def set_tokens(self, tokens):
+                self.step   = 0
+                self.tokens = np.array(tokens)
+                self.mask   = np.ones((1, 1, self.tokens.shape[-1], self.vocab_size), dtype = bool)
+                
+                for step in range(self.tokens.shape[-1]):
+                    self.mask[:, :, step, self.tokens[:, step]] = False
+                
+        
+        return {'token_masking' : TokenMasking()}

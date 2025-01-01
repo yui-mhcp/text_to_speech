@@ -42,10 +42,11 @@ class MetaProcess(type):
         name = kwargs.get('name', getattr(fn, '__name__', None))
         
         with _global_mutex:
-            if name not in _processes:
+            if name not in _processes or _processes[name].stopped:
                 if add_stream:      kwargs.setdefault('input_stream', 'queue')
                 if add_callback:    kwargs.setdefault('output_stream', 'queue')
-
+                if 'stream' in kwargs: kwargs['input_stream'] = kwargs.pop('stream')
+                
                 _processes[name] = super().__call__(fn, * args, ** kwargs)
         
         return _processes[name]
@@ -174,8 +175,8 @@ class Process(metaclass = MetaProcess):
         elif self.is_alive():
             des += ' running'
         
-        if self.links:
-            des += ' in_pipes={}'.format(self.links)
+        if self.input_pipes:
+            des += ' in_pipes={}'.format(self.input_pipes)
         
         if self.output_pipes:
             des += ' out_pipes={}'.format(self.output_pipes)
@@ -183,7 +184,7 @@ class Process(metaclass = MetaProcess):
         return des + '>'
     
     def __str__(self):
-        return self.name
+        return self.name or repr(self)
     
     def __hash__(self):
         return hash(self.name)
@@ -221,7 +222,8 @@ class Process(metaclass = MetaProcess):
 
     def terminate(self):
         with _global_mutex:
-            _processes.pop(self.name, None)
+            if _processes.get(self.name, None) is self:
+                _processes.pop(self.name, None)
 
         with self.mutex:
             if self.process is None: return

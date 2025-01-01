@@ -192,9 +192,7 @@ class BaseVectorsDB(metaclass = ABCMeta):
             return self.data[col][index]
         
         if isinstance(item, int):
-            result = {'vector' : self.get_vectors(item)}
-            for k, v in self.items(): result[k] = v[item]
-            return result
+            return {k : v[item] for k, v in self.items()}
         
         elif isinstance(item, range):
             indexes = list(item)

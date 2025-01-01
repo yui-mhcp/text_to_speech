@@ -71,7 +71,7 @@ def play_audio(audio, rate = None, blocking = True, raw = False, add_silence = T
     
     with _audio_player_lock:
         if _audio_player is None:
-            _audio_player = AudioPlayer(_audio_player_buffer, rate = rate, ** kwargs)
+            _audio_player = AudioPlayer(buffer = _audio_player_buffer, rate = rate, ** kwargs)
         
         if isinstance(audio, np.ndarray):
             for s in range(0, len(audio), _audio_player.chunk_size):
@@ -94,19 +94,20 @@ def record_audio(** kwargs):
     """ Plays `audio` on speakers """
     recorder = AudioRecorder(** kwargs).start()
     recorder.join()
-    return recorder.audio
+    return recorder.rate, recorder.audio
 
-def stream_audio(audio = None, rate = None, callback = None, ** kwargs):
+def stream_audio(audio = None, rate = None, callback = None, real_time = True, ** kwargs):
     if audio is None: return record_audio(rate = rate, callback = callback, ** kwargs)
     
     rate, audio = read_audio(audio, target_rate = rate, rate = rate, ** kwargs)
     
     if callback is not None:
         chunk_size = rate // kwargs.get('fps', 10)
-        for s in range(0, len(audio), chunk_size):
-            callback(audio[s : s + chunk_size])
+        for s in range(0, audio.shape[-1], chunk_size):
+            callback(audio[..., s : s + chunk_size])
+            if real_time: time.sleep(1. / kwargs.get('fps', 10))
     
-    return audio
+    return rate, audio
 
 """ Generic functions to load audio and mel """
 
@@ -123,18 +124,21 @@ def load_audio(data, rate, ** kwargs):
             - audio : `np.ndarray` or `Tensor` with shape [n_samples]
     """
     if isinstance(data, dict):
-        if 'audio' in data: return data['audio']
-
-        audio_key = 'wavs_{}'.format(rate)
-        if audio_key not in data: 
+        if 'audio' in data:
+            audio_key = 'audio'
+        elif 'wavs_{}'.format(rate) in data:
+            audio_key = 'wavs_{}'.format(rate)
+        else:
             audio_key = 'filename' if 'filename' in data else 'audio_filename'
         
+        if 'rate' in data: kwargs['rate'] = data['rate']
         data = data[audio_key]
     
     if not isinstance(data, (str, np.ndarray)) and not ops.is_tensor(data):
         raise ValueError("Unknown audio type : {}\n{}".format(type(data), data))
 
-    _, audio = read_audio(data, target_rate = rate, rate = rate, ** kwargs)
+    if 'rate' not in kwargs: kwargs['rate'] = rate
+    _, audio = read_audio(data, target_rate = rate, ** kwargs)
     
     return audio
 

@@ -54,9 +54,15 @@ def download_hf_model(model_name, reload = False, ** kwargs):
     path    = os.path.join(path, 'models--{}'.format(model_name.replace('/', '--')), 'snapshots')
     if not os.path.exists(path) or not glob.glob(path + '/**/config.json') or reload:
         from huggingface_hub import snapshot_download
-        return snapshot_download(
-            model_name, allow_patterns = ('*.json', '*.bin', '*.pt'), ** kwargs
+        snapshot_download(
+            model_name, allow_patterns = ('*.json', ), ** kwargs
         )
+        for pat in ('model.bin', '*.pt'):
+            res = snapshot_download(
+                model_name, allow_patterns = (pat, ), ** kwargs
+            )
+            if glob.glob(path + '/**/' + pat):
+                return res
     return glob.glob(path + '/*')[0]
 
 def load_hf_checkpoint(model_name, map_location = 'cpu', ** kwargs):

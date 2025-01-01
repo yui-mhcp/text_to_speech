@@ -17,7 +17,7 @@ import importlib
 
 logger = logging.getLogger(__name__)
 
-_max_repr_items = 10
+_max_repr_items = 50
 _max_repr_str   = 100
 
 def get_fn_name(fn):
@@ -97,7 +97,7 @@ def repr_data(data):
         for i, (k, v) in enumerate(data.items()):
             if i > _max_repr_items: break
             des += '{} : {}, '.format(k, repr_data(v))
-        return des + '... [{} more]}'.format(len(data) - _max_repr_items)
+        return des + '... [{} more]'.format(len(data) - _max_repr_items)
 
     elif isinstance(data, (list, tuple)):
         if len(data) <= _max_repr_items:

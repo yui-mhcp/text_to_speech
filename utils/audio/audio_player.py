@@ -16,8 +16,8 @@ import numpy as np
 from .audio_stream import AudioStream
 
 class AudioPlayer(AudioStream):
-    def __init__(self, buffer, ** kwargs):
-        super().__init__(** kwargs)
+    def __init__(self, rate, buffer, format = 'float32', ** kwargs):
+        super().__init__(rate, format = format, ** kwargs)
         self.buffer = buffer
         
         self.wait_time = .25 / self.fps

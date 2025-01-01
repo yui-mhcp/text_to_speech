@@ -39,6 +39,6 @@ def load_vectors_db(filename):
     config = load_data(filename)
     if isinstance(config, np.ndarray):  config = {'vectors' : config}
     elif hasattr(config, 'to_dict'):    config = config.to_dict('list')
-    elif not config:    return None
+    elif not config or 'vectors' not in config: return None
     
     return DenseVectors(** config)

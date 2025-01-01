@@ -13,6 +13,7 @@ import os
 import glob
 import logging
 
+from utils.file_utils import load_data, dump_data
 from utils.wrapper_utils import dispatch_wrapper
 from .parser_utils import *
 
@@ -39,7 +40,8 @@ def parse_document(filename,
                    
                    add_page = False,
                    
-                   zip_filename = None,
+                   _cache   = None,
+                   cache_file   = None,
                    
                    ** kwargs
                   ):
@@ -78,12 +80,15 @@ def parse_document(filename,
                 - width     : the image width
     """
     if isinstance(filename, str):
-        if os.path.isdir(filename):
+        if '*' in filename:
+            filename = glob.glob(filename)
+        elif os.path.isdir(filename):
             filename = [os.path.join(filename, f) for f in os.listdir(filename)]
             if not recursive: filename = [f for f in filename if not os.path.isdir(filename)]
-        elif '*' in filename:
-            filename = glob.glob(filename)
     
+    if cache_file:
+        _cache = load_data(cache_file, default = {})
+
     if isinstance(filename, list):
         filename = [
             f for f in filename if os.path.isdir(f) or f.endswith(tuple(_parsing_methods))
@@ -104,15 +109,22 @@ def parse_document(filename,
 
                 add_page = add_page,
                 
-                zip_filename    = zip_filename,
+                _cache  = _cache,
                 
                 ** kwargs
             )
             if not documents: documents = paragraphs
             elif isinstance(documents, list): documents.extend(paragraphs)
             else: documents.update(paragraphs)
+        
+        if cache_file:
+            dump_data(cache_file, _cache)
+
         return documents if documents is not None else []
     
+    if _cache and filename in _cache:
+        return _cache[filename]
+        
     ext = filename.split('.')[-1]
     
     if ext not in _parsing_methods:
@@ -131,6 +143,7 @@ def parse_document(filename,
         )
     except Exception as e:
         logger.warning('An exception occured while loading {} : {}'.format(filename, e))
+        raise e
         return []
     
     if isinstance(paragraphs, dict):
@@ -169,6 +182,12 @@ def parse_document(filename,
             logger.warning('The `group_by` key {} is missing in some paragraphs'.format(group_by))
         else:
             paragraphs = group_paragraphs(paragraphs, group_by)
+    
+    if _cache is not None:
+        _cache[filename] = paragraphs
+    
+    if cache_file:
+        dump_data(cache_file, _cache)
     
     return paragraphs
 

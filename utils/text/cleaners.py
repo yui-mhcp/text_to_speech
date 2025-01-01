@@ -27,7 +27,9 @@ _special_symbols    = {
     '^'     : {'fr' : 'chapeau',    'en' : 'hat'},
     '%'     : {'fr' : 'pourcent',   'en' : 'percent'},
     '§'     : {'fr' : 'paragraphe', 'en' : 'paragraph'},
-    '&'     : {'fr' : 'et',         'en' : 'and'}
+    '&'     : {'fr' : 'et',         'en' : 'and'},
+    '°C'    : {'fr' : 'degrés',     'en' : 'degrees'},
+    '°'     : {'fr' : 'degrés',     'en' : 'degrees'}
 }
 
 # Regular expression matching whitespace:
@@ -195,6 +197,9 @@ def remove_tokens(text, tokens = [], ** kwargs):
     if not tokens: return text
     return replace_words(text, {tok : '' for tok in tokens})
 
+def remove_markdown(text):
+    return re.sub(r'\*\*(.*)\*\*', r'\1', text)
+
 def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
     return ' '.join([extensions.get(c.lower(), {}).get(lang, c) for c in text])
@@ -291,17 +296,18 @@ def complete_cleaners(text,
         5) Expand numbers + special symbols
         6) Collapse whitespace
     """
-    if lang == 'fr':        text = fr_convert_to_ascii(text, ** kwargs)
-    else:                   text = convert_to_ascii(text, ** kwargs)
-    
     if patterns:            text = replace_patterns(text, patterns, ** kwargs)
     if replacements:        text = replace_words(text, replacements, ** kwargs)
     if to_lowercase:        text = lowercase(text, ** kwargs)
     if to_expand:
+        text = remove_markdown(text)
         if to_expand_abrev:     text = expand_abreviations(text, lang = lang, ** kwargs)
         text = expand_numbers(text, lang = lang, expand_symbols = to_expand_symbols, ** kwargs)
         if to_expand_symbols:   text = expand_special_symbols(text, lang = lang, ** kwargs)
     
+    if lang == 'fr':        text = fr_convert_to_ascii(text, ** kwargs)
+    else:                   text = convert_to_ascii(text, ** kwargs)
+
     text = collapse_whitespace(text, ** kwargs)
     return text
 

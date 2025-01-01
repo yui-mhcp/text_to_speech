@@ -67,6 +67,7 @@ def group_words(blocks, boxes, indices):
             text   = ''
             for idx, word_box in zip(row, word_boxes):
                 word = blocks[idx]['text']
+                if not word: continue
                 if word[0].isalnum():
                     if word_box[1] >= middle - 1e-3:
                         if logger.isEnabledFor(logging.DEBUG):
@@ -179,6 +180,8 @@ def group_column(blocks, boxes, indices):
 
 @timer
 def combine_blocks(blocks):
+    if not blocks: return []
+    
     page_w, page_h = blocks[0]['page_w'], blocks[0]['page_h']
     boxes = np.array([l['box'] for l in blocks], dtype = np.float32)
     boxes = boxes / np.array([[page_w, page_h, page_w, page_h]], dtype = np.float32)

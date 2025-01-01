@@ -309,7 +309,7 @@ class TestTextSplitter(CustomTestCase, parameterized.TestCase):
         (['ab', 'c', 'def', 'g'], 3, [[0, 1], [2], [3]])
     )
     def test_merging_simple(self, text, max_length, target):
-        merged, _, indices = merge_chunks(text, max_length)
+        merged, _, indices = merge_texts(text, max_length)
         self.assertEqual(indices, target, 'Merged : {}'.format(merged))
     
     @parameterized.parameters(
@@ -320,5 +320,5 @@ class TestTextSplitter(CustomTestCase, parameterized.TestCase):
         (['Hello', 'World', '!', 'This', 'is a test'], 3, [[0, 1, 2], [3], [4]])
     )
     def test_merging_words(self, text, max_length, target):
-        merged, _, indices = merge_chunks(text, max_length, tokenizer = lambda text: text.split())
+        merged, _, indices = merge_texts(text, max_length, tokenizer = lambda text: text.split())
         self.assertEqual(indices, target, 'Merged : {}'.format(merged))

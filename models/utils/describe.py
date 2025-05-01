@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -43,23 +43,23 @@ def describe_model(model, with_compile = True):
     return des
 
 def optimizer_to_str(optimizer):
-    return keras_object_to_str(optimizer, name = 'Optimizer')
+    return _keras_object_to_str(optimizer, name = 'Optimizer')
 
 def loss_to_str(loss):
-    return keras_object_to_str(loss, name = 'Loss')
+    return _keras_object_to_str(loss, name = 'Loss')
 
 def metrics_to_str(metrics):
-    return keras_object_to_str(metrics, name = 'Metric')
+    return _keras_object_to_str(metrics, name = 'Metric')
 
-def keras_object_to_str(obj, name = None, format = '- {name} \t: {value}\n'):
+def _keras_object_to_str(obj, name = None, format = '- {name} \t: {value}\n'):
     if isinstance(obj, list):
         if len(obj) == 1:
-            return keras_object_to_str(obj[0] if len(obj) == 1 else None, name, format)
+            return _keras_object_to_str(obj[0] if len(obj) == 1 else None, name, format)
         obj = {'{} #{}'.format(name, i) : obj_i for i, obj_i in enumerate(obj)}
     
     if isinstance(obj, dict):
         return ''.join([
-            keras_object_to_str(obj = v, name = k, format = format) for k, v in obj.items()
+            _keras_object_to_str(obj = v, name = k, format = format) for k, v in obj.items()
         ])
     
     if obj is None: return ''
@@ -80,7 +80,7 @@ def infer_downsampling_factor(model):
         AveragePooling1D, AveragePooling2D, AveragePooling3D
     ]
     try:
-        from custom_layers import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D
+        from architectures.layers import MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D
         _downsampling_types.extend([MaskedConv1D, MaskedMaxPooling1D, MaskedAveragePooling1D])
     except Exception as e:
         pass
@@ -107,7 +107,7 @@ def infer_upsampling_factor(model):
         Conv1DTranspose, Conv2DTranspose, Conv3DTranspose
     ]
     try:
-        from custom_architectures.east_arch import UpSampling2DWithAlignedCorners
+        from architectures.east_arch import UpSampling2DWithAlignedCorners
         _downsampling_types.append(UpSampling2DWithAlignedCorners)
     except Exception as e:
         pass
@@ -128,9 +128,3 @@ def infer_upsampling_factor(model):
         
         return factor
     return _get_factor(model)
-
-def _get_tracked_type(value, types):
-    if isinstance(value, (list, tuple)) and len(value) > 0: value = value[0]
-    for t in types:
-        if isinstance(value, t): return t
-    return None

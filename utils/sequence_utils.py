@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,273 +11,78 @@
 
 import numpy as np
 
-from functools import wraps
+from .keras import ops
 
-from loggers import timer
-from .parser import get_args, get_fn_name
-from .keras_utils import ops
-from .pandas_utils import is_dataframe
-from .wrapper_utils import args_to_kwargs
-
-def convert_to_list(data, rank = None):
-    """ Converts `data` to a `list` or a batched array of rank `rank` """
-    if isinstance(data, list):              return data
-    elif is_dataframe(data):                return data.to_dict('records')
-    elif isinstance(data, (dict, str)):     return [data]
-    elif isinstance(data, (set, tuple)):    return list(data)
-    elif ops.is_array(data):
-        if rank is None:    return data
-        r = ops.rank(data)
-        if r == rank:       return ops.expand_dims(data, axis = 0)
-        elif r == rank + 1: return data
-        else: raise ValueError('Expected rank = {} or {}, got {}'.format(rank, rank + 1, r))
-    else:
-        raise ValueError('Unsupported `data` type : {}\n{}'.format(type(data), data))
-
-def stack_batch(batch, pad_value = 0., dtype = 'float32', maybe_pad = False):
-    if len(batch) == 1: return ops.expand_dims(batch[0], axis = 0)
-    elif maybe_pad and len(set(tuple(b.shape) for b in batch)) > 1:
-        return ops.cast(pad_batch(batch, dtype = dtype, pad_value = pad_value), dtype)
-    return ops.stack(batch, axis = 0)
-
-def pad_batch(batch, pad_value = 0, max_length = None, dtype = None):
+def pad_batch(batch, pad_value = 0, dtype = None, pad_mode = 'after'):
     """
         Create a padded version of batch in a single np.ndarray
-        Note that this function allows to have different shapes on different dimensions and will pad all of them. 
+        Note that this function allows to have different shapes on different dimensions, and will pad all of them. 
         However, all data must have the same rank (number of dimensions)
         
         Arguments : 
-            - batch         : list of np.ndarray / Tensor
+            - batch         : `llist` of data (`np.ndarray`, `Tensor`, `int`, `float`, `bool`)
             - pad_value     : the value to add as padding
-            - max_length    : maximum length for each dimension. If not given, take the max length of datas 
-            - dtype : dtype of the final output
+            - dtype         : dtype of the final output
         Return : 
-            - padded_batch : np.ndarray of same rank as data
+            - padded_batch : np.ndarray of same rank as data + 1 (the batch dimension)
     """
+    assert pad_mode in ('before', 'after')
+    
     if len(batch) == 0: return batch
     if not hasattr(batch[0], 'shape'):
-        if not isinstance(batch[0], list): return np.array(batch, dtype = dtype)
-        batch = [pad_batch(b, pad_value = pad_value, dtype = dtype) for b in batch]
+        if not isinstance(batch[0], list): return np.asarray(batch, dtype = dtype)
+        batch = [
+            pad_batch(b, pad_value = pad_value, dtype = dtype, pad_mode = pad_mode)
+            for b in batch
+        ]
     
+    if len(batch) == 1:
+        return ops.expand_dims(ops.cast(batch[0], dtype) if dtype else batch[0], axis = 0)
+    elif pad_value is None or len(set(tuple(b.shape) for b in batch)) == 1:
+        return ops.stack(batch, axis = 0)
+    
+    batch = [ops.convert_to_numpy(b) for b in batch]
     if dtype is None:   dtype = ops.dtype_to_str(batch[0].dtype)
     else:               dtype = ops.dtype_to_str(dtype)
-    if 'str' in dtype and not isinstance(pad_value, str): pad_value = ''
     
-    ndim = len(batch[0].shape)
-    assert all(len(b.shape) == ndim for b in batch)
+    rank = batch[0].ndim
+    assert all(b.ndim == rank for b in batch), 'All ranks must be equal !'
     
     max_shape = np.max(np.array([b.shape for b in batch], dtype = np.int32), axis = 0).tolist()
-    if max_length: max_shape[0] = min(max_shape[0], max_length)
     
-    padded_batch = np.full([len(batch)] + max_shape, pad_value)
-    padded_batch = padded_batch.astype(dtype if 'str' not in dtype else object)
+    padded_batch = np.full([len(batch)] + max_shape, np.asarray(pad_value, dtype = dtype))
     for i, b in enumerate(batch):
-        slices = tuple([
-            slice(0, min(s, max_l)) for s, max_l in zip(b.shape, max_shape)
-        ])
-        padded_batch[(i, ) + slices] = b[slices]
+        if pad_mode == 'after':
+            slices = tuple(slice(0, s) for s in b.shape)
+        else:
+            slices = tuple(slice(max_s - s, max_s) for s, max_s in zip(b.shape, max_shape))
+        
+        padded_batch[(i, ) + slices] = b
     
     return padded_batch
 
 def pad_to_multiple(data, multiple, axis = -1, pad_mode = 'after', ** kwargs):
-    """ Pad `seq[axis]` to the next multiple of `multiple` (if not a multiple of it) """
+    """ Pad `data[axis]` to the next multiple of `multiple` (if not already a multiple) """
     if isinstance(axis, int):       axis = [axis]
-    if isinstance(multiple, int):   multiple = [multiple]
+    if isinstance(multiple, int):   multiple = [multiple] * len(axis)
     axis = [ax if ax >= 0 else len(data.shape) + ax for ax in axis]
     
     shape   = ops.shape(data)
     
-    should_pad = False
-    paddings = []
-    for i in range(len(shape)):
-        pad = 0
-        if i in axis:
-            mul  = multiple[axis.index(i)] if len(multiple) > 1 else multiple[0]
-            rest = shape[i] % mul
-            if rest != 0:
-                should_pad  = True
-                pad     = mul - rest
+    should_pad, paddings = False, [(0, 0)] * len(shape)
+    for ax, mul in zip(axis, multiple):
+        if shape[ax] % mul == 0: continue
         
-        if pad == 0:
-            padding = (0, 0)
-        elif pad_mode == 'before':
-            padding = (pad, 0)
+        should_pad = True
+        
+        pad = mul - shape[ax] % mul
+        
+        if pad_mode == 'before':
+            paddings[ax] = (pad, 0)
         elif pad_mode == 'after':
-            padding = (0, pad)
+            paddings[ax] = (0, pad)
         elif pad_mode == 'even':
             pad_half = pad // 2
-            padding = (pad_half, pad - pad_half)
-        
-        paddings.append(padding)
+            paddings[ax] = (pad_half, pad - pad_half)
 
     return ops.pad(data, paddings, ** kwargs) if should_pad else data
-
-def apply_on_batch(fn = None,
-                   *,
-                   
-                   cond = None,
-                   batched_arg  = 0,
-                   default_batch_size = None,
-                   
-                   sort_fn  = None,
-                   sort_key = None,
-                   
-                   concat_fn    = None,
-                   concat_axis  = 0
-                  ):
-    def wrapper(fn):
-        @timer(name = 'batched_{}'.format(get_fn_name(fn)))
-        @wraps(fn)
-        @args_to_kwargs(fn)
-        def batched_fn(*,
-                       
-                       batch_size   = default_batch_size,
-                       
-                       reorder  = True,
-                       return_inputs    = False,
-                       initial_results  = None,
-                       
-                       tqdm = None,
-                       
-                       ** kwargs
-                      ):
-            if not isinstance(batched_argname, (list, tuple)):
-                batch_size = kwargs.pop('batch_size_{}'.format(batched_argname), batch_size)
-            
-            if cond is not None:
-                batch_size, kwargs = cond(batch_size, kwargs)
-            
-            if not batch_size: return fn(** kwargs)
-            
-            if tqdm is None: tqdm = lambda x: x
-            
-            if isinstance(batched_argname, str):
-                inputs = _to_iterable(kwargs[batched_argname])
-                length = len(inputs)
-            else:
-                inputs = {n : _to_iterable(kwargs[n]) for n in batched_argname}
-                length = len(inputs[batched_argname[0]])
-            
-            if length <= batch_size: return fn(** kwargs)
-            
-            
-            if sort_key is not None:
-                if is_dataframe(inputs):
-                    sorted_indexes = sorted(
-                        range(length), key = lambda i: sort_key(inputs.iloc[i]), reverse = True
-                    )
-                    inputs = inputs.iloc[sorted_indexes]
-                else:
-                    sorted_indexes = sorted(
-                        range(length), key = lambda i: sort_key(inputs[i]), reverse = True
-                    )
-                    inputs = [inputs[idx] for idx in sorted_indexes]
-            
-            results = initial_results
-            for idx in tqdm(range(0, length, batch_size)):
-                if isinstance(batched_argname, (list, tuple)):
-                    kwargs.update(_get_batch(inputs, idx, batch_size))
-                else:
-                    kwargs[batched_argname] = _get_batch(inputs, idx, batch_size)
-                
-                out = fn(** kwargs)
-                
-                results = nested_append(results, out)
-
-            if concat_fn is not None:
-                results = concat_fn(results)
-            else:
-                results = nested_concat(results, axis = concat_axis)
-            
-            if len(inputs) > 1 and sort_key is not None and reorder and initial_results is None:
-                invert_indexes = np.argsort(np.array(sorted_indexes, dtype = 'int32'))
-                results = nested_gather(results, invert_indexes, axis = concat_axis)
-            
-            return results
-        
-        batched_argname = batched_arg
-        if isinstance(batched_arg, int):
-            _args = get_args(fn)
-            if _args[0] == 'self': _args = _args[1:]
-            batched_argname = _args[batched_arg]
-            
-        return batched_fn
-    return wrapper if fn is None else wrapper(fn)
-
-def _to_iterable(value):
-    if isinstance(value, str): return [value]
-    return value
-
-@timer
-def nested_append(acc, value):
-    if isinstance(value, (list, tuple)):
-        return value.__class__(* [
-            nested_append(acc[i] if acc else None, value[i]) for i in range(len(value))
-        ])
-    elif isinstance(value, dict):
-        return {
-            k : nested_append(acc[k] if acc else None, value[k]) for k in value.keys()
-        }
-    
-    if acc is None: return [value] if ops.is_array(value) else value
-    acc.append(value)
-    return acc
-
-@timer
-def nested_concat(values, variable_length = None, pad_value = 0., axis = 0):
-    if isinstance(values, dict):
-        return {k : nested_concat(v, variable_length, pad_value, axis) for k, v in values.items()}
-    elif isinstance(values, tuple):
-        return values.__class__(* [
-            nested_concat(v, variable_length, pad_value, axis) for v in values
-        ])
-    elif not isinstance(values, list):
-        return values
-    elif isinstance(values[0], list):
-        return [nested_concat(v, variable_length, pad_value, axis) for v in values]
-    elif len(values) == 1:
-        return values[0]
-    
-    if variable_length is None:
-        variable_length = len(set([
-            tuple([s for i, s in enumerate(it.shape) if i != axis]) for it in values]
-        )) > 1
-    
-    if variable_length:
-        return concat_sequences(values, pad_value = pad_value, axis = axis)
-    else:
-        return ops.concatenate(values, axis = axis)
-
-@timer
-def nested_gather(values, indexes, axis):
-    if isinstance(values, dict):
-        return {k : nested_gather(v, indexes, axis) for k, v in values.items()}
-    elif isinstance(values, list):
-        return [nested_gather(v, indexes, axis) for v in values]
-    elif ops.is_array(values):
-        return ops.take(values, indexes, axis)
-    return values[indexes]
-    
-def concat_sequences(sequences, pad_value = 0., pad_mode = 'after', axis = 0):
-    shapes = ops.stack([
-        ops.convert_to_numpy(ops.shape(item)) for item in sequences
-    ], axis = 0)
-    
-    max_it_shape    = ops.max(shapes[:, 1:], axis = 0, keepdims = True)
-    pad_shapes      = max_it_shape - shapes[:, 1:]
-    
-    pad_shapes  = ops.stack([pad_shapes, ops.zeros_like(pad_shapes)], axis = 2)
-    if pad_mode == 'before': pad_shapes = ops.flip(pad_shapes, axis = 2)
-    pad_shapes = ops.pad(pad_shapes, [(0, 0), (1, 0), (0, 0)], constant_values = 0)
-    
-    return ops.concatenate([
-        ops.pad(it, pad_shapes[i], constant_values = pad_value)
-        for i, it in enumerate(sequences)
-    ], axis = axis)
-
-def _get_batch(data, start, size):
-    if isinstance(data, dict):
-        return {k : _get_batch(d, start, size) for k, d in data.items()}
-    if is_dataframe(data): return data.iloc[start : start + size]
-    return data[start : start + size]
-

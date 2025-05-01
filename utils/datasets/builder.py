@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,16 +10,13 @@
 # limitations under the License.
 
 import os
-import keras
 import logging
 import numpy as np
 
-from keras import tree
 from sklearn.utils import shuffle as sklearn_shuffle
 from sklearn.model_selection import train_test_split as sklearn_train_test_split
 
-from utils.pandas_utils import is_dataframe
-from utils.stream_utils import create_iterable
+from ..generic_utils import is_dataframe, create_iterable
 
 logger  = logging.getLogger(__name__)
 
@@ -72,56 +69,64 @@ def prepare_dataset(data,
     
     if map_fn is not None: process_fn = map_fn
     
-    if shuffle_size is None:        shuffle_size = tf.data.experimental.cardinality(dataset)
-    if prefetch_size is None:       prefetch_size = tf.data.AUTOTUNE
-    if num_parallel_calls is None:  num_parallel_calls = tf.data.AUTOTUNE
-    logger.debug("Original dataset : {}".format(dataset))
+    if shuffle_size is None:        shuffle_size    = tf.data.experimental.cardinality(dataset)
+    if prefetch_size is None:       prefetch_size   = tf.data.AUTOTUNE
+    if num_parallel_calls is None:  num_parallel_calls  = tf.data.AUTOTUNE
+    
+    if logger.isEnabledFor(logging.DEBUG): logger.debug("Original dataset : {}".format(dataset))
     
     if augment_raw_fn is not None:
         if cache:
             logger.warning('Cache is disabled because `augment_raw_fn` is provided')
             cache = False
         dataset = dataset.map(augment_raw_fn, num_parallel_calls = num_parallel_calls)
-        logger.debug("- Dataset after original data augmentation : {}".format(dataset))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after original data augmentation : {}".format(dataset))
 
     if prepare_fn is not None:
         dataset = dataset.map(prepare_fn, num_parallel_calls = num_parallel_calls)
-        logger.debug("- Dataset after preparation : {}".format(dataset))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after preparation : {}".format(dataset))
     
     if filter_fn is not None:
         dataset = dataset.filter(filter_fn)
-        logger.debug("- Dataset is filtered")
+        if logger.isEnabledFor(logging.DEBUG): logger.debug("- Dataset is filtered")
     
     if process_fn is not None:
         dataset = dataset.map(process_fn, num_parallel_calls = num_parallel_calls)
-        logger.debug("- Dataset after processing : {}".format(dataset))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after processing : {}".format(dataset))
     
     if cache:
         dataset = dataset.cache('' if cache is True else cache)
-        logger.debug('- Dataset is cached')
+        if logger.isEnabledFor(logging.DEBUG): logger.debug('- Dataset is cached')
 
     if shuffle:
         dataset = dataset.shuffle(shuffle_size)
-        logger.debug('- Dataset is shuffled')
+        if logger.isEnabledFor(logging.DEBUG): logger.debug('- Dataset is shuffled')
     
     if augment_fn is not None: 
         dataset = dataset.map(augment_fn, num_parallel_calls = num_parallel_calls)
-        logger.debug("- Dataset after augmentation : {}".format(dataset))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after augmentation : {}".format(dataset))
 
     if batch_size > 0:
         if pad_kwargs or _has_variable_shape(dataset):
             dataset = dataset.padded_batch(batch_size, ** pad_kwargs)
         else:
             dataset = dataset.batch(batch_size)
-        logger.debug("- Dataset after batch : {}".format(dataset))
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after batch : {}".format(dataset))
     
     if process_batch_fn is not None:
         dataset = dataset.map(process_batch_fn, num_parallel_calls = num_parallel_calls)
-        logger.debug("- Dataset after batch processing : {}".format(dataset))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("- Dataset after batch processing : {}".format(dataset))
     
     if prefetch:
         dataset = dataset.prefetch(prefetch_size)
-        logger.debug("- Dataset is prefetched")
+        if logger.isEnabledFor(logging.DEBUG): logger.debug("- Dataset is prefetched")
     
     return dataset
 
@@ -146,35 +151,34 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
     """
     if data is None: return None
     
+    import keras
     import tensorflow as tf
 
     if isinstance(data, tf.data.Dataset): 
-        dataset = data
-    elif isinstance(data, (list, tuple, dict, np.ndarray)):
-        dataset = tf.data.Dataset.from_tensor_slices(data)
-    elif is_dataframe(data):
-        if siamese:
-            dataset = build_siamese_dataset(data, ** kwargs)
-        elif as_dict:
+        return data
+    elif isinstance(data, (list, tuple, dict, np.ndarray)) or tf.is_tensor(data):
+        return tf.data.Dataset.from_tensor_slices(data)
+    elif hasattr(data, 'to_dict'):
+        if as_dict:
             if is_rectangular:
-                dataset = tf.data.Dataset.from_tensor_slices(data.to_dict('list'))
+                return tf.data.Dataset.from_tensor_slices(data.to_dict('list'))
             else:
-                dataset = tf.data.experimental.from_list(data.to_dict('records'))
+                return tf.data.experimental.from_list(data.to_dict('records'))
         else:
-            dataset = tf.data.Dataset.from_tensor_slices(data.values)
+            return tf.data.Dataset.from_tensor_slices(data.values)
     elif isinstance(data, keras.utils.PyDataset) and hasattr(data, 'output_signature'):
-        dataset = tf.data.Dataset.from_generator(
-            create_iterable(data), output_signature = tree.map_structure(
+        return tf.data.Dataset.from_generator(
+            create_iterable(data), output_signature = keras.tree.map_structure(
                 lambda s: tf.TensorSpec(shape = s.shape, dtype = s.dtype), data.output_signature
             )
         )
     elif isinstance(data, str):
         if os.path.isdir(data):
-            dataset = tf.data.Dataset.list_files(data + '/*')
+            return tf.data.Dataset.list_files(data + '/*')
         elif data.endswith('.csv'):
-            dataset = tf.data.experimental.make_csv_dataset(data, ** kwargs)
+            return tf.data.experimental.make_csv_dataset(data, ** kwargs)
         elif data.endswith('.txt'):
-            dataset = tf.data.TextLineDataset(data)
+            return tf.data.TextLineDataset(data)
         else:
             raise ValueError('This file format is not convertible to `tf.data.Dataset` : {}'.format(data))
     else:
@@ -183,12 +187,11 @@ def build_tf_dataset(data, as_dict = True, is_rectangular = True, siamese = Fals
         
         from keras.src.trainers.data_adapters import get_data_adapter
         
-        dataset = get_data_adapter(data).get_tf_dataset()
-        
-    return dataset
+        return get_data_adapter(data).get_tf_dataset()
 
 def train_test_split(dataset,
                      *,
+                     
                      train_size     = None,
                      valid_size     = None,
                      labels     = None,
@@ -199,6 +202,7 @@ def train_test_split(dataset,
                      split_by_unique    = False,
                      split_column   = 'id',
                      min_occurence  = -1,
+                     
                      ** _
                     ):
     """
@@ -253,8 +257,11 @@ def train_test_split(dataset,
             shuffle         = shuffle, 
             stratify        = labels
         )
-        train, valid = (x_train, y_train), (x_valid, y_valid)
-    elif is_dataframe(dataset) and split_by_unique:
+        return (x_train, y_train), (x_valid, y_valid)
+    
+    elif split_by_unique:
+        assert is_dataframe(dataset)
+        
         uniques = dataset[split_column].value_counts()
         if min_occurence > 0: uniques = uniques[uniques > min_occurence]
 
@@ -268,11 +275,13 @@ def train_test_split(dataset,
         
         train = dataset[dataset[split_column].isin(train_uniques)]
         valid = dataset[dataset[split_column].isin(valid_uniques)]
+        return train, valid
+    
     elif is_dataframe(dataset) or isinstance(dataset, (np.ndarray, list, tuple)):
         if is_dataframe(dataset) and isinstance(labels, str):
             labels = dataset[labels].values
         
-        train, valid = sklearn_train_test_split(
+        return sklearn_train_test_split(
             dataset, 
             train_size      = train_size, 
             test_size       = valid_size, 
@@ -302,153 +311,11 @@ def train_test_split(dataset,
         
         train = dataset.take(train_size)
         valid = dataset.skip(train_size).take(valid_size)
-    
-    return train, valid
-
-def build_siamese_dataset(dataset,
-                          
-                          column    = 'id',
-                          suffixes  = ('_x', '_y'), 
-                          
-                          nb_unique = 1000,
-                          max_by_id = 100,
-                          strict_equality  = True,
-                          
-                          as_tf_dataset     = True,
-                          
-                          shuffle       = True, 
-                          random_state  = 10,
-                          tqdm          = lambda x: x,
-                          
-                          ** kwargs
-                         ):
-    """
-        Build siamese dataset : a dataset with only valid pairs and one with invalid pairs (pairs from 2 different speakers). 
-        Arguments :
-            - data  : the pd.DataFrame audio datasets
-            - nb_unique : the number of speakers to use
-            - max_by_id : maximum instances for 'same-pairs' dataset (by id)
-            - strict_equality   : whether the same and not same must be of same length
-            - shuffle   : whether to shuffle or not
-            - random_state  : state to use for reproducibility
-    """
-    import pandas as pd
-    
-    assert is_dataframe(dataset)
-    # Useful for some datasets where pairs are not based on ID's (such as SNLI)
-    if 'same' in dataset.columns:
-        same_ds = dataset[dataset['same']]
-        not_same_ds = dataset[~dataset['same']]
-
-        if shuffle:
-            same_ds = sklearn_shuffle(same_ds, random_state = random_state)
-            not_same_ds = sklearn_shuffle(not_same_ds, random_state = random_state)
-        
-        if not as_tf_dataset: return same_ds.reset_index(), not_same_ds.reset_index()
-    
-        same_ds = build_tf_dataset(same_ds)
-        not_same_ds = build_tf_dataset(not_same_ds)
-    
-        return tf.data.Dataset.zip((same_ds, not_same_ds))
-    
-    
-    # Get unique IDs
-    uniques = dataset[column].value_counts()
-    if nb_unique is not None and len(uniques) > nb_unique:
-        uniques = uniques[:nb_unique]
-    uniques = uniques.index
-    
-    rng = np.random.default_rng(seed = random_state)
-    
-    dataset = dataset.to_dict('records')
-    
-    liste_same, liste_not_same = [], []
-    for unique in tqdm(uniques):
-        # Get dataset rows with only `unique` (sames) or not (not_sames)
-        sames = [row for row in dataset if row[column] == unique]
-        not_sames = [row for row in dataset if row[column] != unique]
-        
-        sames_idx = list(range(len(sames)))
-        not_sames_idx = list(range(len(not_sames)))
-        
-        # Build combinations for `sames` part
-        same_combinations   = list(itertools.combinations(sames_idx, 2))
-        n = len(same_combinations) if not max_by_id else min(max_by_id, len(same_combinations))
-        
-        indexes = rng.choice(len(same_combinations), size = n, replace = False)
-        
-        merged_same = []
-        for idx1, idx2 in [same_combinations[idx] for idx in indexes]:
-            s1, s2 = sames[idx1], sames[idx2]
-            
-            s = {column : s1[column]}
-            s.update({k + suffixes[0] : v for k, v in s1.items() if k != column})
-            s.update({k + suffixes[1] : v for k, v in s2.items() if k != column})
-
-            merged_same.append(s)
-
-        merged_same = pd.DataFrame(merged_same)
-        if max_by_id and len(merged_same) > max_by_id: 
-            merged_same = merged_same.sample(max_by_id, random_state = random_state)
-        
-        # Build combinations for `not_sames` part
-        nb = min(max(len(merged_same) // len(sames_idx), 10), len(not_sames_idx))
-        not_same_combinations   = []
-        for idx1 in sames_idx:
-            not_same_combinations += [
-                (idx1, idx2) for idx2 in rng.choice(
-                    len(not_sames_idx), size = nb
-                )
-            ]
-        n = len(not_same_combinations) if not max_by_id else min(max_by_id, len(not_same_combinations))
-        
-        indexes = rng.choice(len(not_same_combinations), size = n, replace = False)
-        
-        
-        merged_not_same = []
-        for idx1, idx2 in [not_same_combinations[idx] for idx in indexes]:
-            s1, s2 = sames[idx1], not_sames[idx2]
-            
-            s = {k + suffixes[0] : v for k, v in s1.items()}
-            s.update({k + suffixes[1] : v for k, v in s2.items()})
-
-            merged_not_same.append(s)
-
-        merged_not_same = pd.DataFrame(merged_not_same)
-        # Sample a subset (if required)
-        if strict_equality and len(merged_same) != len(merged_not_same):
-            if len(merged_not_same) > len(merged_same): 
-                merged_not_same = merged_not_same.sample(
-                    len(merged_same), random_state = random_state
-                )
-            else:
-                merged_same = merged_same.sample(
-                    len(merged_not_same), random_state = random_state
-                )
-        elif max_by_id and len(merged_not_same) > max_by_id:
-            merged_not_same = merged_not_same.sample(
-                max_by_id, random_state = random_state
-            )
-
-        # Append final result to global lists
-        liste_same.append(merged_same)
-        liste_not_same.append(merged_not_same)
-
-    same_ds = pd.concat(liste_same, ignore_index = True)
-    not_same_ds = pd.concat(liste_not_same, ignore_index = True)
-
-    if shuffle:
-        same_ds = sklearn_shuffle(same_ds, random_state = random_state)
-        not_same_ds = sklearn_shuffle(not_same_ds, random_state = random_state)
-        
-    if not as_tf_dataset: return same_ds.reset_index(), not_same_ds.reset_index()
-    
-    same_ds = build_tf_dataset(same_ds)
-    not_same_ds = build_tf_dataset(not_same_ds)
-    
-    return tf.data.Dataset.zip((same_ds, not_same_ds))
+        return train, valid
 
 def _has_variable_shape(dataset):
+    import keras
+    
     return any(
         any(s is None for s in spec.shape)
         for spec in keras.tree.flatten(dataset.element_spec)

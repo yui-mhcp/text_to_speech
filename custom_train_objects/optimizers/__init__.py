@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,46 +10,32 @@
 # limitations under the License.
 
 import keras
-import logging
 import inspect
 
-from utils import import_objects, get_object, print_objects, dispatch_wrapper
-from custom_train_objects.optimizers import lr_schedulers
+from .lr_schedulers import *
 
-logger = logging.getLogger(__name__)
-
-def filter_old_kwargs(name):
-    def optimizer_init(* args, ** kwargs):
-        opt_class = getattr(keras.optimizers, name)
-        kwargs  = {
-            k : v for k, v in kwargs.items()
-            if k in inspect.signature(opt_class).parameters
-        }
-        return opt_class(* args, ** kwargs)
-    return optimizer_init
+globals().update({
+    k : v for k, v in vars(keras.optimizers).items()
+    if not k.startswith('_') and isinstance(v, type) and issubclass(v, keras.optimizers.Optimizer)
+})
+globals().update({
+    k : v for k, v in vars(keras.optimizers.schedules).items()
+    if isinstance(v, type) and issubclass(v, keras.optimizers.schedules.LearningRateSchedule)
+})
 
 _optimizers = {
-    k : filter_old_kwargs(k) for k in import_objects(
-        keras.optimizers,
-        classes = keras.optimizers.Optimizer,
-        exclude = ('Optimizer', 'LossScaleOptimizer'),
-        allow_functions = False
-    )
+    k.lower() : v for k, v in globals().items()
+    if isinstance(v, type) and issubclass(v, keras.optimizers.Optimizer)
+}
+_lr_schedulers  = {
+    k.lower() : v for k, v in globals().items()
+    if isinstance(v, type) and issubclass(v, keras.optimizers.schedules.LearningRateSchedule)
 }
 
-_schedulers = import_objects(
-    [lr_schedulers, keras.optimizers.schedules],
-    classes     = keras.optimizers.schedules.LearningRateSchedule,
-    exclude     = ('LearningRateSchedule', 'CustomScheduler'),
-    allow_functions = False
-)
-
-globals().update(_optimizers)
-globals().update(_schedulers)
-
-@dispatch_wrapper(_optimizers, 'optimizer')
 def get_optimizer(optimizer, ** kwargs):
-    if isinstance(optimizer, dict):
+    if isinstance(optimizer, keras.optimizers.Optimizer):
+        return optimizer
+    elif isinstance(optimizer, dict):
         name_key    = 'optimizer' if 'optimizer' in optimizer else 'class_name'
         config_key  = 'config' if 'config' in optimizer else 'optimizer_config'
         optimizer, kwargs = optimizer[name_key], optimizer[config_key]
@@ -59,15 +45,13 @@ def get_optimizer(optimizer, ** kwargs):
     if lr is not None:
         kwargs['learning_rate'] = get_lr_scheduler(lr)
     
-    return get_object(
-        _optimizers, optimizer, ** kwargs, print_name = 'optimizer',
-        types = keras.optimizers.Optimizer
-    )
+    opt_class = _optimizers[optimizer.lower()]
+    kwargs  = {
+        k : v for k, v in kwargs.items()
+        if k in inspect.signature(opt_class).parameters
+    }
+    return opt_class(** kwargs)
 
-def print_optimizers():
-    print_objects(_optimizers, 'optimizers')
-
-@dispatch_wrapper(_schedulers, 'scheduler')
 def get_lr_scheduler(scheduler, ** kwargs):
     if isinstance(scheduler, (dict, str)):
         if isinstance(scheduler, str):
@@ -75,7 +59,7 @@ def get_lr_scheduler(scheduler, ** kwargs):
         if 'class_name' in scheduler:
             scheduler = {** scheduler['config'], 'name' : scheduler['class_name']}
         
-        scheduler = get_object(
-            _schedulers, scheduler.pop('name'), ** scheduler, print_name = 'lr scheduler'
-        )
+        name = scheduler.pop('name')
+        scheduler = _lr_schedulers[name.lower()](** scheduler)
+    
     return scheduler

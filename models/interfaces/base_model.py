@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,69 +12,45 @@
 import os
 import json
 import time
-import keras
-import logging
 import inspect
+import logging
 
-from functools import cached_property
-from keras.models import load_model, model_from_json
+from functools import cached_property, partialmethod
 
-from .runtime import runtimes
-from loggers import timer, time_logger
-from utils import HParams, copy_methods, dump_json, load_json, time_to_string, create_stream
-from utils.keras_utils import TensorSpec, ops, tree, graph_compile
+from loggers import Timer, timer
+from utils import JSONSaver, Stream, dump_json, load_json, time_to_string, copy_methods
+from utils.keras import TensorSpec, ops, build_runtime, graph_compile
 from utils.datasets import prepare_dataset, summarize_dataset
-from models.utils import *
-from models.utils import _get_tracked_type
-from models.weights_converter import name_based_partial_transfer_learning
-from custom_architectures import get_architecture, deserialize_keras2_model
-from custom_train_objects import (
-    CheckpointManager,
-    History,
-    get_optimizer,
-    get_loss,
-    get_metrics,
-    get_callbacks
-)
+from custom_train_objects import CheckpointManager, History
+
+from ..utils import get_saving_dir, get_model_dir, is_model_name, describe_model, loss_to_str, optimizer_to_str, metrics_to_str
+from ..weights_converter import name_based_partial_transfer_learning
 
 logger = logging.getLogger(__name__)
 
-_compiled_function_names    = {'call', '_compiled_infer'}
-
-def _build_trackable_property(key, attr = None):
-    def get_item_if_single(self):
-        keys = self.tracked_variables[key].keys()
-        if len(keys) == 0 and attr and self.model.compiled: return getattr(self.model, attr, None)
-        if len(keys) == 1: return self.tracked_variables[key][list(keys)[0]]
-        raise RuntimeError('You must redefine `self.{}` when they are multiple attributes'.format(
-            key
-        ))
-    return property(get_item_if_single)
-
 class ModelInstances(type):
     _instances = {}
-    _is_restoring   = False
     
     @timer(name = 'model loading', debug = True)
-    def __call__(cls, * args, reload = False, ** kwargs):
-        name    = kwargs.get('name', kwargs.pop('nom', None)) # for retro-compatibility
-        if not name: name = cls.__name__
-        kwargs['name'] = name
+    def __call__(cls, * args, reload = False, name = None, ** kwargs):
+        if not name: name = kwargs.pop('nom', cls.__name__)
         
-        if name in cls._instances and not reload:
-            pass
-        elif not cls._is_restoring and is_model_name(name):
-            cls._is_restoring = True
+        if reload or name not in cls._instances:
+            config_file = get_model_dir(name, 'config.json')
+            if os.path.exists(config_file):
+                config = load_json(config_file)
+                if config['class_name'] != cls.__name__:
+                    raise ValueError("Model `{}` already exists with a non-matching class !\n  Expected : {}\n  Got : {}".format(name, config['class_name'], cls.__name__))
+
+                args = ()
+                kwargs.update(config['config'])
+            kwargs['name'] = name
             
             try:
-                cls.restore(** kwargs)
+                cls._instances[name] = super().__call__(* args, ** kwargs)
             except Exception as e:
-                logger.critical('An error occured while restoring : {}'.format(e))
+                logger.critical('An error occured while initializing {} : {}'.format(name, e))
                 raise e
-            finally:
-                cls._is_restoring = False
-        else: # cls._is_restoring = False
-            cls._instances[name] = super().__call__(* args, ** kwargs)
 
         return cls._instances[name]
 
@@ -84,19 +60,18 @@ class ModelInstances(type):
     'variables', 'trainable_variables', 'non_trainable_variables',
     'save_weights', 'load_weights', 'set_weights', 'get_weights',
     'train_on_batch', 'test_on_batch', 'predict_on_batch',
-    attr_type = keras.Model
 )
 @copy_methods(
     'checkpoint_manager',
     'checkpoint_format', 'latest_checkpoint', 'loaded_checkpoint',
     load_checkpoint = 'load', save_checkpoint = 'save', delete_checkpoint = 'delete',
-    attr_type = CheckpointManager
+    type = CheckpointManager
 )
 @copy_methods(
     'history',
     'epochs', 'steps', 'training_logs', 'training_config', 'training_infos', 'training_time',
     plot_history = 'plot',
-    attr_type = History
+    type = History
 )
 class BaseModel(metaclass = ModelInstances):
     """
@@ -160,23 +135,15 @@ class BaseModel(metaclass = ModelInstances):
         'history_file'  : '{self.save_dir}/history.json',
         'config_models_file' : '{self.save_dir}/config_models.json'
     }
-    _tracked_types  = {
-        keras.Model     : 'models',
-        keras.losses.Loss   : 'losses',
-        keras.metrics.Metric    : 'metrics',
-        keras.optimizers.Optimizer  : 'optimizers',
-        ** {runtime : 'models' for runtime in runtimes.values()}
-    }
     
     def __init__(self,
                  *,
-                 name   = None,
                  
-                 root   = None,
+                 name   = None,
+                 pretrained_name    = None,
+                 
                  save   = True,
                  max_to_keep    = 3,
-                 
-                 pretrained_name    = None,
                  force_rebuild  = False,
                  
                  run_eagerly    = None,
@@ -188,57 +155,45 @@ class BaseModel(metaclass = ModelInstances):
                  ** kwargs
                 ):
         """ Constructor that initialize the model's configuration, architecture, folders, ... """
-        if not root: root = get_saving_dir()
+        assert name is not None
+
         # Allows to pass all kwargs to super-classes without forwarding everything to `build`
         kwargs  = {k : v for k, v in kwargs.items() if not hasattr(self, k)}
         
         self.name   = name
-        self._root  = root
         self._save  = save
         self.runtime    = runtime
         self.build_kwargs   = kwargs
         self.pretrained_name    = pretrained_name
         
+        self.max_to_keep    = max_to_keep
         self._run_eagerly   = run_eagerly
         self._support_xla   = support_xla
         self._graph_compile_config  = graph_compile_config
-
-        self._tracked  = {attr : {} for attr in self._tracked_types.values()}
         
         self._init_dir_properties()
         self._init_processing_functions()
 
-        if os.path.exists(self.history_file.replace('history', 'historique')):
-            if not os.path.exists(self.history_file):
-                os.rename(self.history_file.replace('history', 'historique'), self.history_file)
         self.__history  = None
-        self.checkpoint_manager = CheckpointManager(self, max_to_keep = max_to_keep)
+        self.__checkpoint_manager   = None
         
-        if is_model_name(self.name) and not force_rebuild:
-            with time_logger.timer('{} restoration'.format(runtime), debug = True):
+        if not force_rebuild and os.path.exists(self.config_file):
+            with Timer('{} restoration'.format(runtime), debug = True):
                 if runtime == 'keras':
-                    self.restore_models()
-                elif runtime in runtimes:
-                    self.model = runtimes[runtime](** kwargs)
+                    self._restore_model()
                 else:
-                    raise ValueError('Unknown runtime\n  Accepted : {}\n  Got : {}'.format(
-                        ('keras', ) + tuple(runtimes.keys()), runtime
-                    ))
+                    self.model = build_runtime(runtime, ** kwargs)
         else:
             if runtime == 'keras':
                 self.build(** kwargs)
-            elif runtime in runtimes:
-                self.model = runtimes[runtime](** kwargs)
             else:
-                raise ValueError('Unknown runtime\n  Accepted : {}\n  Got : {}'.format(
-                    ('keras', ) + tuple(runtimes.keys()), runtime
-                ))
+                self.model = build_runtime(runtime, ** kwargs)
         
             if save and not os.path.exists(self.config_file):
                 self._init_directories()
                 self.save()
 
-        self.init_train_config()
+        self._init_train_config()
         
         if hasattr(self, 'get_output'):
             if hasattr(self, 'prepare_input') and not hasattr(self, 'prepare_output'):
@@ -248,21 +203,20 @@ class BaseModel(metaclass = ModelInstances):
         else:
             self.get_output = self._get_output
             
-        logger.info("{} `{}` initialized successfully !".format(
-            self.__class__.__name__, self.name
-        ))
+        self._compiled_call = None
+        self._compiled_infer    = None
+        
+        logger.info("{} `{}` initialized successfully !".format(self.__class__.__name__, self.name))
     
     @timer(debug = True)
     def _init_dir_properties(self):
         def format_path(path_format):
             return property(
-                lambda self: path_format.format(self = self, root = self.root)
+                lambda self: path_format.format(self = self, root = get_saving_dir())
             )
         
-        for property_name, path_format in self._directories.items():
-            setattr(self.__class__, property_name, format_path(path_format))
-        
-        for property_name, path_format in self._files.items():
+        all_paths = {** self._directories, ** self._files}
+        for property_name, path_format in all_paths.items():
             setattr(self.__class__, property_name, format_path(path_format))
 
     @timer(debug = True)
@@ -271,7 +225,7 @@ class BaseModel(metaclass = ModelInstances):
             if not hasattr(self, f'{prefix}_data') and (
                 hasattr(self, f'{prefix}_input') or hasattr(self, f'{prefix}_output')
             ):
-                setattr(self, f'{prefix}_data', build_generic_processing(
+                setattr(self, f'{prefix}_data', _build_generic_processing(
                     getattr(self, f'{prefix}_input', lambda inp, ** kwargs: inp),
                     getattr(self, f'{prefix}_output', lambda out, ** kwargs: out),
                     name = f'{prefix}_data'
@@ -282,34 +236,11 @@ class BaseModel(metaclass = ModelInstances):
     @timer(debug = True)
     def _init_directories(self):
         """ Initialize directory structure based on `self._directories` """
-        for property_name, path_format in self._directories.items():
+        for property_name in self._directories.keys():
             os.makedirs(getattr(self, property_name), exist_ok = True)
     
     @timer(debug = True)
-    def build(self, ** kwargs):
-        """ Initializes the effective `keras.Model` classes """
-        def _build_model(model):
-            if isinstance(model, keras.Model):
-                return model
-            elif isinstance(model, dict):
-                logger.info('Initializing model with kwargs : {}'.format(model))
-                return get_architecture(** model)
-            else:
-                raise ValueError("Unsupported model !\n  Accepted : (keras.Model, dict)\n  Got : {}".format(model))
-        
-        def _set_model(model, name = None):
-            if isinstance(model, dict):
-                [_set_single_model(m, n) for n, m in model.items()]
-            elif isinstance(model, keras.Model):
-                setattr(self, name, model)
-            else:
-                raise ValueError("Unknown model type (type {}) : {}".format(type(model), model))
-        
-        for name, model_config in kwargs.items():
-            _set_model(_build_model(model_config), name)
-        
-    @timer(debug = True)
-    def init_train_config(self, ** kwargs):
+    def _init_train_config(self, ** kwargs):
         """ Initializes custom training parameters """
         mapper = self.training_hparams_mapper
         
@@ -319,46 +250,81 @@ class BaseModel(metaclass = ModelInstances):
                 mapper[k](val)
             elif not hasattr(self, k) or val is not None:
                 setattr(self, k, val)
-    
-    
-    root    = property(
-        fget    = lambda self: self._root,
-        fset    = lambda self, value: self.set_root(value)
-    )
-    
-    tracked_variables   = property(lambda self: self._tracked.copy())
-    models      = property(lambda self: self.tracked_variables['models'])
-    losses      = property(lambda self: self.tracked_variables['losses'])
-    metrics     = property(lambda self: list(self.tracked_variables['metrics'].values()))
-    optimizers  = property(lambda self: self.tracked_variables['optimizers'])
 
-    model       = _build_trackable_property('models')
-    loss        = _build_trackable_property('losses', 'loss')
-    optimizer   = _build_trackable_property('optimizers', 'optimizer')
+    @timer(debug = True)
+    def build(self, model = None, ** kwargs):
+        """ Initializes the effective `keras.Model` `self._model` attribute """
+        import keras
+        
+        from architectures import get_architecture
+
+        if model is None: model = kwargs
+        
+        if isinstance(model, keras.Model):
+            self.model = model
+        elif isinstance(model, dict):
+            self.model = get_architecture(** model)
+        elif isinstance(model, str):
+            self.model = get_architecture(model)
+        
+    
+    model   = property(lambda self: self._model)
+    loss    = property(lambda self: getattr(self, '_loss', self.model.loss))
+    optimizer   = property(lambda self: self.model.optimizer)
     compiled    = property(
-        lambda self: (getattr(self.model, 'compiled', False) and self.model.loss is not None) or len(self.losses) > 0
+        lambda self: getattr(self.model, 'compiled', False) and self.loss is not None
     )
     
     input_signature     = property(lambda self: get_signature(self.input_shape))
     output_signature    = property(lambda self: get_signature(self.output_shape))
-    
-    unbatched_input_signature   = property(lambda self: tree.map_structure(
-        lambda s: TensorSpec(shape = s.shape[1:], dtype = s.dtype), self.input_signature
-    ))
-    unbatched_output_signature  = property(lambda self: tree.map_structure(
-        lambda s: TensorSpec(shape = s.shape[1:], dtype = s.dtype), self.output_signature
-    ))
 
+    @model.setter
+    def model(self, value):
+        self._model = value
+        if self.runtime == 'keras':
+            self.checkpoint_manager.model = value
+    
+    @loss.setter
+    def loss(self, value):
+        self._loss = value
+    
     @property
     def history(self):
         if self.__history is None:
+            if os.path.exists(self.history_file.replace('history', 'historique')):
+                if not os.path.exists(self.history_file):
+                    os.rename(self.history_file.replace('history', 'historique'), self.history_file)
+
             self.__history = History.load(self.history_file)
         return self.__history
     
+    @property
+    def checkpoint_manager(self):
+        if self.__checkpoint_manager is None:
+            self.__checkpoint_manager = CheckpointManager(self, max_to_keep = self.max_to_keep)
+        return self.__checkpoint_manager
+    
+    @property
+    def default_metrics_config(self):
+        return {}
+    
+    @property
+    def default_loss_config(self):
+        return {}
+    
+    @property
+    def training_hparams(self):
+        return {'augment_prct' : 0.25} if hasattr(self, 'augment_data') else {}
+    
+    @property
+    def training_hparams_mapper(self):
+        return {}
+
     @cached_property
     def call_signature(self):
+        fn = getattr(self.model, 'call', self.model.__call__)
         return set(
-            list(inspect.signature(self.model.call).parameters) + ['run_eagerly', 'use_xla']
+            list(inspect.signature(fn).parameters) + ['run_eagerly', 'use_xla']
         )
     
     @property
@@ -380,16 +346,26 @@ class BaseModel(metaclass = ModelInstances):
     @property
     def infer_compile_config(self):
         config = self.graph_compile_config
-        if hasattr(self, 'prepare_for_xla_inference'):
+        if hasattr(self.model, 'prepare_for_xla'):
+            config['prepare_for_xla'] = self.model.prepare_for_xla
+        elif hasattr(self, 'prepare_for_xla_inference'):
             config['prepare_for_xla'] = self.prepare_for_xla_inference
         if hasattr(self, 'prepare_for_graph_inference'):
             config['prepare_for_graph'] = self.prepare_for_graph_inference
-        config['input_signature'] = getattr(self, 'infer_signature', self.input_signature)
         return config
 
     @property
+    def compiled_call(self):
+        if self._compiled_call is None:
+            if self.runtime != 'keras':
+                self._compiled_call = self.model
+            else:
+                self._compiled_call = graph_compile(self.model, ** self.graph_compile_config)
+        return self._compiled_call
+
+    @property
     def compiled_infer(self):
-        if getattr(self, '_compiled_infer', None) is None:
+        if self._compiled_infer is None:
             if self.runtime != 'keras':
                 self._compiled_infer = self.model
             elif hasattr(self.model, 'infer'):
@@ -397,70 +373,27 @@ class BaseModel(metaclass = ModelInstances):
             else:
                 self._compiled_infer = graph_compile(self.model, ** self.infer_compile_config)
         return self._compiled_infer
-
-    @property
-    def default_metrics_config(self):
-        return {}
     
-    @property
-    def default_loss_config(self):
-        return {}
-    
-    @property
-    def training_hparams(self):
-        return HParams(augment_prct = 0.25)
-    
-    @property
-    def training_hparams_mapper(self):
-        return {}
-    
-    def _add_tracked_variable(self, tracked_type, name, value):
-        self._tracked[self._tracked_types[tracked_type]][name] = value
-        if isinstance(value, keras.Model): self.checkpoint_manager.add(name, value)
-        if name in {'model', 'loss', 'optimizer', 'metrics'}: name = '_' + name
-        return name, value
-
-    def __setattr__(self, name, value):
-        if name not in _compiled_function_names:
-            tracked_type = _get_tracked_type(value, tuple(self._tracked_types.keys()))
-            if tracked_type:
-                name, value = self._add_tracked_variable(tracked_type, name, value)
-        
-        super().__setattr__(name, value)
-
     def __str__(self):
         des = "\n========== {} ==========\n".format(self.name)
-        for name, model in self.models.items():
-            if len(self.models) > 1:
-                des += "Sub model `{}`\n".format(name)
-            else:
-                des += "Model instance `{}`\n".format(name)
-            
-            if isinstance(model, keras.Model):
-                des += describe_model(model, with_compile = False) + '\n'
-            else:
-                des += str(model) + '\n'
-        
-        if len(self.models) > 1:
-            des += optimizer_to_str(self.optimizers)
-            des += loss_to_str(self.losses)
-            des += metrics_to_str(self.metrics)
-            des += '\n'
-        elif getattr(self.model, 'compiled', False):
-            des += optimizer_to_str(self.optimizer)
-            des += loss_to_str(self.loss)
-            des += metrics_to_str(self.metrics)
-            des += '\n'
+        des += "Model :\n"
+        if self.runtime == 'keras':
+            des += describe_model(self.model) + '\n'
+            if hasattr(self, '_loss'):
+                des += loss_to_str(self._loss) + '\n'
+        else:
+            des += str(self.model) + '\n\n'
         
         if self.pretrained_name:
             des += "Transfer-learning from : {}\n".format(self.pretrained_name)
-        des += "Already trained on {} epochs ({} steps)\n\n".format(self.epochs, self.steps)
+        if self.runtime == 'keras':
+            des += "Already trained on {} epochs ({} steps)\n\n".format(self.epochs, self.steps)
         
         return des
 
     def __call__(self, * args, training = False, mask = None, ** kwargs):
         if not hasattr(self, 'call'):
-            if self.run_eagerly:
+            if self.run_eagerly or self.runtime != 'keras':
                 self.call = self.model
             else:
                 self.call = graph_compile(self.model, ** self.graph_compile_config)
@@ -483,6 +416,22 @@ class BaseModel(metaclass = ModelInstances):
                 
                 ** kwargs
                ):
+        import keras
+
+        if hasattr(self, '_compiled_config') or hasattr(self, '_serialized_compile_config'):
+            if hasattr(self, '_serialized_compile_config'):
+                self.model.compile(** self._serialized_compile_config)
+            
+            if hasattr(self, '_compiled_config'):
+                config = self._compiled_config
+                del self._compiled_config
+                self.compile(** config['losses'], ** config['optimizers'], ** config['metrics'])
+            return
+        
+        from custom_train_objects.losses import get_loss
+        from custom_train_objects.metrics import get_metrics
+        from custom_train_objects.optimizers import get_optimizer
+        
         if self.compiled and not overwrite:
             logger.warning('The model is already compiled. To verwrite the current compilation, pass `overwrite = True` as `compile` argument')
             return
@@ -606,6 +555,8 @@ class BaseModel(metaclass = ModelInstances):
 
                              ** kwargs
                             ):
+        from custom_train_objects.callbacks import HistoryCallback, get_callbacks
+        
         dataset = x if y is None else (x, y)
         if isinstance(dataset, dict) and 'train' in dataset:
             validation_data = dataset.get('valid', dataset.get('test', validation_data))
@@ -656,14 +607,14 @@ class BaseModel(metaclass = ModelInstances):
         if train_times > 1: train_dataset = train_dataset.repeat(train_times)
         if valid_times > 1: valid_dataset = valid_dataset.repeat(valid_times)
         
-        callbacks = kwargs.pop('callbacks', []) + [self.history]
+        callbacks = kwargs.pop('callbacks', []) + [HistoryCallback(self.history)]
         if terminate_on_nan:
-            callbacks.append({'class_name' : 'terminate_on_nan'})
+            callbacks.append({'class_name' : 'TerminateOnNaN'})
         if add_early_stopping:
             if add_checkpoint is None: add_checkpoint = True
             monitor = kwargs.get('monitor', 'val_loss')
             callbacks.append({
-                'class_name'    : 'early_stopping',
+                'class_name'    : 'EarlyStopping',
                 'min_delta'     : kwargs.get('min_delta', 1e-3),
                 'patience'      : kwargs.get('patience', 3),
                 'baseline'      : self.history.get_best(monitor),
@@ -672,7 +623,7 @@ class BaseModel(metaclass = ModelInstances):
         if add_checkpoint:
             monitor = kwargs.get('monitor', 'val_loss')
             callbacks.append({
-                'class_name'    : 'checkpoint_callback',
+                'class_name'    : 'CheckpointCallback',
                 'checkpoint_manager'    : self.checkpoint_manager,
                 'save_best_only'    : True,
                 'save_weights_only' : True,
@@ -680,7 +631,7 @@ class BaseModel(metaclass = ModelInstances):
                 'initial_value_threshold'   : self.history.get_best(monitor)
             })
 
-        _allowed_kwargs = inspect.signature(keras.Model.fit).parameters
+        _allowed_kwargs = inspect.signature(self.model.fit).parameters
         return {
             'x'     : train_dataset,
             'epochs'    : epochs + self.epochs,
@@ -692,8 +643,10 @@ class BaseModel(metaclass = ModelInstances):
         }
     
     def fit(self, * args, ** kwargs):
-        train_hparams   = self.training_hparams.extract(kwargs, pop = True)
-        self.init_train_config(** train_hparams)
+        train_hparams   = self.training_hparams.copy()
+        train_hparams.update({k : kwargs.pop(k) for k in train_hparams if k in kwargs})
+        
+        self._init_train_config(** train_hparams)
 
         config  = self.prepare_for_training(* args, ** kwargs)
 
@@ -704,7 +657,9 @@ class BaseModel(metaclass = ModelInstances):
             ** {k : v for k, v in kwargs.items() if k not in config}
         )
         
-        logger.info("Training config :\n{}\n".format(train_hparams(** config)))
+        logger.info("Training config :\n{}\n".format('\n'.join([
+            '- {}\t:{}'.format(k, v) for k, v in {** config, ** train_hparams}.items()
+        ])))
         
         start = time.time()
         try:
@@ -717,28 +672,60 @@ class BaseModel(metaclass = ModelInstances):
         
         return self.history
 
-    def stream(self, stream, ** kwargs):
-        return create_stream(self.predict, stream, logger = logger, ** kwargs)
+    @timer
+    def predict(self,
+                inputs,
+                *,
+                
+                predicted = None,
+                callbacks = None,
+                
+                return_results  = True,
+                return_output   = None,
+                
+                ** kwargs
+               ):
+        join_callbacks = predicted is None
+        if predicted is None:
+            predicted, callbacks = self.get_inference_callbacks(** kwargs)
+        
+        if return_output is None:
+            return_output = not any(isinstance(callback, JSONSaver) for callback in callbacks)
+        
+        kwargs.update({
+            'predicted' : predicted,
+            'callbacks' : callbacks,
+            'return_output' : return_output
+        })
+        
+        results = []
+        for text, output in Stream(self.infer, inputs, ** kwargs).items():
+            if return_results:
+                results.append(output if return_output else predicted[text])
+        
+        if join_callbacks:
+            for callback in callbacks: callback.join()
+        
+        return results
 
+    stream = partialmethod(predict, return_output = False, return_results = False)
+    
     def get_config(self):
         return {
             'name'  : self.name,
             'runtime'   : self.runtime,
+            'pretrained_name'   : self.pretrained_name,
+
             'run_eagerly'   : self._run_eagerly,
             'support_xla'   : self._support_xla,
             'graph_compile_config'  : self._graph_compile_config,
-            'pretrained_name'   : self.pretrained_name,
+            
             ** self.build_kwargs
         }
-    
-    def set_root(self, value):
-        if os.path.exists(os.path.join(value, self.name)):
-            raise RuntimeError('The directory `{}/{}` already exists'.format(value, name))
-        shutil.move(self.directory, os.path.join(value, self.name))
-        self._root = root
         
     def save(self, ** kwargs):
         if not self._save: return
+        
         if self.runtime == 'keras':
             self.save_models_config(** kwargs)
             self.save_checkpoint(** kwargs)
@@ -750,9 +737,11 @@ class BaseModel(metaclass = ModelInstances):
         self.history.save(filename)
     
     def save_models_config(self, directory = None, ** _):
-        config = tree.map_structure(
-            keras.saving.serialize_keras_object, self.tracked_variables
-        )
+        import keras
+        
+        config = {'model' : keras.saving.serialize_keras_object(self.model)}
+        if getattr(self, '_loss', None) is not None:
+            config['loss'] = keras.saving.serialize_keras_object(self._loss)
         
         config_file = self.config_models_file if not directory else os.path.join(
             directory, 'config_models.json'
@@ -768,87 +757,92 @@ class BaseModel(metaclass = ModelInstances):
         
         dump_json(config_file, config, indent = 4)
         
-    def restore_models(self, compile = True, ** kwargs):
+    def _restore_model(self, compile = False, ** _):
         config = load_json(self.config_models_file)
+
+        if 'models' in config:
+            self._restore_model_old(config, compile = compile)
+            self.save_models_config()
+            return
+        
+        import keras
+        
+        from architectures import get_custom_objects
+        
+        if config['model'].get('compile_config', {}) and not compile:
+            self._serialized_compile_config = config['model'].pop('compile_config')
+
+        self.model = keras.saving.deserialize_keras_object(
+            config['model'], custom_objects = get_custom_objects()
+        )
+        if 'loss' in config:
+            if compile:
+                self._loss = keras.saving.deserialize_keras_object(config['loss'])
+            else:
+                self._serialized_loss = config['loss']
+        self.checkpoint_manager.load()
+
+    def _restore_model_old(self, config, compile = False, ** kwargs):
+        import keras
+        
+        from architectures import get_custom_objects
+        from custom_train_objects.losses import get_loss
+        from custom_train_objects.metrics import get_metrics
         
         _load_weights   = True
-        _update_config  = False
         
-        models = {}
-        compile_config  = {}
-        for key, model_config in config['models'].items():
-            filename = self.checkpoint_manager.loaded_checkpoint
-            if not filename: filename = os.path.join(self.save_dir, '{}.keras'.format(key))
+        if len(config['models']) > 1:
+            raise NotImplementedError('{} has more than 1 model ({}) which is not supported anymore'.format(self.name, tuple(config['models'].keys())))
+        
+        key, model_config = list(config['models'].items())[0]
+
+        filename = self.checkpoint_manager.loaded_checkpoint
+        if not filename: filename = os.path.join(self.save_dir, '{}.keras'.format(key))
+        
+        if filename.endswith('.keras') and os.path.exists(filename):
+            logger.info('Loading `{}` from {}'.format(key, filename))
+            self.model = keras.models.load_model(filename)
+            _load_weights = False
+        
+        elif 'module' in model_config:
+            logger.info('Deserializing `{}` from config'.format(key))
+            model_config = keras.tree.map_structure(
+                lambda k: k if not isinstance(k, str) or 'custom_' not in k else k
+                    .replace('custom_architectures', 'architectures')
+                    .replace('custom_layers.', 'architectures.layers.')
+                    .replace('transformers_arch.', 'transformers.'),
+                model_config
+            )
             
-            try:
-                if filename.endswith('.keras') and os.path.exists(filename):
-                    logger.info('Loading `{}` from {}'.format(key, filename))
-                    model = load_model(filename)
-                    _load_weights = False
-                elif 'module' in model_config:
-                    logger.info('Deserializing `{}` from config'.format(key))
-                    model = keras.saving.deserialize_keras_object(model_config)
-                elif os.path.exists(filename.replace('.keras', '.json')):
-                    filename = filename.replace('.keras', '.json')
-                    
-                    logger.info('Loading `{}` from {}'.format(key, filename))
-                    with open(filename, 'r', encoding = 'utf-8') as file:
-                        json_config = file.read()
-                    model_config    = json.loads(json_config)
-                    
-                    if 'module' not in model_config:
-                        logger.info('Updating keras 2 config')
-                        _update_config = True
-                        model = deserialize_keras2_model(model_config)
-                    else:
-                        model = model_from_json(json_config)
-                
-                setattr(self, key, model)
-                logger.info('`{}` successfully restored !'.format(key))
-            
-            except Exception as e:
-                logger.warning('Loading failed due to : {}'.format(e))
-                _update_config = True
-                if 'class_name' in model_config:
-                    models[key] = {
-                        'architecture'  : model_config['class_name'],
-                        ** model_config['config']
-                    }
-                else:
-                    models[key] = None
-                
-                if model_config.get('compile_config', {}):
-                    compile_config[key] = model_config['compile_config']
+            self.model = keras.saving.deserialize_keras_object(
+                model_config, custom_objects = get_custom_objects()
+            )
+        elif os.path.exists(filename.replace('.keras', '.json')):
+            filename = filename.replace('.keras', '.json')
+
+            logger.info('Loading `{}` from {}'.format(key, filename))
+            with open(filename, 'r', encoding = 'utf-8') as file:
+                json_config = file.read()
+            model_config    = json.loads(json_config)
+
+            if 'module' not in model_config:
+                logger.info('Updating keras 2 config')
+                from architectures import deserialize_keras2_model
+                self.model = deserialize_keras2_model(model_config)
+            else:
+                self.model = model_from_json(json_config)
+
+        logger.info('`model` successfully restored !')
         
-        if models: self.build(** models, ** self.build_kwargs)
-        
-        for model, conf in compile_config.items():
-            getattr(self, model, 'compile')(** conf)
-        
-        if compile and config['losses']:
-            if len(self.models) == 1 and '{}_optimizer'.format(key) in config['optimizers']:
+        if config['losses']:
+            if '{}_optimizer'.format(key) in config.get('optimizers', {}):
                 for k in ('optimizers', 'losses', 'metrics'):
-                    if len(config[k]) > 0:
-                        config[k] = list(config[k].values())[0]
+                    if len(config[k]) > 0: config[k] = list(config[k].values())[0]
                 config['losses'].get('loss_config', {}).pop('reduction', None)
             
             self.compile(** config['losses'], ** config['optimizers'], ** config['metrics'])
 
-        if _update_config:  self.save_models_config()
         if _load_weights:   self.checkpoint_manager.load()
-
-    @classmethod
-    def restore(cls, name, force = False, ** kwargs):
-        """ Returns the model saved in `{get_saving_dir()}/{name}` """
-        directory = get_model_dir(name)
-        if not os.path.exists(directory): return None
-        
-        config = load_json(os.path.join(directory, 'config.json'))
-
-        if config.get('class_name', None) != cls.__name__ and not force:
-            raise ValueError("Model `{}` already exists with a non-matching class !\n  Expected : {}\n  Got : {}".format(name, config.get('class_name', None), cls.__name__))
-        
-        return cls(** {** kwargs, ** config['config']})
 
     @classmethod
     def from_pretrained(cls, name, pretrained, ** kwargs):
@@ -860,10 +854,12 @@ class BaseModel(metaclass = ModelInstances):
             **Important note** : the pretrained model is loaded on CPU, so it is higly recommanded to restart the kernel before using the new instance to free memory
         """
         if isinstance(pretrained, str):
-            from models import get_pretrained
             if not is_model_name(pretrained):
                 raise ValueError('The model `{}` is not available'.format(pretrained))
-                
+            
+            import keras
+            
+            from .. import get_pretrained
             with keras.device('cpu'):
                 pretrained = get_pretrained(pretrained)
         
@@ -878,7 +874,7 @@ class BaseModel(metaclass = ModelInstances):
         
         return instance
 
-def build_generic_processing(input_processing, output_processing, name):
+def _build_generic_processing(input_processing, output_processing, name):
     if name.startswith('prepare'):
         def inner(* data, ** kwargs):
             if len(data) == 1:

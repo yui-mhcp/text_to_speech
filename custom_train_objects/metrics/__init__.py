@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,43 +11,49 @@
 
 import os
 import keras
+import importlib
 
 from keras.metrics import MeanMetricWrapper
 
-from utils import import_objects, get_object, print_objects, is_function, dispatch_wrapper
+for module in [keras.metrics] + os.listdir(__package__.replace('.', os.path.sep)):
+    if isinstance(module, str):
+        if module.startswith(('.', '_')) or '_old' in module: continue
+        module = importlib.import_module(__package__ + '.' + module[:-3])
+    
+    globals().update({
+        k : v for k, v in vars(module).items()
+        if (not k.startswith('_')) and (
+            (isinstance(v, type) and issubclass(v, keras.metrics.Metric)) or (callable(v))
+        )
+    })
 
-_metrics = import_objects(
-    [__package__.replace('.', os.path.sep), keras.metrics],
-    classes     = keras.metrics.Metric,
-    signature   = ['y_true', 'y_pred'],
-    exclude     = ('Metric', 'MeanMetricWrapper')
-)
-globals().update(_metrics)
+_metrics = {
+    k.lower() : v for k, v in globals().items()
+    if (isinstance(v, type) and issubclass(v, keras.metrics.Metric)) or (callable(v))
+}
 
-@dispatch_wrapper(_metrics, 'metrics')
-def get_metrics(metrics, * args, ** kwargs):
+def get_metrics(metrics, ** kwargs):
     if metrics == 'accuracy': return metrics
     if isinstance(metrics, (list, tuple)):
-        return [get_metrics(m, * args, ** kwargs) for m in metrics]
+        return [get_metrics(m, ** kwargs) for m in metrics]
     
     if isinstance(metrics, dict):
         if metrics.get('class_name', None) == 'MeanMetricWrapper':
             return keras.metrics.deserialize(metrics)
         
-        name_key    = 'metric' if 'metric' in metrics else 'name'
+        name_key    = 'class_name' if 'class_name' in metrics else 'name'
         config_key  = 'metric_config' if 'metric_config' in metrics else 'config'
         kwargs      = {** kwargs, ** metrics.get(config_key, {})}
-        metric_name = metrics.get(name_key, metrics)
+        metrics     = metrics.get(name_key, metrics)
     
-    return get_object(
-        _metrics, metrics, * args, ** kwargs, types = (type, keras.metrics.Metric),
-        print_name = 'metric', function_wrapper = MeanMetricWrapper
-    )
-
-def add_metric(metric, name = None):
-    if name is None: name = metric.__name__ if is_function(metric) else metric.__class__.__name__
-    get_metric.dispatch(metric, name)
-
-def print_metrics():
-    print_objects(_metrics, 'metrics')
+    if isinstance(metrics, str):
+        metrics = _metrics[metrics.lower()]
+        if isinstance(metrics, type): metrics = metrics(** kwargs)
+    
+    if not isinstance(metrics, keras.metrics.Metric):
+        assert callable(metrics), str(metrics)
+        kwargs.setdefault('name', metrics.__name__)
+        metrics = MeanMetricWrapper(metrics, ** kwargs)
+    
+    return metrics
 

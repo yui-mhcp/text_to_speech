@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,7 +9,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 import math
 import logging
 import datetime
@@ -19,14 +18,9 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 try:
-    from .pandas_utils import is_dataframe
-    from .keras_utils.ops import is_tensor, convert_to_numpy
+    from .keras.ops import is_tensor, convert_to_numpy
 except ImportError as e:
     is_tensor = lambda x: False
-    def is_dataframe(v):
-        if 'pandas' not in sys.modules: return False
-        import pandas as pd
-        return isinstance(v, pd.DataFrame)
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +123,8 @@ def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
     if not isinstance(lines, dict): lines = {None : lines}
 
     _labels = []
-    for label, lines in lines.items():
-        if not isinstance(lines, _data_iterable): lines = [lines]
+    for label, positions in lines.items():
+        if not isinstance(positions, _data_iterable): positions = [positions]
         lines_config = config if not label else {
             k : v if not isinstance(v, dict) else v[label] for k, v in config.items()
         }
@@ -138,12 +132,12 @@ def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
             lines_config['color'] = _normalize_colors(lines_config['color'], cmap)
         
         if label: _labels.append(label)
-        for i, line in enumerate(lines):
-            if label: config['label'] = label if i == 0 else None
+        for i, line in enumerate(positions):
+            if label: lines_config['label'] = label if i == 0 else None
             _drawing_method(
                 line, ** {k : _get_label_config(label, i, v) for k, v in lines_config.items()}
             )
-        return _labels
+    return _labels
 
 def _set_boxplot_colors(im, colors, facecolor, cmap = None):
     colors = _normalize_colors(colors, cmap = cmap) if isinstance(colors, _data_iterable) else [colors] * len(im['boxes'])
@@ -528,7 +522,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
             datas.append(v)
         elif isinstance(v, dict):
             datas.append((v.pop('name', v.pop('label', None)), v))
-        elif is_dataframe(v):
+        elif hasattr(v, 'columns'):
             if by is not None:
                 for value, datas_i in v.groupby(by):
                     datas_i.pop(by)
@@ -628,7 +622,7 @@ def plot_multiple(* args, size = 5, x_size = None, y_size = None, ncols = 2, nro
         
     datas = []
     for v in args:
-        if is_dataframe(v): use_subplots = True
+        if hasattr(v, 'columns'): use_subplots = True
         _parse_arg(datas, v)
     
     data_names = [
@@ -922,7 +916,7 @@ def plot_classification(scores = None, labels = None, k = 5, x = None, ** kwargs
     return plot(scores, ** kwargs)
     
 def plot_embedding(embeddings = None, ids = None, marker = None, random_state = None,
-                   projection = 'umap', remove_extreme = False, x = None, ** kwargs):
+                   projection = 'umap', x = None, ** kwargs):
     """
         Plot embeddings using the UMAP projection
         Arguments : 
@@ -933,26 +927,6 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
             - remove_extreme    : whether to remove extremas points which are to far away from other points
             - kwargs    : general config passed to plot()
     """
-    def filter_x(x, y, marker = None):
-        sorted_idx = np.argsort(x)
-        
-        x = x[sorted_idx]
-        y = y[sorted_idx]
-        if marker is not None: merker = marker[sorted_idx]
-        
-        subset = x[len(x) // 20 : - len(x) // 20]
-        mean = np.mean(subset)
-        mean_dist = np.mean(np.abs(subset - mean))
-        
-        dist = np.abs(x - mean)
-        keep = np.where(dist < mean_dist * 5)
-        
-        x = x[keep]
-        y = y[keep]
-        if marker is not None: marker = marker[keep]
-        
-        return x, y, marker
-    
     def reduce_embeddings(embeddings):
         if projection == 'umap':
             import umap
@@ -970,7 +944,7 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
     assert embeddings is not None or x is not None
     if embeddings is None: embeddings = x
 
-    if is_dataframe(embeddings):
+    if hasattr(embeddings, 'columns'):
         from .embeddings import embeddings_to_np
         
         if 'id' in embeddings and ids is None:
@@ -989,10 +963,6 @@ def plot_embedding(embeddings = None, ids = None, marker = None, random_state = 
         reduced_embeddings = embeddings
     
     x, y = reduced_embeddings[:, 0], reduced_embeddings[:, 1]
-
-    if remove_extreme:
-        x, y, marker = filter_x(x, y, marker)
-        y, x, marker = filter_x(y, x, marker)
     
     kwargs.update({'x' : x, 'y' : y, 'plot_type' : 'scatter', 'marker' : marker})
     if ids is not None:

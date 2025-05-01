@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,67 +9,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import cv2
-import enum
+import numpy as np
 
-from utils.keras_utils import ops
-from utils.generic_utils import get_enum_item
-from utils.plot_utils import plot, plot_multiple
-from ..image_utils import normalize_color
+from matplotlib import colors
+
+from ...keras import ops
+from ...plot_utils import plot, plot_multiple
 from ..image_io import load_image
-from .converter import BoxFormat, NORMALIZE_WH, box_converter_wrapper
+from .converter import box_converter_wrapper
 
-class Shape(enum.IntEnum):
-    CERCLE  = 0
-    CIRCLE  = 0
-    OVALE   = 1
-    ELLIPSE = 1
-    RECT    = 2
-    RECTANGLE   = 2
+BASE_COLORS = list(colors.BASE_COLORS.keys())
 
-@box_converter_wrapper(
-    BoxFormat.XYXY, normalize = NORMALIZE_WH, force_np = True, force_dict = True
-)
+@box_converter_wrapper('xyxy', normalize_mode = 'absolute', force_np = True, as_dict = True)
 def draw_boxes(image,
                boxes,
                
                show_text    = True,
                
-               shape    = Shape.RECTANGLE,
-               color    = 'r',
+               shape    = 'rectangle',
+               color    = BASE_COLORS,
                thickness    = 3,
-               with_label   = True,
+               
                labels   = None,
                
                vertical = True,
+               
                ** kwargs
               ):
+    import cv2
+    
     if not isinstance(color, list): color = [color]
-    if isinstance(shape, str):      shape = get_enum_item(shape, Shape)
     if isinstance(image, str):      image = load_image(image)
     image   = ops.convert_to_numpy(image)
     image_h, image_w = image.shape[:2]
-
-    color = [
-        ops.convert_to_numpy(normalize_color(c, dtype = ops.dtype_to_str(image.dtype))).tolist()
-        for c in color
-    ]
+    
+    color = [_normalize_color(c, dtype = image.dtype).tolist() for c in color]
+    
     label_color = {}
     for i, (x1, y1, x2, y2) in enumerate(boxes['boxes'].tolist()):
         if x2 <= x1 or y2 <= y1: continue
         
-        c = color[i % len(color)]
-        if with_label and boxes.get('labels', labels) is not None:
+        if boxes.get('labels', labels) is None:
+            c = color[i % len(color)]
+        else:
             label   = boxes['labels'][i] if 'labels' in boxes else (
                 labels[i] if len(labels) > 1 else labels[0]
             )
-            conf    = boxes['scores'][i] if 'scores' in boxes else None
             if labels and ops.is_int(label): label = labels[label]
             if label not in label_color: 
                 label_color[label] = color[len(label_color) % len(color)]
             c = label_color[label]
-            
+
             if show_text:
+                conf    = boxes['scores'][i] if 'scores' in boxes else None
+
                 text    = '{}{}'.format(label, '' if not conf else ' ({:.2f} %)'.format(conf))
                 font_scale   = 1e-3 * image_h
                 (text_width, text_height), baseline = cv2.getTextSize(
@@ -89,14 +82,14 @@ def draw_boxes(image,
                     image, text, (x1, y1 - 13), cv2.FONT_HERSHEY_SIMPLEX, font_scale, c_text, 2
                 )
         
-        if shape == Shape.RECTANGLE:
+        if shape == 'rectangle':
             image = cv2.rectangle(image, (x1, y1), (x2, y2), c, thickness)
-        elif shape == Shape.CIRCLE:
+        elif shape == 'circle':
             w, h = x2 - x1, y2 - y1
             image = cv2.circle(
                 image, ((x1 + x2) // 2, (y1 + y2) // 2), min(w, h) // 2, c, thickness
             )
-        elif shape == Shape.ELLIPSE:
+        elif shape == 'ellipse':
             w, h    = x2 - x1, y2 - y1
             axes    = (w // 2, int(h / 1.5)) if vertical else (int(w / 1.5), h // 2)
             image   = cv2.ellipse(
@@ -109,10 +102,12 @@ def draw_boxes(image,
                 axes    = axes,
                 color   = c
             )
+        else:
+            raise ValueError('Unsupported shape : {}'.format(shape))
     
     return image
 
-def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., labels = None, ** kwargs):
+def show_boxes(image, boxes, *, source = None, dezoom_factor = 1., labels = None, ** kwargs):
     """
         Displays a (list of) `boxes` with `utils.plot_multiple`
         
@@ -128,9 +123,7 @@ def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., lab
     if isinstance(image, str): image = load_image(image, to_tensor = False, run_eagerly = True)
     image = ops.convert_to_numpy(image)
     
-    _, images = crop_box(
-        image, boxes, source = source, dezoom_factor = dezoom_factor
-    )
+    _, images = crop_box(image, boxes, dezoom_factor = dezoom_factor, source = source)
     if images is None: return
     elif not isinstance(images, list): images = [images]
     
@@ -157,3 +150,23 @@ def show_boxes(image, boxes, source = BoxFormat.DEFAULT, dezoom_factor = 1., lab
     
     plot_multiple(** plot_data, plot_type = 'imshow', ** kwargs)
 
+
+def _normalize_color(color, dtype = None):
+    color = _color_to_rgb(color)
+    if dtype is None or dtype == color.dtype:       return color
+    elif 'float' in getattr(dtype, 'name', dtype):  return (color / 255.).astype(dtype)
+    else:   raise ValueError('Unsupported `dtype` : {}'.format(dtype))
+
+def _color_to_rgb(color):
+    """
+        Returns a RGB np.ndarray color as uint8 values. `color` can be of different types :
+            - str (or bytes)  : the color's name (as supported by `matplotlib.colors.to_rgb`)
+            - int / float     : the color's value (used as Red, Green and Blue value)
+            - 3-tuple / array : the RGB values (either float or int)
+    """
+    if colors.is_color_like(color):
+        color = colors.to_rgb(color)
+
+    if not isinstance(color, (list, tuple, np.ndarray)): color = (color, color, color)
+    if isinstance(color[0], (float, np.floating)): color = [c * 255 for c in color]
+    return np.array(color, dtype = np.uint8)

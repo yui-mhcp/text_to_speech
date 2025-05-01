@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,50 +12,77 @@
 import os
 import re
 import glob
-import logging
+import numpy as np
 
 from threading import Lock
 
+from loggers import Timer
 from .callback import Callback
-from loggers import time_logger
-from utils.threading import Consumer
-from utils.generic_utils import to_json
-from utils.file_utils import dump_data, dump_json
-from utils.keras_utils import ops
-
-logger = logging.getLogger(__name__)
+from ..threading import Stream, FakeLock
+from ..file_utils import dump_data, dump_json
+from ..generic_utils import to_json
+from ..keras import ops
 
 _index_file_format_re = re.compile(r'\{i?(:\d{2}d)?\}')
 
 class FileSaver(Callback):
     def __init__(self,
-                 data_key,
+                 key,
                  file_format,
+                 
+                 *,
+                 
+                 data_key   = None,
+                 additional_keys    = None,
                  
                  index  = -1,
                  index_key  = None,
                  
                  save_fn    = dump_data,
-                 additional_keys    = (),
-                 use_multithreading = False,
+                 save_in_parallel   = False,
                  
-                 name   = 'saving',
+                 name   = None,
                  
                  ** kwargs
                 ):
-        super().__init__(name = name, ** kwargs)
+        super().__init__(name = name or 'saving {}'.format(key), ** kwargs)
         
-        self.data_key   = data_key
+        self.key    = key
+        self.data_key   = data_key or key
         self.file_format    = file_format
-        self.additional_keys    = additional_keys
-
+        self.additional_keys    = additional_keys or []
+        
         self.index  = index
         self.index_key  = index_key
         self.use_index  = _index_file_format_re.search(file_format) is not None
-        
+
         self.save_fn    = save_fn
-        self.use_multithreading = use_multithreading
+        self.save_in_parallel   = int(save_in_parallel)
     
+    def _get_index(self, output):
+        if not self.use_index: return -1
+        
+        if self.index_key in output:
+            return output[self.index_key]
+        
+        with self.mutex:
+            if self.index == -1:
+                self.index = len(glob.glob(_index_file_format_re.sub('*', self.file_format)))
+
+            idx = self.index
+            self.index += 1
+        return idx
+    
+    def _format_filename(self, infos, output):
+        idx     = self._get_index(output)
+        kwargs  = {}
+        if '{basename}' in self.file_format and 'basename' not in output:
+            kwargs['basename'] = '.'.join(
+                os.path.basename(infos['filename']).split('.')[:-1]
+            )
+        
+        return self.file_format.format(idx, i = idx, ** output, ** kwargs)
+
     def __repr__(self):
         des = '<{}'.format(self.__class__.__name__)
         if self.key:        des += ' key={}'.format(self.key)
@@ -66,163 +93,101 @@ class FileSaver(Callback):
         super().build()
         
         directory = os.path.dirname(self.file_format)
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+        if not os.path.exists(directory): os.makedirs(directory)
         
-        if self.use_multithreading:
-            self.save = Consumer(self._save).start()
-        else:
-            self.save = self._save
+        self.saver  = Stream(self.save, max_workers = self.save_in_parallel)
+        self.mutex  = Lock() if self.save_in_parallel > 1 and self.use_index else FakeLock()
         
     def apply(self, infos, output, ** _):
         if isinstance(output.get(self.key, None), str):
-            return output[self.key]
-        elif isinstance(infos.get(self.key, None), str):
-            filename = infos[self.key]
-        else:
-            filename = self.format_filename(infos, output)
+            if self.key not in infos: infos[self.key] = output[self.key]
+            return
+        elif infos.get(self.key, None) is None:
+            infos[self.key] = self._format_filename(infos, output)
         
-        self.save(filename, output[self.data_key], ** {
+        self.saver(infos[self.key], output[self.data_key], ** {
             k : output[k] for k in self.additional_keys
         })
-        
-        return filename
 
     def join(self):
-        if self.use_multithreading and self.built: self.save.join()
+        if self.built: self.saver.join()
     
-    def format_filename(self, infos, output):
-        idx     = self.get_index(output)
-        kwargs  = {}
-        if '{basename}' in self.file_format and 'basename' not in output:
-            kwargs['basename'] = '.'.join(
-                os.path.basename(infos['filename']).split('.')[:-1]
-            )
-        
-        return self.file_format.format(idx, i = idx, ** output, ** kwargs)
-    
-    def get_index(self, output):
-        if not self.use_index: return -1
-        
-        if self.index_key in output:
-            return output[self.index_key]
-        elif self.index == -1:
-            self.index = len(glob.glob(_index_file_format_re.sub('*', self.file_format)))
-        
-        idx = self.index
-        self.index += 1
-        return idx
-    
-    def _save(self, filename, data, ** kwargs):
-        with time_logger.timer(self.name):
-            self.save_fn(filename, data, ** kwargs)
+    def save(self, filename, data, ** kwargs):
+        with Timer(self.name): self.save_fn(filename, data, ** kwargs)
 
 class AudioSaver(FileSaver):
-    def __init__(self, data_key = 'audio', file_format = 'audio-{}.mp3', ** kwargs):
+    def __init__(self, key = 'audio', file_format = 'audio-{}.mp3', ** kwargs):
         if 'save_fn' not in kwargs:
             from utils.audio import write_audio
             kwargs['save_fn'] = write_audio
         
         kwargs['additional_keys'] = ['rate']
-        super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
+        super().__init__(key, file_format, ** kwargs)
 
 class ImageSaver(FileSaver):
-    def __init__(self, data_key = 'image', file_format = 'image-{}.jpg', ** kwargs):
+    def __init__(self, key = 'filename', file_format = 'image-{}.jpg', data_key = 'image', ** kwargs):
         if 'save_fn' not in kwargs:
             from utils.image import save_image
             kwargs['save_fn'] = save_image
         
-        super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
+        super().__init__(key, file_format, data_key = data_key, ** kwargs)
 
 class SpectrogramSaver(FileSaver):
-    def __init__(self, data_key = 'mel', file_format = 'mel-{}.npy', ** kwargs):
-        super().__init__(data_key = data_key, file_format = file_format, ** kwargs)
+    def __init__(self, key = 'mel', file_format = 'mel-{}.npy', ** kwargs):
+        super().__init__(key, file_format, ** kwargs)
 
-    def _save(self, filename, data):
-        if isinstance(data, list): data = ops.concatenate(data, axis = 0)
-        return super()._save(filename, data)
+    def save(self, filename, data):
+        if isinstance(data, list):
+            data = [ops.convert_to_numpy(d) for d in data]
+            data = np.concatenate(data, axis = 0)
+        return super().save(filename, data)
     
-class JSonSaver(FileSaver):
+class JSONSaver(FileSaver):
     def __init__(self,
-                 filename,
                  data,
+                 filename,
                  primary_key,
+                 
+                 *,
                  
                  force_keys = (),
                  
-                 use_multithreading = False,
-
                  name   = 'saving json',
                  
-                 ** _
+                 ** kwargs
                 ):
-        super().__init__(
-            name    = name,
-            data_key    = None,
-            file_format = filename,
-            use_multithreading = use_multithreading
-        )
+        super().__init__(None, filename, name = name, ** kwargs)
         
         self.data   = data
-        self.filename   = filename
         self.force_keys = force_keys
         self.primary_key    = primary_key
-    
-        if self.use_multithreading:
-            self.mutex = Lock()
         
+        self.save_in_parallel = min(1, self.save_in_parallel)
+    
     def __repr__(self):
-        return '<{} file={}>'.format(self.__class__.__name__, self.filename)
+        return '<{} file={}>'.format(self.__class__.__name__, self.file_format)
 
-    def update_data(self, infos, output):
-        key = infos[self.primary_key] if self.primary_key in infos else output[self.primary_key]
-        if isinstance(key, str):
-            _updated    = []
-            for k, v in output.items():
-                if k not in self.force_keys and _is_array(v): continue
-                v = to_json(v)
-                if k in infos and infos[k] == v:
-                    continue
-
-                infos[k] = v
-                _updated.append(k)
-            
-            if key not in self.data:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('- Add new entry {} to data'.format(key))
-            
-                self.data[key] = to_json(infos)
-            elif not _updated:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('- Entry {} is already in data'.format(key))
-                return False
-            elif logger.isEnabledFor(logging.DEBUG):
-                logger.debug(' - Keys {} have been updated for entry {}'.format(_updated, key))
-            
-            if self.use_multithreading:
-                with self.mutex: self.updated = True
-            return True
-
-        return False
-    
     def apply(self, infos, output):
-        self.save()
+        if self.primary_key not in infos: return None
+        
+        key = infos[self.primary_key]
+        if not isinstance(key, str): return
+
+        infos = to_json(infos)
+        with self.mutex:
+            self.data[key]  = infos
+            self.updated    = True
+        
+        self.saver()
+        return key
     
-    def _save(self):
-        with time_logger.timer(self.name):
+    def save(self):
+        with Timer(self.name):
             data = self.data
-            if self.use_multithreading:
+            if self.save_in_parallel:
                 with self.mutex:
                     if not self.updated: return
                     self.updated = False
-                    data = self.data.copy()
-            else:
-                data = self.data
-            dump_json(self.filename, data, indent = 4)
+                    data = data.copy()
+            dump_json(self.file_format, data, indent = 4)
     
-def _is_array(v):
-    if isinstance(v, list):
-        return any(_is_array(vi) for vi in v)
-    elif isinstance(v, dict):
-        return any(_is_array(vi) for vi in v.values())
-    return not isinstance(v, (int, float, str, bool)) and ops.is_array(v)

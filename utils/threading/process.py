@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,17 +13,15 @@ import os
 import time
 import queue
 import logging
-import multiprocessing
+import multiprocessing.queues
 
-from typing import Any, Dict
-from threading import RLock
-from dataclasses import dataclass
+from datetime import datetime
+from functools import wraps
+from threading import Thread, RLock
 
-from .producer import _item_to_str
 from .async_result import AsyncResult
-from . import run_in_thread, locked_property, get_buffer
+from .stream import STOP, KEEP_ALIVE, IS_RUNNING, DataWithResult, _locked_property, _run_callbacks
 
-KEEP_ALIVE  = '__keep_alive__'
 RESULTS_HANDLER_WAKEUP_TIME = 1.
 
 logger = logging.getLogger(__name__)
@@ -31,35 +29,56 @@ logger = logging.getLogger(__name__)
 _processes  = {}
 _global_mutex   = RLock()
 
-@dataclass
-class DataWithResults:
-    data    : Dict
-    index   : Any
-    result  : Any   = None
+_buffers    = {
+    'queue' : multiprocessing.Queue,
+    'fifo'  : multiprocessing.Queue,
+    'priority'  : multiprocessing.PriorityQueue,
+    'min_priority'  : multiprocessing.PriorityQueue,
+    'max_priority'  : multiprocessing.PriorityQueue
+}
+
+def run_in_thread(fn = None, name = None, callback = None, ** thread_kwargs):
+    def wrapper(fn):
+        @wraps(fn)
+        def inner(* args, ** kwargs):
+            thread = Thread(
+                target = fn, args = args, kwargs = kwargs, name = name or fn.__name__, ** thread_kwargs
+            )
+            thread.start()
+            
+            return thread
+        return inner
+    return wrapper if fn is None else wrapper(fn)
 
 class MetaProcess(type):
-    def __call__(self, fn, * args, add_stream = False, add_callback = False, ** kwargs):
-        name = kwargs.get('name', getattr(fn, '__name__', None))
+    def __call__(self, fn, * args, add_stream = True, name = None, ** kwargs):
+        if not name:
+            if isinstance(fn, str):     name = fn
+            elif hasattr(fn, 'name'):   name = fn.name
+            elif hasattr(fn, '__name__'):   name = fn.__name__
+            else:   fn = fn.__class__.__name__
         
         with _global_mutex:
             if name not in _processes or _processes[name].stopped:
-                if add_stream:      kwargs.setdefault('input_stream', 'queue')
-                if add_callback:    kwargs.setdefault('output_stream', 'queue')
-                if 'stream' in kwargs: kwargs['input_stream'] = kwargs.pop('stream')
+                if add_stream and 'stream' not in kwargs:
+                    kwargs['input_stream'] = 'queue'
                 
-                _processes[name] = super().__call__(fn, * args, ** kwargs)
+                _processes[name] = super().__call__(fn, * args, name = name, ** kwargs)
         
-        return _processes[name]
+            return _processes[name]
         
 class Process(metaclass = MetaProcess):
     def __init__(self,
                  fn,
                  args   = (),
                  kwargs = {},
+                 
                  *,
                  
+                 callbacks  = [],
                  input_stream   = None,
-                 output_stream  = None,
+                 skip_outputs   = False,
+                 only_process_last  = False,
                  
                  restart    = False,
                  
@@ -70,48 +89,51 @@ class Process(metaclass = MetaProcess):
                  
                  ** kw
                 ):
-        if output_stream is None: output_stream = 'queue'
-        
         self.fn = fn
         self.name   = name
         self.args   = args
         self.kwargs = kwargs or kw
         
-        self.input_stream   = get_buffer(input_stream, use_multiprocessing = True) if input_stream is not None else None
-        self.output_stream  = get_buffer(output_stream, use_multiprocessing = True)
+        self.callbacks  = callbacks
+        
+        self.restart    = restart
+
+        self.input_stream   = _get_buffer(input_stream) if input_stream is not None else None
+        self.output_stream  = _get_buffer('queue')
+        self.skip_outputs   = skip_outputs
+        self.only_process_last  = only_process_last
         
         self.result_key = result_key
         self.keep_results   = keep_results
-
-        self.restart    = restart
         
         self.mutex  = RLock()
-        self.process    = None
-        self.finalizer  = None
-        self.results_handler    = None
-        self._waiting_results   = {}
+        self._process   = None
+        self._finalizer = None
+        
         self._results   = {}
-
-        self.pipes  = {'input' : set(), 'output' : set()}
-        self.synchronizer   = None  # thread keeping `self` alive until `len(self.pipes['input']) > 0`
+        self._waiting_results   = {}
+        self._results_handler   = None
         
         self._index = 0
         self._stopped   = False
         self._exitcode  = None
     
     def _get_index(self, data):
-        if self.result_key is None:
+        if (self.result_key is None) or (isinstance(data, str) and data in (KEEP_ALIVE, IS_RUNNING)):
             return self.index
         elif isinstance(self.result_key, str):
             return data[self.result_key] if isinstance(data, dict) else data
         elif isinstance(self.result_key, (list, tuple)):
             return tuple(data[k] for k in self.result_key) if isinstance(data, dict) else data
     
-    def _apply_async(self, data, callback = None, ** kwargs):
+    def _apply_async(self, data, *, priority = 0, callback = None):
         result = AsyncResult(callback = callback)
         with self.mutex:
+            if self._stopped:
+                raise RuntimeError('Cannot add new data to a stopped process')
+            
             index = self._get_index(data)
-            if self.keep_results and not kwargs.get('overwrite', False) and index in self._results:
+            if (self.keep_results and index in self._results) and (not isinstance(data, dict) or not data.get('overwrite', False)):
                 result(self._results[index])
                 return result
             elif index in self._waiting_results and self.buffer_type == 'Queue':
@@ -121,15 +143,30 @@ class Process(metaclass = MetaProcess):
                 self._index += 1
                 self._waiting_results.setdefault(index, []).append(result)
         
-        if self.stopped:
-            raise RuntimeError('Cannot add new data to a stopped process')
+        if self.only_process_last: self.clear()
         
-        self.input_stream.put(DataWithResults(data = data, index = index), ** kwargs)
+        if isinstance(data, dict):
+            _args, _kwargs = (), data
+        elif (data is STOP) or (isinstance(data, str) and data in (IS_RUNNING, KEEP_ALIVE)):
+            _args, _kwargs = data, {}
+        else:
+            _args, _kwargs = (data, ), {}
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('[{}] Add new item to queue'.format(datetime.now()))
+        
+        self.input_stream.put(DataWithResult(
+            args = _args, kwargs = _kwargs, index = index, priority = priority
+        ))
         return result
 
-    def _map_async(self, items, *, callback = None, ** kwargs):
+    def _map_async(self, items, *, priority = 0, callback = None):
         with self.mutex:
-            return [self._apply_async(it, callback = callback, ** kwargs) for it in items]
+            if isinstance(priority, (int, float)): priority = [priority] * len(items)
+            return [
+                self._apply_async(it, priority = p, callback = callback)
+                for it, p in zip(items, priority)
+            ]
     
     __call__    = _apply_async
     append      = _apply_async
@@ -139,28 +176,17 @@ class Process(metaclass = MetaProcess):
     extend  = _map_async
     
     
-    index   = locked_property('index')
-    stopped = locked_property('stopped')
+    index   = _locked_property('index')
+    stopped = _locked_property('stopped')
+    exitcode    = _locked_property('exitcode')
     
     @property
-    def target(self):
-        return self.fn
+    def process(self):
+        return self._process
     
     @property
     def buffer_type(self):
         return self.input_stream.__class__.__name__
-    
-    @property
-    def exitcode(self):
-        return self._exitcode
-    
-    @property
-    def input_pipes(self):
-        return self.pipes['input']
-    
-    @property
-    def output_pipes(self):
-        return self.pipes['output']
     
     def __enter__(self):
         return self.start()
@@ -175,12 +201,6 @@ class Process(metaclass = MetaProcess):
         elif self.is_alive():
             des += ' running'
         
-        if self.input_pipes:
-            des += ' in_pipes={}'.format(self.input_pipes)
-        
-        if self.output_pipes:
-            des += ' out_pipes={}'.format(self.output_pipes)
-        
         return des + '>'
     
     def __str__(self):
@@ -194,122 +214,102 @@ class Process(metaclass = MetaProcess):
         return self.name == other
     
     def start(self):
-        if self.is_alive(): return self
-        elif self.stopped: raise RuntimeError('The process has been stopped')
+        with self.mutex:
+            if self.is_alive(): return self
+            elif self.stopped:  raise RuntimeError('The process has been stopped')
 
-        kwargs = self.kwargs.copy()
-        if self.input_stream is not None:
-            assert 'stream' not in kwargs
-            kwargs['stream'] = self.input_stream
+            kwargs = self.kwargs.copy()
+            if self.input_stream is not None:
+                kwargs['stream'] = self.input_stream
 
-        if self.output_stream is not None:
-            assert 'callback' not in kwargs
-            kwargs['callback'] = self.output_stream
+            if not self.skip_outputs:
+                kwargs['callback'] = self.output_stream
+            else:
+                kwargs['control_callback'] = self.output_stream
 
-        self.process = multiprocessing.Process(
-            target = self.target, args = self.args, kwargs = kwargs, name = self.name
-        )
-        self.process.start()
-        if self.finalizer is None:          self.finalizer = self.start_finalizer()
-        if self.results_handler is None:    self.results_handler = self.start_results_handler()
+            self._process   = multiprocessing.Process(
+                target = self.fn, kwargs = kwargs, name = self.name
+            )
+            self._process.start()
+            if self._finalizer is None:         self._finalizer = self.start_finalizer()
+            if self._results_handler is None:   self._results_handler = self.start_results_handler()
         return self
     
     def stop(self):
-        if not self._stopped: self.stopped = True
+        if not self._stopped:
+            self.stopped = True
+            if self.input_stream is not None:
+                self.input_stream.put(STOP)
+            else:
+                self.terminate()
     
+    def clear(self):
+        try:
+            while True:
+                it = self.input_stream.get_nowait()
+                for res in self._waiting_results.pop(it.index): res(None)
+        except queue.Empty:
+            pass
+
+    def is_running(self):
+        self._apply_async(IS_RUNNING).get()
+    
+    def keep_alive(self):
+        self.input_stream.put(KEEP_ALIVE)
+    
+    def is_alive(self):
+        with self.mutex:
+            return self.process is not None and self.process.is_alive()
+
     def join(self, ** kwargs):
-        self.finalizer.join(** kwargs)
+        self._finalizer.join(** kwargs)
 
     def terminate(self):
         with _global_mutex:
             if _processes.get(self.name, None) is self:
-                _processes.pop(self.name, None)
+                _processes.pop(self.name)
 
         with self.mutex:
             if self.process is None: return
-            process = self.process
-            self.process    = None
             self._stopped   = True
             
-        process.terminate()
-        process.join()
+            self.process.terminate()
+            self.process.join()
+            self.output_stream.put(STOP)
 
-        self._exitcode = process.exitcode
+            self._exitcode = self.process.exitcode
         
         logger.info('Process `{}` is closed (status {}) !'.format(
             self.name, self.exitcode
         ))
 
     
-    def is_alive(self):
-        with self.mutex:
-            return self.process is not None and self.process.is_alive()
-
-    def add_observer(self, process):
-        if isinstance(process, str): process = get_process(process)
-        self.output_pipes.add(process)
-    
-    def remove_observer(self, process):
-        if isinstance(process, str): process = get_process(process)
-        self.output_pipes.remove(process)
-    
-    def add_input(self, process):
-        if isinstance(process, str): process = get_process(process)
-        self.input_pipes.add(process)
-        
-        with self.mutex:
-            if self.synchronizer is None:
-                self.synchronizer = self.start_keep_alive()
-
-    def remove_input(self, process):
-        if isinstance(process, str): process = get_process(process)
-        self.input_pipes.remove(process)
-
-    @run_in_thread(daemon = True)
-    def start_keep_alive(self):
-        sleep_time  = self.kwargs.get('timeout', 10) / 2
-        
-        while self.input_pipes:
-            time.sleep(sleep_time)
-            if self.stopped: break
-            
-            for inp in self.input_pipes.copy():
-                if get_process(inp.name) is not None:
-                    self.put(KEEP_ALIVE)
-                    break
-                else:
-                    self.remove_input(inp)
-
-        logger.info('Synchronizer finished !')
 
     @run_in_thread(daemon = True)
     def start_results_handler(self):
         while not self.stopped:
-            try:
-                data = self.output_stream.get(timeout = RESULTS_HANDLER_WAKEUP_TIME)
-            except queue.Empty:
-                continue
+            data = self.output_stream.get()
+            if data is STOP: return
 
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('New result received (index {}) : {}'.format(
-                    data.index, _item_to_str(data.result)
-                ))
+            if isinstance(data, DataWithResult):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('[{}] New result received (index {}) : {}'.format(
+                        datetime.now(), data.index, data.result
+                    ))
+
+                with self.mutex:
+                    for res in self._waiting_results.pop(data.index, []):
+                        res(data.result)
+
+                    if self.keep_results: self._results[data.index] = data.result
+                result = data.result
+            else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('[{}] New result received : {}'.format(datetime.now(), data))
+                result = data
             
-            with self.mutex:
-                for res in self._waiting_results.pop(data.index, []):
-                    res(data.result)
-                
-                if self.keep_results: self._results[data.index] = data.result
-            
-            data = data.result
-            for obs in self.output_pipes.copy():
-                if obs.is_alive():
-                    logger.debug('Transferring data from {} to {}'.format(self.name, out.name))
-                    obs.put(data)
-                elif get_process(obs.name) is None:
-                    logger.info('The output of the pipe ({}) does not exist anymore !'.format(out))
-                    self.remove_observer(obs)
-        
+            _run_callbacks(self.callbacks, None, result)
+    
     @run_in_thread(daemon = True)
     def start_finalizer(self):
         finalize, run = False, 0
@@ -325,11 +325,17 @@ class Process(metaclass = MetaProcess):
         
         self.terminate()
 
-def get_process(name):
-    with _global_mutex: return _processes.get(name, None)
+def _get_buffer(buffer = 'fifo', maxsize = 0):
+    if buffer is None: buffer = 'queue'
 
-def terminate_process(name):
-    with _global_mutex:
-        process = _processes.pop(name, None)
-    if process is not None: process.terminate()
-    return process
+    if isinstance(buffer, str):
+        buffer = buffer.lower()
+        if buffer not in _buffers:
+            raise ValueError('`buffer` is an unknown queue type :\n  Accepted : {}\n  Got : {}\n'.format(tuple(_buffers.keys()), buffer))
+        
+        buffer = _buffers[buffer](maxsize)
+    
+    elif not isinstance(buffer, (queue.Queue, multiprocessing.queues.Queue)):
+        raise ValueError('`buffer` must be a Queue instance or subclass')
+
+    return buffer

@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,96 +9,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
-import keras.ops as K
+from ..keras import TensorSpec, ops, graph_compile
 
-from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils import dispatch_wrapper, pad_batch
-
-_inf = float('inf')
-
-_ctc_decoder_methods    = {}
-
-@dispatch_wrapper(_ctc_decoder_methods, 'method')
-@graph_compile
+@graph_compile(support_xla = False)
 def ctc_decode(sequence : TensorSpec(shape = (None, None, None), dtype = 'float32'),
                lengths  : TensorSpec(shape = (None, ), dtype = 'int32') = None,
                method   = 'greedy',
-               blank_index  = 0
+               blank_index  = 0,
+               
+               num_beams    : int   = 100,
+               num_sentences    : int   = 1
               ):
-    if method not in _ctc_decoder_methods:
-        raise ValueError("Unknown CTC method !\n  Accepted : {}\n  Got : {}".format(
-            tuple(_ctc_decoder_methods.keys()), method
-        ))
+    if method == 'beam': method = 'beam_search'
     
     if lengths is None:
         lengths = ops.fill((ops.shape(sequence)[0], ), ops.shape(sequence)[1])
     
-    return _ctc_decoder_methods[method](
-        sequence, lengths = lengths, blank_index = blank_index
+    tokens, scores = ops.ctc_decode(
+        sequence, lengths, strategy = method, mask_index = blank_index, top_paths = num_sentences, beam_width = num_beams
     )
+    if method == 'greedy':
+        return tokens[0], scores[:, 0] / ops.cast(lengths, scores.dtype)
+    elif method == 'beam_search':
+        tokens = ops.transpose(tokens, [1, 0, 2])
+        return tokens, scores / ops.cast(lengths, scores.dtype)[:, None]
 
-@ctc_decode.dispatch('greedy')
-def ctc_greedy_decoder(sequence, lengths, blank_index):
-    tokens, scores = K.ctc_decode(
-        sequence, lengths, strategy = 'greedy', mask_index = blank_index
-    )
-    return tokens[0], scores[:, 0] / K.cast(lengths, scores.dtype)
-
-@ctc_decode.dispatch(('beam', 'beam_search'))
-def ctc_beam_search_decoder(sequence, lengths, blank_index = 0):
-    tokens, scores = K.ctc_decode(
-        sequence, lengths, strategy = 'beam_search', mask_index = blank_index
-    )
-    tokens = K.transpose(tokens, [1, 0, 2])
-    return tokens, scores / K.cast(lengths, scores.dtype)[:, None]
-
-def ctc_beam_search_decoder_np(encoded, lm = {}, blank_idx = 0, beam_width = 25, ** kwargs):
-    def build_beam(p_tot = - _inf, p_b = - _inf, p_nb = - _inf, p_text = 0):
-        return {'p_tot' : p_tot, 'p_b' : p_b, 'p_nb' : p_nb, 'p_text' : p_text}
-    
-    if ops.rank(encoded) == 3:
-        return pad_batch([beam_search_decoder(
-            enc, lm = lm, blank_idx = blank_idx, beam_width = beam_width
-        ) for enc in encoded], pad_value = blank_idx)
-    
-    beams = {() : build_beam(p_b = 0, p_tot = 0)}
-    
-    encoded = ops.convert_to_numpy(encoded)
-    
-    for t in range(len(encoded)):
-        new_beams = {}
-        
-        best_beams = sorted(beams.keys(), key = lambda l: beams[l]['p_tot'], reverse = True)[:beam_width]
-
-        for label in best_beams:
-            p_nb = (beams[label]['p_nb'] + encoded[t, label[-1]]) if label else - _inf
-            
-            p_b = beams[label]['p_tot'] + encoded[t, blank_idx]
-            
-            p_tot = np.logaddexp(p_nb, p_b)
-            
-            new_beams[label] = build_beam(
-                p_tot  = np.logaddexp(new_beams.get(label, {}).get('p_tot', - _inf), p_tot),
-                p_b    = np.logaddexp(new_beams.get(label, {}).get('p_b', - _inf), p_b),
-                p_nb   = np.logaddexp(new_beams.get(label, {}).get('p_nb', - _inf), p_nb),
-                p_text = beams[label]['p_text']
-            )
-            
-            new_p_nb = beams[label]['p_tot'] + encoded[t]
-            if label: new_p_nb[label[-1]] = beams[label]['p_b'] + encoded[t, label[-1]]
-            
-            for c in range(len(encoded[0])):
-                if c == blank_idx: continue
-                
-                new_label = label + (c, )
-                
-                new_beams[new_label] = build_beam(
-                    p_tot = np.logaddexp(new_beams.get(new_label, {}).get('p_tot', - _inf), new_p_nb[c]),
-                    p_nb  = np.logaddexp(new_beams.get(new_label, {}).get('p_nb', - _inf), new_p_nb[c])
-                )
-                
-        beams = new_beams
-
-    best_beam = sorted(beams.items(), key = lambda b: b[1]['p_tot'], reverse = True)[0]
-    return np.array(best_beam[0])

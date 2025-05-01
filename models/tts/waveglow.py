@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,83 +13,41 @@ import math
 import logging
 import numpy as np
 
+from loggers import Timer, timer
 from utils import pad_to_multiple
-from loggers import timer, time_logger
-from models.interfaces import BaseModel
-from utils.keras_utils import TensorSpec, ops, graph_compile
-from custom_architectures import get_architecture
+from utils.keras import TensorSpec, ops
+from ..interfaces.base_audio_model import BaseAudioModel
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_MEL_LENGTH  = 1024
-
-_pytorch_waveglow   = None
-
-def get_nvidia_waveglow():
-    global _pytorch_waveglow
-    if _pytorch_waveglow is None:
-        from utils.generic_utils import limit_gpu_memory
-
-        limit_gpu_memory()
-        _pytorch_waveglow = get_architecture('nvidia_waveglow')
-    return _pytorch_waveglow
-
-def _get_steps(length, win_len, hop_len):
-    num_steps = int(math.ceil((length - win_len) / hop_len)) + 1
+class WaveGlow(BaseAudioModel):
+    _default_loss   = 'mse'
     
-    if num_steps == 1: return [0]
+    input_signature = BaseAudioModel.audio_signature
     
-    max_step = length - win_len
-    actual_step_size = max_step / (num_steps - 1)
-
-    return np.round(np.arange(num_steps) * actual_step_size).astype(np.int32)
-
-class WaveGlow(BaseModel):
-    def __init__(self,
-                 audio_rate         = 22050,
-                 n_mel_channels     = 80,
-                 pad_mel_value      = -11.,
-                 max_input_length   = DEFAULT_MAX_MEL_LENGTH,
-                 run_eagerly    = False,
-                 ** kwargs
-                ):
-        self.audio_rate         = audio_rate
-        self.n_mel_channels     = n_mel_channels
-        self.pad_mel_value      = pad_mel_value
-        self.max_input_length   = max_input_length
+    def __init__(self, *, mel_fn = 'TacotronSTFT', pad_mel_value = -11., ** kwargs):
+        kwargs['audio_format'] = 'mel'
+        
+        self._init_audio(mel_fn = mel_fn, pad_mel_value = pad_mel_value, ** kwargs)
 
         super().__init__(** kwargs)
     
-    def build(self, vocoder = None, ** kwargs):
-        if not vocoder:
-            vocoder = {
+    def build(self, *, model = None, vocoder = None, ** kwargs):
+        if vocoder is not None: model = vocoder
+        elif model is None:
+            model = {
                 'architecture'  : kwargs.pop('architecture', 'waveglow'),
                 'n_mel_channels'    : self.n_mel_channels,
                 ** kwargs
             }
-        return super().build(vocoder = vocoder)
-    
-    @property
-    def run_eagerly(self):
-        return True
-    
-    @property
-    def input_signature(self):
-        return TensorSpec(shape = (None, None, self.n_mel_channels), dtype = 'float32')
+        return super().build(model = model)
     
     @property
     def output_signature(self):
         return TensorSpec(shape = (None, None), dtype = 'float32')
-        
-    @property
-    def training_hparams(self):
-        return super().training_hparams(max_input_length = None)
     
     def __str__(self):
-        des = super().__str__()
-        des += "- Audio rate : {}\n".format(self.audio_rate)
-        des += "- Mel channels : {}\n".format(self.n_mel_channels)
-        return des
+        return super().__str__() + self._str_audio()
     
     def prepare_for_xla_inference(self, *, inputs, padding_multiple = 256, ** kwargs):
         if padding_multiple and inputs.shape[1] % padding_multiple != 0:
@@ -98,14 +56,13 @@ class WaveGlow(BaseModel):
             )
         
         return {'inputs' : inputs}
-
-    def __call__(self, spect, * args, training = False, ** kwargs):
-        return self.infer(spect, ** kwargs)
     
     @timer(name = 'inference WaveGlow')
     def infer(self,
               mel,
+              
               *,
+              
               win_len   = None,
               hop_len   = -64,
               force_pad = None,
@@ -184,64 +141,24 @@ class WaveGlow(BaseModel):
 
         return ops.concatenate(audio, axis = -1)
     
-    def compile(self, loss = 'mse', metrics = [], ** kwargs):
-        super().compile(loss = loss, metrics = metrics, ** kwargs)
+    __call__ = infer
     
     def get_dataset_config(self, ** kwargs):
         kwargs['pad_kwargs']    = {
             'padding_values'    : (self.pad_mel_value, 0.)
         }
-        kwargs['padded_batch']      = True
         
         return super().get_dataset_config(**kwargs)
 
-    def get_config(self, * args, ** kwargs):
-        config = super().get_config(* args, ** kwargs)
-        config.update({
-            'audio_rate'    : self.audio_rate,
-            'n_mel_channels'    : self.n_mel_channels,
-            'pad_mel_value'     : self.pad_mel_value,
-            'max_input_length'  : self.max_input_length
-        })
-        
-        return config
+    def get_config(self):
+        return {** super().get_config(), ** self.get_config_audio()}
 
-    @classmethod
-    def from_nvidia_pretrained(cls, nom = None, ** kwargs):            
-        nvidia_model = get_nvidia_waveglow()
-        
-        instance = cls(
-            nom = nom, max_to_keep = 1, pretrained_name = 'pytorch_nvidia_waveglow', ** kwargs
-        )
-        
-        pt_convert_model_weights(nvidia_model, instance.vocoder)
-        
-        instance.save()
-        
-        return instance
+def _get_steps(length, win_len, hop_len):
+    num_steps = int(math.ceil((length - win_len) / hop_len)) + 1
     
-class PtWaveGlow(object):
-    def __init__(self, ** kwargs):
-        self.waveglow = get_nvidia_waveglow()
+    if num_steps == 1: return [0]
     
-    @property
-    def audio_rate(self):
-        return 22050
-    
-    def __call__(self, spect, * args, training = False, ** kwargs):
-        return self.infer(spect)
-    
-    @timer(name = 'WaveGlow inference')
-    def infer(self, mels):
-        import torch
-        
-        if isinstance(mels, str): mels = np.load(mels)
-        if len(mels.shape) == 2: mels = np.expand_dims(mels, axis = 0)
-        
-        mels = np.transpose(mels, [0, 2, 1])
-        with torch.no_grad():
-            mels = torch.FloatTensor(mels).cuda()
-            
-            audios = self.waveglow.infer(mels).cpu().numpy()
-        return audios
-    
+    max_step = length - win_len
+    actual_step_size = max_step / (num_steps - 1)
+
+    return np.round(np.arange(num_steps) * actual_step_size).astype(np.int32)

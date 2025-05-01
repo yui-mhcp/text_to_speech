@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,16 +12,14 @@
 import os
 import json
 import time
-import keras
 import logging
 import numpy as np
 
 from tqdm import tqdm
 
 from .builder import prepare_dataset
-from utils.keras_utils import ops
-from utils.pandas_utils import is_dataframe
-from utils.generic_utils import time_to_string
+from ..keras import ops
+from ..generic_utils import time_to_string, is_dataframe
 
 logger  = logging.getLogger(__name__)
 
@@ -44,6 +42,7 @@ def summarize_dataset(dataset, columns = None, limit = 0.25, ** kwargs):
 
 def benchmark_dataset(dataset, steps = 100, build = False, ** kwargs):
     """ Iterates over `dataset` for `steps` iterations, and reports statistics """
+    import keras
     
     t0 = time.time()
     

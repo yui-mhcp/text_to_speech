@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,13 +13,12 @@ import logging
 import numpy as np
 
 from loggers import timer
-from utils import insert_signature
-from .converter import BoxFormat, box_converter_wrapper, NORMALIZE_01
+from .converter import box_converter_wrapper
 from .metrics import compute_ioa
 
 logger = logging.getLogger(__name__)
 
-def compute_groups_np(mask):
+def _compute_groups_np(mask):
     edges = {i : set([i]) for i in range(len(mask))}
     for s, e in zip(* np.where(mask)):
         edges[s].add(e)
@@ -43,53 +42,50 @@ def compute_groups_np(mask):
         components.append(component)
     return components
 
-def compute_groups_networkx(mask):
+def _compute_groups_networkx(mask):
     import networkx as nx
     g = nx.Graph()
     g.add_edges_from(zip(* np.where(mask)))
     return nx.connected_components(g)
 
-compute_groups = compute_groups_np
+compute_groups = _compute_groups_np
 
-def compute_union(boxes):
-    if len(boxes) == 1: return boxes[0]
-    return np.concatenate([
-        np.min(boxes[:, :2], axis = 0), np.max(boxes[:, 2:], axis = 0)
-    ], axis = 0)
-
-def merge_lists(lists):
+def _merge_lists(lists):
     if len(lists) == 1: return lists[0]
     union = []
     for l in lists: union.extend(l)
     return union
 
-def merge_rows(rows, indices):
+def _merge_rows(rows, indices):
+    """
+        Merge boxes in `rows` that are on the same line. This is useful to ensure that, within a paragraph, each box in `rows` correspond to the entire line
+    """
     if isinstance(rows, list):
-        return list(zip(* [merge_rows(r, i) for r, i in zip(rows, indices)]))
-    elif len(rows) <= 2:
+        return list(zip(* [_merge_rows(r, i) for r, i in zip(rows, indices)]))
+    elif len(rows) < 2:
         return rows, indices
     
     overlap_y   = np.maximum(0., (
         np.minimum(rows[:, None, 3], rows[None, :, 3]) -
         np.maximum(rows[:, None, 1], rows[None, :, 1])
     )) / np.mean(rows[:, 3] - rows[:, 1])
-    overlap_y = overlap_y
 
-    groups  = sorted([list(grp) for grp in compute_groups(overlap_y >= 0.75)], key = min)
+    groups  = sorted([list(grp) for grp in compute_groups(overlap_y >= 0.5)], key = min)
     rows    = np.array([compute_union(rows[grp]) for grp in groups])
     indices = [
-        merge_lists([indices[idx] for idx in grp])
+        _merge_lists([indices[idx] for idx in grp])
         for grp in groups
     ]
+
     return rows, indices
 
-def align_rows(rows, mode, center_threshold = 1e-2, ** _):
+def _align_rows(rows, mode, center_threshold = 1e-2, ** _):
     """ Aligns `rows` on left/right border """
     if len(rows) == 1: return rows
     
     if mode == 'auto':
         x_center = (rows[:, 0] + rows[:, 2]) / 2.
-        is_centered = np.all(np.abs(x_center[:1] - x_center[1:]) < center_threshold)
+        is_centered = np.all(np.abs(x_center - np.mean(x_center)) < center_threshold)
         if not is_centered: mode = 'left'
     
     if mode == 'left':
@@ -99,48 +95,75 @@ def align_rows(rows, mode, center_threshold = 1e-2, ** _):
     
     return rows
 
-def group_boxes(boxes, indices, groups, rows = None, check_rows = None, align_borders = None, sort = None, ** kwargs):
-    if check_rows is None: check_rows = rows is not None
-    if align_borders is None and rows is not None: align_borders = 'auto'
+def compute_union(boxes):
+    if len(boxes) == 1: return boxes[0]
+    return np.concatenate([
+        np.min(boxes[:, :2], axis = 0), np.max(boxes[:, 2:], axis = 0)
+    ], axis = 0)
+
+def group_boxes(boxes,
+                indices,
+                groups,
+                *,
+                sort    = None,
+                
+                rows    = None,
+                
+                check_rows  = None,
+                align_borders   = None,
+
+                ** kwargs
+               ):
+    if rows is not None:
+        if check_rows is None:      check_rows = True
+        if align_borders is None:   align_borders = 'auto'
     
     res_boxes, res_indices, individuals = [], [], []
     for group in groups:
         group = list(group)
-        if sort is not None: group = sorted(group, key = lambda idx: boxes[idx, sort])
+        if sort is not None and len(group) > 1:
+            group = sorted(group, key = lambda idx: boxes[idx, sort])
+        else:
+            group = list(group)
 
-        group_boxes = boxes[group]
-        res_boxes.append(compute_union(group_boxes))
+        boxes_group = boxes[group]
+        res_boxes.append(compute_union(boxes_group))
+        
         if rows is None:
             res_indices.append([indices[idx] for idx in group])
-            individuals.append(group_boxes)
+            individuals.append(boxes_group)
         elif len(group) == 1:
             res_indices.append(indices[group[0]])
             individuals.append(rows[group[0]])
         else:
-            res_indices.append(merge_lists([indices[idx] for idx in group]))
+            res_indices.append(_merge_lists([indices[idx] for idx in group]))
             individuals.append(np.concatenate([rows[idx] for idx in group], axis = 0))
     
     if check_rows:
-        individuals, res_indices = merge_rows(individuals, res_indices)
+        individuals, res_indices = _merge_rows(individuals, res_indices)
     
     if align_borders:
-        individuals = [align_rows(rows, align_borders, ** kwargs) for rows in individuals]
+        individuals = [_align_rows(rows, align_borders, ** kwargs) for rows in individuals]
     
     return np.array(res_boxes), res_indices, individuals
 
 @timer
-@box_converter_wrapper(BoxFormat.XYXY, normalize = NORMALIZE_01, force_np = True, as_dict = False)
+@box_converter_wrapper('xyxy', normalize_mode = 'relative', force_np = True, as_dict = False)
 def combine_boxes_horizontal(boxes,
+                             *,
+                             
                              indices    = None,
+                             
+                             h_factor   = 1.5,
                              x_threshold    = None,
-                             overlap_threshold  = 0.55,
-                             h_factor   = 1.,
+                             y_overlap_threshold    = 0.55,
+                             
                              ** kwargs
                             ):
     """
         Combines a list of boxes according to the following criteria :
-            1. The distance between the right-side of box i and the left-side of box j is less than `x_threshold` or the two boxes overlap on the x axis
-            2. The y-overlap of box i and j divided by the maximal height (of boxes i and j) is greater than `overlap_threshold`
+            1. The distance between the right-side of box i and the left-side of box j is less than `x_threshold` (if the two boxes overlap on the x axis, the distance is set to 0)
+            2. The y-overlap of box i and j divided by the maximal height (of boxes i and j) is greater than `y_overlap_threshold`
         
         The 1st criterion ensures proximity between the two boxes
         The 2nd criterion ensures that both boxes are on the same line with equivalent heights
@@ -181,7 +204,8 @@ def combine_boxes_horizontal(boxes,
     h   = boxes[:, 3] - boxes[:, 1]
     if x_threshold is None:
         x_threshold = np.median(h) * h_factor
-        logger.debug('X threshold : {:.3f}'.format(x_threshold))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug('X threshold : {:.3f}'.format(x_threshold))
 
     max_h   = np.maximum(h[:, None], h[None, :])
     diff_border = np.abs(boxes[:, None, 2] - boxes[None, :, 0])
@@ -199,7 +223,7 @@ def combine_boxes_horizontal(boxes,
 
     should_combine_horizontal = np.logical_and(
         diff_border <= x_threshold,
-        overlap_y / max_h >= overlap_threshold
+        overlap_y / max_h >= y_overlap_threshold
     )
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug('Horizontal combination :\nX distance :\n{}\n% y overlap :\n{}'.format(
@@ -210,20 +234,24 @@ def combine_boxes_horizontal(boxes,
     return group_boxes(boxes, indices, compute_groups(should_combine_horizontal), sort = 0)
 
 @timer
-@box_converter_wrapper(BoxFormat.XYXY, normalize = NORMALIZE_01, force_np = True, as_dict = False)
+@box_converter_wrapper('xyxy', normalize_mode = 'relative', force_np = True, as_dict = False)
 def combine_boxes_vertical(boxes,
+                           *,
+                           
                            indices  = None,
+                           
                            y_threshold  = None,
                            h_threshold  = 0.02,
-                           overlap_threshold    = 0.,
+                           x_overlap_threshold    = 0.,
                            shift_factor = 0.5,
+                           
                            ** kwargs
                           ):
     """
         Combines a list of boxes according to the following criteria :
             1. The distance between the bottom-side of box i and the top-side of box j is less than `y_threshold` or the two boxes overlap on the y axis
             2. The difference in heights between boxes i and j is less than `h_threshold`
-            3. The x-overlap of box i and j divided by the maximal width (of boxes i and j) is greater than `overlap_threshold` (default to 0, meaning that they simply have to overlap)
+            3. The x-overlap of box i and j divided by the maximal width (of boxes i and j) is greater than `x_overlap_threshold` (default to 0, meaning that they simply have to overlap)
         
         The 1st criterion ensures proximity between the two boxes
         The 2nd criterion ensures that both boxes have approximately equivalent heights
@@ -287,25 +315,29 @@ def combine_boxes_vertical(boxes,
         np.minimum(shifted_x_max[:, None], shifted_x_max[None, :]) -
         np.maximum(boxes[:, None, 0], boxes[None, :, 0])
     )
+    if x_overlap_threshold == 0.:
+        x_overlap_mask = overlap_x > 0.
+    else:
+        overlap_x = overlap_x / np.minimum(shifted_w[:, None], shifted_w[None, :])
+        x_overlap_mask = overlap_x > x_overlap_threshold
 
     should_combine_vertical = np.logical_and(
         np.logical_and(diff_border <= y_threshold, h_diff <= h_threshold),
-        overlap_x / min_w > overlap_threshold
+        x_overlap_mask
     )
 
     return group_boxes(boxes, indices, compute_groups(should_combine_vertical), sort = 1)
 
 @timer
-@box_converter_wrapper(BoxFormat.XYXY, normalize = NORMALIZE_01, force_np = True, as_dict = False)
+@box_converter_wrapper('xyxy', normalize_mode = 'relative', force_np = True, as_dict = False)
 def combine_boxes_overlap(boxes, indices = None, overlap_threshold = 0.5, ** kwargs):
     is_overlapping = compute_ioa(
-        boxes, source = BoxFormat.XYXY, as_matrix = True
+        boxes, source = 'xyxy', as_matrix = True
     ) > overlap_threshold
     return group_boxes(boxes, indices, compute_groups(is_overlapping), sort = 1, ** kwargs)
 
 @timer
-@box_converter_wrapper(BoxFormat.XYXY, normalize = NORMALIZE_01, force_np = True, as_dict = False)
-@insert_signature(combine_boxes_horizontal, combine_boxes_vertical, combine_boxes_overlap)
+@box_converter_wrapper('xyxy', normalize_mode = 'relative', force_np = True, as_dict = False)
 def combine_boxes(boxes, indices = None, ** kwargs):
     """
         Combines `boxes` (list of e.g., single-word boxes) by creating horizontal then vertical combinations.
@@ -317,13 +349,13 @@ def combine_boxes(boxes, indices = None, ** kwargs):
             3) {combine_boxes_overlap}
     """
     combined_boxes, combined_indices, _ = combine_boxes_horizontal(
-        boxes, indices = indices, source = BoxFormat.XYXY, ** kwargs
+        boxes, indices = indices, source = 'xyxy', ** kwargs
     )
     combined_boxes, combined_indices, rows = combine_boxes_vertical(
-        combined_boxes, indices = combined_indices, source = BoxFormat.XYXY, ** kwargs
+        combined_boxes, indices = combined_indices, source = 'xyxy', ** kwargs
     )
     combined_boxes, combined_indices, rows = combine_boxes_overlap(
-        combined_boxes, indices = combined_indices, rows = rows, source = BoxFormat.XYXY, ** kwargs
+        combined_boxes, indices = combined_indices, rows = rows, source = 'xyxy', ** kwargs
     )
 
     return combined_boxes, combined_indices, rows

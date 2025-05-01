@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -42,7 +42,7 @@ class RootTimer:
         self._runnings = {}
         self._thread_names  = {}
     
-    def __str__(self, names = None):
+    def __str__(self):
         def thread_to_str(thread_timers, ** kwargs):
             des = ''
             for _, timer in thread_timers.items():
@@ -52,7 +52,7 @@ class RootTimer:
         if self.is_running(): return "timer {} not stopped yet".format(self.name)
         
         with self.mutex:
-            _timers = self._timers
+            _timers, _threads = self._timers, self._thread_names
             self._timers, self._runnings, self._thread_names = collections.OrderedDict(), {}, {}
         
         des = 'Timers :'
@@ -62,8 +62,10 @@ class RootTimer:
             for thread, timers in _timers.items():
                 if len(timers) == 0: continue
                 
-                des += '\n- Timers in thread {} (id {}) :{}'.format(
-                    self._thread_names[thread], thread, thread_to_str(timers, indent = 1)
+                des += '\n- Timers in {}{} :{}'.format(
+                    'thread ' if 'Thread' not in _threads[thread] else '',
+                    _threads[thread],
+                    thread_to_str(timers, indent = 1)
                 )
         
         return des
@@ -83,7 +85,7 @@ class RootTimer:
         return self._timers[thread_id], self._runnings[thread_id]
     
     def is_running(self):
-        return any(len(runnings) > 0 for t, runnings in self._runnings.items())
+        return any(len(runnings) > 0 for runnings in self._runnings.values())
 
     def start_timer(self, name, level):
         """
@@ -111,11 +113,13 @@ class RootTimer:
         if name not in current: current[name] = new_timer = _create_timer(name)
         else: new_timer = current[name]
 
-        new_timer['start'] = time.time()
         runnings.append(new_timer)
+        new_timer['start'] = time.time()
         return new_timer
     
     def stop_timer(self, name):
+        now = time.time()
+        
         timers, runnings = self.get_thread_timers()
         if not runnings:
             raise RuntimeError('No timer is running when stopping `{}` for thread `{}`'.format(
@@ -123,7 +127,7 @@ class RootTimer:
             ))
         
         timer = runnings.pop()
-        timer['runs'].append(time.time() - timer['start'])
+        timer['runs'].append(now - timer['start'])
         if timer['name'] != name:
             raise RuntimeError('The currently running timer `{}` is not the stopped one `{}`. Make sure to stop them in the correct order'.format(
                 timer['name'], name
@@ -189,7 +193,8 @@ def timer(name = None, *, debug = False, log_if_root = True, fn = None):
             finally:
                 stop_timer(timer_name)
 
-                if log_if_root and not is_timer_running(): log_time(level)
+                if log_if_root and not is_timer_running():
+                    log_time(level)
         
         
         timer_name = name if name else (fn.name if hasattr(fn, 'name') else fn.__name__)
@@ -200,7 +205,7 @@ def timer(name = None, *, debug = False, log_if_root = True, fn = None):
     return wrapper if fn is None else wrapper(fn)
 
 def log_time(level = TIME_LEVEL):
-    time_logger.log(level, _root_timer)
+    time_logger.log(level, str(_root_timer))
 
 def time_to_string(seconds):
     """ Returns a string representation of a time (given in seconds) """
@@ -240,6 +245,7 @@ def _timer_to_str(timer, indent = 0, str_indent = _str_indent):
     return des
 
 _get_thread_id  = threading.get_ident
+_main_thread_id = _get_thread_id()
 
 time_logger = logging.getLogger(TIME_LOGGER_NAME)
 _should_track   = time_logger.isEnabledFor

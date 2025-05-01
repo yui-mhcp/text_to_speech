@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -16,15 +16,26 @@ from .callback import Callback
 logger = logging.getLogger(__name__)
 
 class FunctionCallback(Callback):
-    def __init__(self, fn, name = None, ** kwargs):
-        if name is None: name = fn.__name__
+    def __init__(self, fn, name = None, include_outputs = True, ** kwargs):
+        if name is None: name = getattr(fn, '__name__', fn.__class__.__name__)
         
         self.fn = fn
+        self.include_outputs    = include_outputs
         
         super().__init__(name = name, ** kwargs)
     
     def apply(self, infos, output, ** kwargs):
         kwargs.update(infos)
-        kwargs.update(output)
+        if self.include_outputs: kwargs.update(output)
         return self.fn(** kwargs)
 
+class QueueCallback(Callback):
+    def __init__(self, queue, name = 'queue', ** kwargs):
+        super().__init__(name = name, ** kwargs)
+        
+        self.queue  = queue
+    
+    
+    def apply(self, infos, output, ** kwargs):
+        kwargs.update(infos)
+        return self.queue.put(kwargs)

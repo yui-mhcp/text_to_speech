@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,24 +11,35 @@
 
 import os
 import keras
+import importlib
 
-from utils import import_objects, dispatch_wrapper, get_object, print_objects
+for module in [keras.callbacks] + os.listdir(__package__.replace('.', os.path.sep)):
+    if isinstance(module, str):
+        if module.startswith(('.', '_')) or '_old' in module: continue
+        module = importlib.import_module(__package__ + '.' + module[:-3])
+    
+    globals().update({
+        k : v for k, v in vars(module).items()
+        if isinstance(v, type) and issubclass(v, keras.callbacks.Callback)
+    })
 
-_callbacks = import_objects(
-    [__package__.replace('.', os.path.sep), keras.callbacks],
-    classes     = keras.callbacks.Callback,
-    exclude     = ('Callback', 'CallbackList', 'History', 'ProgBarLogger')
-)
-globals().update(_callbacks)
-
-@dispatch_wrapper(_callbacks, 'callback')
-def get_callbacks(callback = None, * args, ** kwargs):
-    return get_object(
-        _callbacks, callback, * args, ** kwargs, print_name = 'callbacks',
-        types = keras.callbacks.Callback
-    )
+_callbacks = {
+    k.lower() : v for k, v in globals().items()
+    if isinstance(v, type) and issubclass(v, keras.callbacks.Callback)
+}
 
 
-def print_callbacks():
-    print_objects(_callbacks, 'callbacks')
+def get_callbacks(callback = None, ** kwargs):
+    if not callback: return None
+    elif isinstance(callback, (list, tuple)):
+        return [get_callbacks(c, ** kwargs) for c in callback]
+    elif isinstance(callback, keras.callbacks.Callback):
+        return callback
+    elif isinstance(callback, dict):
+        config = callback['config'] if 'config' in callback else {
+            k : v for k, v in callback.items() if 'name' not in k
+        }
+        kwargs.update(config)
+        callback = callback['name' if 'name' in callback else 'class_name']
 
+    return _callbacks[callback.lower()](** kwargs)

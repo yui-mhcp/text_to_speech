@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -386,7 +386,7 @@ def find_layers_mapping(model,
         Note 3 : In theory this function has been designed to map tensorflow's weights (tf_model) to pytorch's weights (pt_model)
                  but, in practice, both can be either tensorflow or pytorch models
     """
-    from utils.distance import edit_distance
+    from utils.text import edit_distance
     
     shape_fn  = sorted if not partial else len
     

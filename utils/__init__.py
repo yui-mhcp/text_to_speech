@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,19 +9,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .hparams import HParams
-from .parser import *
+from loggers import set_level
+
+from .comparison_utils import is_diff, is_equal
+from .distances import *
 from .embeddings import *
 from .file_utils import *
-from .plot_utils import *
-from .pandas_utils import *
-from .stream_utils import *
 from .generic_utils import *
+from .plot_utils import *
 from .sequence_utils import *
-from .comparison_utils import *
-from .wrapper_utils import *
-from .keras_utils.gpu_utils import *
+from .wrappers import *
 
-from .distance import *
+from .keras import *
 from .callbacks import *
 from .threading import *
+
+def setup_environment(log_level = None, ** kwargs):
+    if log_level: set_level(log_level)
+    set_gpu_config(** kwargs)

@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -32,14 +32,13 @@ class CustomScheduler(keras.optimizers.schedules.LearningRateSchedule):
         
         kwargs.setdefault('title', 'Learning rate over steps')
         
-        x = K.arange(1, 1 + n_step)
-        y = K.convert_to_numpy(self(x))
-        return plot(K.convert_to_numpy(x), y, ** kwargs)
+        x = np.arange(1, 1 + n_step)
+        y = K.convert_to_numpy(self(K.convert_to_tensor(x, 'int32')))
     
-        plot(x, y, xlabel = xlabel, ylabel = ylabel, ** kwargs)
+        return plot(x, y, xlabel = xlabel, ylabel = ylabel, ** kwargs)
 
 class DivideByStep(CustomScheduler):
-    def __init__(self, factor = 1., maxval = 1e-2, minval = 1e-6, ** kwargs):
+    def __init__(self, factor = 1., ** kwargs):
         super().__init__(** kwargs)
         self.factor = K.convert_to_tensor(factor, 'float32')
         

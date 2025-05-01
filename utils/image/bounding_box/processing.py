@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,10 +12,9 @@
 import warnings
 import numpy as np
 
-from utils.keras_utils import ops
-from utils.image.image_io import load_image
-from utils.image.mask_utils import apply_mask
-from .converter import _keys_to_convert, BoxFormat, NORMALIZE_WH, box_converter_wrapper, convert_box_format
+from ...keras import ops
+from ..image_io import load_image
+from .converter import _keys_to_convert, box_converter_wrapper, convert_box_format
 from .visualization import draw_boxes
 
 def sort_boxes(boxes,
@@ -56,7 +55,7 @@ def sort_boxes(boxes,
 
     x, y, w, h = None, None, None, None
     if method != 'scores':
-        _boxes = convert_box_format(boxes, target = BoxFormat.XYWH, as_list = True, ** kwargs)
+        _boxes = convert_box_format(boxes, target = 'xywh', as_list = True, ** kwargs)
         if isinstance(_boxes, dict): _boxes = _boxes['boxes']
         if method in ('center', 'left', 'top'):
             _boxes = [ops.cast(coord, 'float32') for coord in _boxes]
@@ -110,7 +109,7 @@ def select_boxes(boxes, indices, axis = -2):
     return ops.take_along_axis(boxes, indices, axis = axis)
 
 @box_converter_wrapper(
-    BoxFormat.XYWH, normalize = NORMALIZE_WH, force_np = True, as_dict = False, as_list = True
+    'xyxy', normalize_mode = 'absolute', as_dict = False, as_list = True, force_np = True
 )
 def crop_box(image, boxes, show = False, ** kwargs):
     """
@@ -122,39 +121,12 @@ def crop_box(image, boxes, show = False, ** kwargs):
     if len(boxes) == 0 or len(boxes[0]) == 0:
         return None, None
     
-    if len(boxes[0]) > 1:
-        if not ops.executing_eagerly():
+    elif len(boxes[0]) > 1:
+        if ops.is_tensorflow_graph():
             raise NotImplementedError('Extracting a list of boxes is not supported in graph-mode')
         
-        return boxes, [
-            image[y : y + h, x : x + w] for x, y, w, h in zip(* boxes)
-        ]
-    
-
-    x, y, w, h = [coord[0] for coord in boxes]
-    if ops.executing_eagerly() and show:
-        plot(image[y1 : y2, x1 : x2], plot_type = 'imshow', title = 'Box')
-    
-    return boxes, image[y : y + h, x : x + w]
-
-def box_as_mask(image, boxes, mask_background = False, ** kwargs):
-    if isinstance(image, str): image = load_image(image)
-    image = ops.convert_to_numpy(image)
-    image_h, image_w, _ = image.shape
-    
-    mask = np.zeros((image_h, image_w, 3), dtype = np.float32)
-    mask = draw_boxes(mask, boxes, color = 255, thickness = -1, ** kwargs)
-    
-    mask = mask[...,:1] > 0.
-    
-    if mask_background: mask = ~mask
-    
-    return mask
-
-def mask_boxes(image, boxes, ** kwargs):
-    if isinstance(image, str): image = load_image(image)
-    image   = ops.convert_to_numpy(image)
-    mask    = box_as_mask(image, boxes, ** kwargs)
-    
-    return apply_mask(image, mask, ** kwargs)
-
+        x0, y0, x1, y1 = boxes
+        return boxes, [image[y0[i] : y1[i], x0[i] : x1[i]] for i in range(len(x0))]
+    else:
+        x0, y0, x1, y1 = [c[0] for c in boxes]
+        return boxes, image[y0 : y1, x0 : x1]

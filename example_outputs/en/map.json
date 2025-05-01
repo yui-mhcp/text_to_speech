@@ -1,13 +1,12 @@
 {
-    " hello world ! i hope you will enjoy this funny api for text-to-speech ! ": {
-        "audio": "example_outputs/en/audios/audio-0.mp3",
+    "\nHello world ! I hope you will enjoy this funny API for Text-To-Speech ! \n": {
         "text": "\nHello world ! I hope you will enjoy this funny API for Text-To-Speech ! \n",
-        "parts": [
+        "cleaned": " hello world ! i hope you will enjoy this funny api for text-to-speech ! ",
+        "splitted": [
             " hello world ! i hope you will enjoy this funny api for text-to-speech ! "
         ],
-        "cleaned": " hello world ! i hope you will enjoy this funny api for text-to-speech ! ",
-        "timestamp": 1732959132.5804384,
         "rate": 22050,
-        "time": 4.493061224489796
+        "time": 4.5859410430839,
+        "audio": "example_outputs/en/audios/audio-0.mp3"
     }
 }

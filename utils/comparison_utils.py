@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,44 +10,12 @@
 # limitations under the License.
 
 import os
+import inspect
 import numpy as np
-
-try:
-    from .keras_utils import ops, tree
-except:
-    from keras import ops, tree
-
-def is_in(target, value, nested_test = False, ** kwargs):
-    if nested_test:
-        cmp         = [is_in(target, v, ** kwargs) for v in value]
-        invalids    = [(i, msg) for i, (eq, msg) in enumerate(cmp) if not eq]
-        if len(invalids) == 0: return True, ''
-        
-        return False, "Invalid items ({}) :\n{}".format(
-            len(invalids), '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
-        )
-    try:
-        if not isinstance(target, (list, tuple)): target = [target]
-        missing = [k for k in target if k not in value]
-        return len(missing) == 0, '{} are missing ({})'.format(missing, value)
-    except TypeError as e:
-        return False, str(e)
-
-def is_smaller(target, value):
-    try:
-        return value < target, 'value is{} smaller than target'.format('' if value < target else ' not')
-    except TypeError as e:
-        return False, str(e)
-
-def is_greater(target, value):
-    try:
-        return value > target, 'value is{} greater than target'.format('' if value < target else ' not')
-    except TypeError as e:
-        return False, str(e)
 
 def is_equal(target, value, ** kwargs):
     try:
-        compare(target, value, ** kwargs)
+        _compare(target, value, ** kwargs)
         return True, 'Value are equals !'
     except AssertionError as e:
         return False, str(e)
@@ -57,76 +25,37 @@ def is_diff(target, value, ** kwargs):
     if eq: msg = 'Value are equals but should not be'
     return not eq, msg
     
-def compare(target, value, ** kwargs):
+def _compare(target, value, ** kwargs):
     """ Compare 2 items and raises an AssertionError if their value differ """
-    target = tree.map_structure(
-        lambda v: ops.convert_to_numpy(v) if ops.is_tensor(v) else v, target
-    )
-    value = tree.map_structure(
-        lambda v: ops.convert_to_numpy(v) if ops.is_tensor(v) else v, value
-    )
+    target  = _maybe_convert_to_numpy(target)
+    value   = _maybe_convert_to_numpy(value)
     
     for t, compare_fn in _comparisons.items():
-        if t.__class__.__name__ in ('function', 'method') and t(target):
-            compare_fn(target, value, ** kwargs)
-        elif isinstance(t, (type, tuple)) and isinstance(target, t):
-            compare_fn(target, value, ** kwargs)
-            return
+        if isinstance(t, (type, tuple)) and isinstance(target, t):
+            return compare_fn(target, value, ** kwargs)
+        elif not isinstance(t, (type, tuple)) and t(target):
+            return compare_fn(target, value, ** kwargs)
 
     if hasattr(target, 'get_config'):
-        compare(target.get_config(), value.get_config(), ** kwargs)
+        _compare(target.get_config(), value.get_config(), ** kwargs)
     else:
-        compare_primitive(target, value, ** kwargs)
-
-def compare_types(value, allowed_types, ** kwargs):
-    """ Check if the `value`'s type is an instance of `allowed_types` """
-    assert isinstance(value, allowed_types), "Value of type {} is not in valid types {}\n  Value : {}".format(
-        type(value), allowed_types, value
-    )
+        _compare_primitive(target, value, ** kwargs)
     
-def compare_primitive(target, value, max_err = 0., ** kwargs):
+def _compare_primitive(target, value, max_err = 0., ** kwargs):
     if isinstance(value, (float, np.floating)):
-        assert abs(target - value) <= max_err, 'Values differ of {}'.format(abs(value - target))
+        assert abs(target - value) <= max_err, 'Values differ : {}'.format(abs(value - target))
     else:
         assert target == value, "Target ({}) != value ({})".format(target, value)
 
-def compare_str(target, value, raw_compare_if_filename = False, ** kwargs):
-    """
-        Compare 2 str :
-            If `target` is a filename and `not raw_compare_if_filename` : load the data then compare
-            If `target` is a model's name : compare the models
-            Otherwise : raw string equality
-    """
-    try:
-        from models import is_model_name
-    except:
-        is_model_name = lambda n: False
-
-    if raw_compare_if_filename or len(target) >= 512:
-        compare_primitive(target, value, ** kwargs)
-    elif os.path.isfile(target):
-        if not isinstance(value, str):
-            compare(_load_file(target), value, ** kwargs)
-        else:
-            compare_file(target, value, ** kwargs)
-    elif is_model_name(target):
-        compare_base_model(target, value, ** kwargs)
-    else:
-        compare_primitive(target, value, ** kwargs)
-
-def compare_list(target, value, nested_test = False, ** kwargs):
-    """
-        Compare each item of both iterables (target / value)
-        If `nested_test` : it will execute the test on each `value`'s item individually, meaning that each item in `value` must match `target`
-    """
-    if nested_test: target = [target] * len(value)
+def _compare_list(target, value, ** kwargs):
+    """ Compare each item of both iterables (target / value) """
     assert len(target) == len(value), "Target length {} != value length {}".format(
         len(target), len(value)
     )
     
     try:
-        if len(target) == 0 or target == value: return
-    except ValueError as e:
+        if not any(hasattr(v, 'shape') for v in target) and target == value: return
+    except Exception as e:
         pass
     
     cmp         = [is_equal(it1, it2, ** kwargs) for it1, it2 in zip(target, value)]
@@ -137,24 +66,25 @@ def compare_list(target, value, nested_test = False, ** kwargs):
         '\n'.join(['Item #{} : {}'.format(i, msg) for i, msg in invalids])
     )
     
-def compare_dict(target, value, keys = None, skip_keys = None, skip_missing_keys = False,
-                 ** kwargs):
+def _compare_dict(target, value, keys = None, skip_keys = None, skip_missing = False, ** kwargs):
     """
         Compare 2 dict-like
         Arguments :
             - target / value    : the values to compare
             - keys      : the keys to compare
             - skip_keys : the keys to skip
-            - skip_missing_keys : only compares common keys
+            - skip_missing  : only compares common keys
     """
-    if skip_missing_keys: keys = [k for k in target if k in value]
+    if skip_missing:
+        if not keys: keys = list(target.keys())
+        keys = [k for k in keys if k in value and k in target]
     
-    if keys is not None:
+    if keys:
         if not isinstance(keys, (list, tuple)): keys = [keys]
         target  = {k : target[k] for k in target if k in keys}
         value   = {k : value[k] for k in value if k in keys}
     
-    if skip_keys is not None:
+    if skip_keys:
         if not isinstance(skip_keys, (list, tuple)): skip_keys = [skip_keys]
         target  = {k : target[k] for k in target if k not in skip_keys}
         value   = {k : value[k] for k in value if k not in skip_keys}
@@ -172,21 +102,18 @@ def compare_dict(target, value, keys = None, skip_keys = None, skip_missing_keys
         '\n'.join(['Key {} : {}'.format(k, msg) for k, msg in invalids.items()])
     )
 
-def compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = False, ** kwargs):
+def _compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = False, ** kwargs):
     """
         Compare 2 arrays with some tolerance (`max_err`) on the error's sum / mean / max / min depending `err_mode`
         `squeeze` allows to skip `1`-dimensions
     """
-    if not isinstance(value, np.ndarray): value = np.array(value)
+    value = np.asarray(value)
     if squeeze: target, value = np.squeeze(target), np.squeeze(value)
     
-    assert target.shape == value.shape, "Target shape {} != value shape {}".format(
-        target.shape, value.shape
-    )
+    assert target.shape == value.shape, "Target shape {} != value shape {}".format(target.shape, value.shape)
     
-    assert target.dtype == value.dtype, "Target dtype {} != value dtype {}".format(
-        target.dtype, value.dtype
-    )
+    assert (target.dtype == value.dtype) or (target.dtype in (np.int32, np.int64) and value.dtype in (np.int32, np.int64)), "Target dtype {} != value dtype {}".format(target.dtype, value.dtype)
+    
     if target.size == 0: return
     
     if target.dtype in (bool, object):
@@ -208,7 +135,7 @@ def compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = Fa
             np.sum(~valids), np.prod(err.shape), np.mean(~valids), np.max(err), np.mean(err), np.min(err)
         )
 
-def compare_dataframe(target, value, ignore_index = True, ** kwargs):
+def _compare_dataframe(target, value, ignore_index = True, ** kwargs):
     """ Compare 2 DataFrames """
     missing_v_cols  = [k for k in target.columns if k not in value.columns]
     missing_t_cols  = [k for k in value.columns if k not in target.columns]
@@ -235,54 +162,18 @@ def compare_dataframe(target, value, ignore_index = True, ** kwargs):
         len(invalids), value.iloc[invalids]
     )
 
-def compare_file(target, value, ** kwargs):
-    """ Compare the content (data) of the files """
-    assert os.path.isfile(target), "Target file {} does not exist !".format(target)
-    assert os.path.isfile(value), "Value file {} does not exist !".format(value)
-    
-    t_ext = os.path.splitext(target)[1][1:]
-    v_ext = os.path.splitext(value)[1][1:]
-    
-    assert t_ext == v_ext, "Extensions differ {} vs {}".format(target, value)
-    
-    t_data = _load_file(target)
-    v_data = _load_file(value)
-    
-    eq, msg = is_equal(t_data, v_data, raw_compare_if_filename = True, ** kwargs)
-    
-    assert eq, 'Data of files {} and {} differ : {}'.format(target, value, msg)
-
-def compare_base_model(target, value, ** kwargs):
-    """ Compare the result of `get_model_infos` of the 2 models """
-    from models import is_model_name, get_model_infos
-    
-    assert is_model_name(target), "Target {} is not a valid model !".format(target)
-    assert is_model_name(value), "Value {} is not a valid model name !".format(value)
-    
-    t_infos = get_model_infos(target)
-    v_infos = get_model_infos(value)
-    
-    eq, msg = is_equal(t_infos, v_infos, ** kwargs)
-    
-    assert eq, 'Models {} and {} differ : {}'.format(target, value, msg)
-
-def _load_file(filename):
-    from .file_utils import _load_file_fn, load_data
-    
-    assert os.path.exists(filename), "Filename {} does not exist !".format(filename)
-
-    ext = os.path.splitext(filename)[1][1:]
-
-    assert ext in _load_file_fn, "Extension {} unhandled, cannot load data from file {}".format(
-        ext, filename
-    )
-    
-    return load_data(filename)
+def _maybe_convert_to_numpy(x):
+    if not hasattr(x, 'device'):
+        return x
+    elif hasattr(x, 'detach'):
+        return x.detach().cpu().numpy()
+    else:
+        return np.asarray(x)
 
 _comparisons    = {
-    str     : compare_str,
-    (list, tuple)   : compare_list,
-    dict   : compare_dict,
-    np.ndarray  : compare_array,
-    lambda v: hasattr(v, 'columns') : compare_dataframe
+    (str, int, float, bool, set)    : _compare_primitive,
+    (list, tuple)   : _compare_list,
+    dict   : _compare_dict,
+    np.ndarray  : _compare_array,
+    lambda v: hasattr(v, 'columns') : _compare_dataframe
 }

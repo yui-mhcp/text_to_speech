@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -58,7 +58,7 @@ class CheckpointManager:
         self._state = load_json(
             self.checkpoint_file, default = copy.deepcopy(_empty_checkpoint_infos)
         )
-        self._models = {}
+        self.model  = None
     
     step    = property(lambda self: self.core.steps if self.core is not None else -1)
     epoch   = property(lambda self: self.core.epochs if self.core is not None else -1)
@@ -74,8 +74,6 @@ class CheckpointManager:
     checkpoints = property(lambda self: self._state['checkpoints'])
     latest_checkpoint_infos = property(lambda self: self[-1])
     
-    track_multiple_models   = property(lambda self: len(self._models) > 1)
-    
     @property
     def checkpoint_file(self):
         return os.path.join(self.directory, 'checkpoint.json')
@@ -86,18 +84,12 @@ class CheckpointManager:
     
     @property
     def latest_checkpoint(self):
-        if len(self) == 0: return None
-        if not self._models: return self.get_filename(None, self[-1])
-        files = [self.get_filename(k, self[-1]) for k in self._models.keys()]
-        return files if len(files) > 1 else files[0]
+        return None if len(self) == 0 else self.get_filename(self[-1])
     
     @property
     def loaded_checkpoint(self):
         if self.loaded == 'best': return self.best_checkpoint
-        if len(self) == 0: return None
-        if not self._models: return self.get_filename(None, self[self.loaded])
-        files = [self.get_filename(k, self[self.loaded]) for k in self._models.keys()]
-        return files if len(files) > 1 else files[0]
+        return None if len(self) == 0 else self.get_filename(self[self.loaded])
     
     @property
     def best_checkpoint(self):
@@ -142,20 +134,13 @@ class CheckpointManager:
         self._state['best_checkpoint'] = {** logs, 'epoch' : epoch}
         self.save_state()
 
-    def add(self, key, model):
-        """ Add a new `model` (`keras.Model` instance) to track with the given name (`key`) """
-        self._models[key] = model
-        setattr(self, key, model)
-    
-    def get_filename(self, model, infos = None, ckpt_format = None):
+    def get_filename(self, infos = None, ckpt_format = None):
         """ Return the effective checkpoint filename with the given configuration """
         if not ckpt_format:
-            ckpt_format = standardize_checkpoint_format(
-                self.checkpoint_format, self.track_multiple_models
-            )
+            ckpt_format = standardize_checkpoint_format(self.checkpoint_format)
         
         if infos is None: infos = self.infos
-        return os.path.join(self.directory, ckpt_format.format(model = model, ** infos))
+        return os.path.join(self.directory, ckpt_format.format(** infos))
     
     def save_state(self):
         dump_json(filename = self.checkpoint_file, data = self._state, indent = 4)
@@ -163,26 +148,23 @@ class CheckpointManager:
     def save(self, directory = None, *, ckpt_format = None, ** kwargs):
         if not directory and not self.checkpoints: os.makedirs(self.directory, exist_ok = True)
         
-        files = []
-        for name, model in self._models.items():
-            filename = self.get_filename(name, ckpt_format = ckpt_format)
-            if directory: filename = os.path.join(directory, os.path.basename(filename))
-            
-            logger.info('Save `{}` to {}'.format(name, filename))
-            if filename.endswith('.keras'):
-                model.save(filename, ** kwargs)
-            elif filename.endswith('.weights.h5'):
-                model.save_weights(filename, ** kwargs)
-            else:
-                raise ValueError('Unsupported weights extension : {}'.format(filename))
-            
-            files.append(filename)
+        filename = self.get_filename(ckpt_format = ckpt_format)
+        if directory: filename = os.path.join(directory, os.path.basename(filename))
+
+        logger.info('Save model weights to `{}`'.format(filename))
+        if filename.endswith('.keras'):
+            self.model.save(filename, ** kwargs)
+        elif filename.endswith('.weights.h5'):
+            self.model.save_weights(filename, ** kwargs)
+        else:
+            raise ValueError('Unsupported weights extension : {}'.format(filename))
         
         if not directory and not ckpt_format:
             if not any(self.infos == ckpt for ckpt in self):
                 self.__update_state()
                 self.save_state()
-        return files if len(files) > 1 else files[0]
+        
+        return filename
     
     def load(self, checkpoint = None, *, epoch = None, ** kwargs):
         if epoch is not None:
@@ -207,28 +189,27 @@ class CheckpointManager:
         elif checkpoint == 'best':
             self._state['loaded'] = 'best'
             checkpoint = self.best_checkpoint
+
+        filename = checkpoint
         
-        if not isinstance(checkpoint, list): checkpoint = [checkpoint]
-        
-        for filename, (name, model) in zip(checkpoint, self._models.items()):
-            logger.info('Loading `{}` weights from {}'.format(name, filename))
-            if filename.endswith(('.keras', '.weights.h5')):
-                model.load_weights(filename, ** kwargs)
-            elif from_tf or os.path.exists(f'{filename}.index'):
-                try:
-                    import tensorflow as tf
-                    
-                    from models.weights_converter import (
-                        name_based_partial_transfer_learning, load_saved_model_variables
-                    )
+        logger.info('Loading weights from `{}`'.format(filename))
+        if filename.endswith(('.keras', '.weights.h5')):
+            self.model.load_weights(filename, ** kwargs)
+        elif from_tf or os.path.exists(f'{filename}.index'):
+            try:
+                import tensorflow as tf
                 
-                    name_based_partial_transfer_learning(
-                        model, load_saved_model_variables(filename), source = 'saved_model'
-                    )
-                except Exception as e:
-                    warnings.warn('Unable to restore weights from tensorflow checkpoint : {}\nMake sure to manually restore weights, as the model is currently randomly initialized !'.format(e))
-            else:
-                raise RuntimeError('Unsupported checkpoint file format : {}'.format(filename))
+                from models.weights_converter import (
+                    name_based_partial_transfer_learning, load_saved_model_variables
+                )
+                
+                name_based_partial_transfer_learning(
+                    model, load_saved_model_variables(filename), source = 'saved_model'
+                )
+            except Exception as e:
+                warnings.warn('Unable to restore weights from tensorflow checkpoint : {}\nMake sure to manually restore weights, as the model is currently randomly initialized !'.format(e))
+        else:
+            raise RuntimeError('Unsupported checkpoint file format : {}'.format(filename))
         
         if len(self) == 0 or from_tf:
             self._state['counter'] = 0
@@ -240,10 +221,9 @@ class CheckpointManager:
             if not force:
                 raise RuntimeError('You are trying to delete the currently loaded checkpoint !')
         
-        for k in self._models:
-            weight_file = self.get_filename(k, self[index])
-            logger.debug('Removing weight file {}'.format(weight_file))
-            os.remove(weight_file)
+        weight_file = self.get_filename(self[index])
+        logger.debug('Removing weight file {}'.format(weight_file))
+        os.remove(weight_file)
         
         self._state['checkpoints'].pop(index)
         if isinstance(self._state['loaded'], int) and index <= self._state['loaded']:
@@ -254,12 +234,11 @@ class CheckpointManager:
             if i != self.loaded_index: self.delete(i)
     
 @cache
-def standardize_checkpoint_format(ckpt_format, multi_models):
+def standardize_checkpoint_format(ckpt_format):
     parts = ckpt_format.split('.')
     ckpt_format = parts[0]
     ext = '.'.join(parts[1:]) if len(parts) > 1 else None
     if not ext: ext = '.keras'
     else:       ext = '.' + ext
     if '{counter' not in ckpt_format: ckpt_format += '-{counter:04d}'
-    if multi_models and '{model' not in ckpt_format: ckpt_format += '-{model}'
     return ckpt_format + ext

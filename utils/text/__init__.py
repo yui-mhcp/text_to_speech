@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,17 +12,14 @@
 import os
 import logging
 
-from .byte_pair_encoding import bytes_to_unicode, bpe
-from .text_encoder import TextEncoder
-from .sentencepiece_encoder import SentencePieceTextEncoder
-
-from .conversation import Conversation, Message
-from .ctc_decoder import ctc_decode
-from .text_splitter import *
+from .parsers import *
+from .metrics import *
+from .cleaners import *
+from .numbers import *
+from .sentencepiece_tokenizer import SentencePieceTokenizer
 from .text_processing import *
-from .text_augmentation import random_mask
-
-from .document_parser import _wiki_cleaner, parse_document
+from .tokenizer import Tokenizer, TokenizerLevel, pretty_print_template
+from .tokens_processing import *
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +48,6 @@ _cmudict_symbols = [
 ]
 
 _arpabet = ['@' + s for s in _cmudict_symbols]
-
 # Export all symbols:
 en_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + _arpabet
 fr_symbols = [_pad] + list(_special) + list(_punctuation) + list(_letters) + list(_accents)
@@ -62,54 +58,56 @@ _default_cleaners   = {
     'multi' : 'french_cleaners' # toi avoid removing accents
 }
 
-accent_replacement_matrix = {
-    'a' : {'à' : 0, 'â' : 0}, 'à' : {'a' : 0, 'â' : 0}, 'â' : {'a' : 0, 'à' : 0},
-    'u' : {'ù' : 0}, 'ù' : {'u' : 0},
-    'o' : {'ô' : 0}, 'ô' : {'o' : 0},
-    'i' : {'î' : 0}, 'î' : {'i' : 0}
-}
 
-def get_encoder(lang = None, text_encoder = None, ** kwargs):
-    if text_encoder is None: text_encoder = kwargs.copy()
+def get_tokenizer(tokenizer = None, lang = None, ** kwargs):
+    if tokenizer is None: tokenizer = kwargs
     
-    if isinstance(text_encoder, dict):
-        if 'vocab' not in text_encoder:
+    if isinstance(tokenizer, Tokenizer):
+        return tokenizer
+    elif isinstance(tokenizer, str):
+        model_tokenizer_file = os.path.join(
+            'pretrained_models', tokenizer, 'saving', 'tokenizer.json'
+        )
+        if not os.path.exists(model_tokenizer_file):
+            model_tokenizer_file = os.path.join(
+                'pretrained_models', tokenizer, 'saving', 'text_encoder.json'
+            )
+        
+        if os.path.isfile(tokenizer):
+            return Tokenizer.load_from_file(tokenizer)
+        elif os.path.isfile(model_tokenizer_file):
+            return Tokenizer.load_from_file(model_tokenizer_file)
+        elif tokenizer == 'clip':
+            return Tokenizer.from_clip_pretrained()
+        elif 'whisper' in tokenizer:
+            return Tokenizer.from_whisper_pretrained(** kwargs)
+        else:
+            return Tokenizer.from_transformers_pretrained(tokenizer)
+
+    elif isinstance(tokenizer, dict):
+        if 'vocab' not in tokenizer:
             assert lang, 'You should provide either `vocab` either `lang` !'
-            text_encoder['vocab'] = get_symbols(lang, arpabet = False)
-            text_encoder['level'] = 'char'
+            tokenizer['vocab'] = get_symbols(lang, arpabet = False)
+            tokenizer['level'] = 'char'
         else:
-            text_encoder.setdefault('level', 'char')
+            tokenizer.setdefault('level', 'char')
         
-        text_encoder.setdefault('use_sos_and_eos', False)
-        text_encoder.setdefault('cleaners', _default_cleaners.get(lang, 'basic_cleaners'))
+        tokenizer.setdefault('use_sos_and_eos', False)
+        tokenizer.setdefault('cleaners', _default_cleaners.get(lang, 'basic_cleaners'))
         
-        encoder = TextEncoder(** text_encoder)
-        
-    elif isinstance(text_encoder, str):
-        try:
-            from models import get_model_dir
-            model_encoder_file = get_model_dir(text_encoder, 'saving', 'text_encoder.json')
-        except:
-            model_encoder_file = None
-        
-        if os.path.isfile(text_encoder):
-            encoder = TextEncoder.load_from_file(text_encoder)
-        elif model_encoder_file and os.path.isfile(model_encoder_file):
-            encoder = TextEncoder.load_from_file(model_encoder_file)
-        elif text_encoder == 'clip':
-            encoder = TextEncoder.from_clip_pretrained()
-        elif 'whisper' in text_encoder:
-            encoder = TextEncoder.from_whisper_pretrained(** kwargs)
-        else:
-            encoder = TextEncoder.from_transformers_pretrained(text_encoder)
-    elif isinstance(text_encoder, TextEncoder):
-        encoder = text_encoder
+        return Tokenizer(** tokenizer)
     else:
-        raise ValueError("Unhandled `text_encoder` (type {}) : {}".format(
-            type(text_encoder), text_encoder
+        raise ValueError("Unsupported `tokenizer` (type {}) : {}".format(
+            type(tokenizer), tokenizer
         ))
     
-    return encoder
+    return tokenizer
+
+def default_english_tokenizer(cleaners = ['english_cleaners'], level = 'char', ** kwargs):
+    return Tokenizer(en_symbols, level = level, cleaners = cleaners, ** kwargs)
+
+def default_french_tokenizer(cleaners = ['french_cleaners'], level = 'char', ** kwargs):
+    return Tokenizer(fr_symbols, level = level, cleaners = cleaners, ** kwargs)
 
 def get_symbols(lang,
                 punctuation = 1,
@@ -135,18 +133,3 @@ def get_symbols(lang,
     
     return symbols
 
-def default_encoder(lang, ** kwargs):
-    lang = lang.lower()
-    if lang in ('fr', 'francais', 'français', 'french'):
-        return default_french_encoder(** kwargs)
-    elif lang in ('en', 'english', 'anglais'):
-        return default_english_encoder(** kwargs)
-    else:
-        logger.warning("Unknown language : {} - return char-level encoder with default symbols".format(lang))
-        return TextEncoder(get_symbols(lang), level = 'char', ** kwargs)
-
-def default_english_encoder(cleaners = ['english_cleaners'], level = 'char', ** kwargs):
-    return TextEncoder(en_symbols, level = level, cleaners = cleaners, ** kwargs)
-
-def default_french_encoder(cleaners = ['french_cleaners'], level = 'char', ** kwargs):
-    return TextEncoder(fr_symbols, level = level, cleaners = cleaners, ** kwargs)

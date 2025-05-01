@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -11,66 +11,37 @@
 
 import logging
 
-from loggers import time_logger
+from loggers import Timer
 
 logger = logging.getLogger(__name__)
 
 class Callback:
-    def __init__(self, name = None, key = None, cond = None, initializers = {}, ** _):
-        if not name: name = self.__class__.__name__
-        
-        self.key    = key
-        self.name   = name
+    def __init__(self, name = None, cond = None, initializer = None, ** _):
+        self.name   = name or self.__class__.__name__
         self.cond   = cond
-        self.initializers   = initializers
+        self.initializer    = initializer
         
         self.built  = False
     
     def __repr__(self):
-        des = '<{}'.format(self.__class__.__name__)
-        if self.key: des += ' key={}'.format(self.key)
-        return des + '>'
+        return '<{}>'.format(self.__class__.__name__)
     
     def build(self):
         self.built = True
     
     def __call__(self, infos, output, ** kwargs):
-        if self.cond is not None and not self.cond(infos = infos, ** {** kwargs, ** output}):
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('- Skipping {} (condition not met)'.format(self))
-            
-            if self.key and self.key not in infos:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('- Callback {} modified {}'.format(self, self.key))
-
-                infos[self.key] = output.get(self.key, None)
-                return True
-            return False
+        if self.cond is not None and not self.cond(** output):
+            return
+        elif self.initializer:
+            for k, fn in self.initializer.items():
+                if k not in output: output[k] = fn(** output)
         
         if not self.built: self.build()
-        
-        if output:
-            for k, fn in self.initializers.items():
-                if k not in output:
-                    with time_logger.timer('{} init-{}'.format(self.name, k)):
-                        output[k] = fn(** output)
             
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('- Apply {}'.format(self))
         
-        out = self.apply(infos = infos, output = output, ** kwargs)
-        if self.key:
-            try:
-                if infos.get(self.key, None) == out: return False
-            except ValueError:
-                pass
-            
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('- Callback {} modified {}'.format(self, self.key))
-            infos[self.key] = out
-            return True
-        # no side-effect on `infos`
-        return False
+        self.apply(infos = infos, output = output, ** kwargs)
     
     def apply(self, infos, output, ** kwargs):
         raise NotImplementedError()

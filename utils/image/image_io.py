@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -10,49 +10,31 @@
 # limitations under the License.
 
 import os
-import cv2
 import PIL
 import sys
 import glob
 import math
 import time
+import queue
 import inspect
 import logging
 import warnings
 import collections
 import numpy as np
 
-from loggers import timer, time_logger
-from utils.keras_utils import TensorSpec, ops, graph_compile
-from utils import Producer, Consumer, create_iterator, time_to_string, partial
-from utils.threading import Producer, Consumer
-from utils.image.image_utils import resize_image
+from functools import partial
+
+from ..keras import ops
+from loggers import Timer, timer
+from ..threading import Stream
+from ..generic_utils import time_to_string
+from .image_processing import resize_image
 
 logger  = logging.getLogger(__name__)
 
 DELAY_MS = 3
 DELAY_SEC   = DELAY_MS / 1000.
 
-_resize_kwargs  = set(list(inspect.signature(resize_image).parameters.keys())[1:])
-
-_streams    = {}
-
-def add_stream(name, stream):
-    if not isinstance(name, (int, str)): name = str(stream)
-    _streams[name] = stream
-
-def get_stream(stream):
-    if stream is None: stream = list(_streams.keys())[0]
-    if not isinstance(stream, (int, str)): stream = str(stream)
-    return _streams[stream]
-
-def remove_stream(stream):
-    if not isinstance(stream, (int, str)): stream = str(stream)
-    return _streams.pop(stream, None)
-
-def set_fps(fps, stream = None):
-    get_stream(stream).set_item_rate(fps)
-    
 def display_image(image):
     """
         Displays the image with `IPython.display.Image`
@@ -71,29 +53,27 @@ def get_image_size(image):
             - [height, width]   : image size
     """
     if hasattr(image, 'shape'):
-        shape = ops.shape(image)
+        shape = image.shape
         if len(shape) == 2:
             return shape[0], shape[1]
         else:
             return shape[-3], shape[-2]
     elif isinstance(image, str):
-        from PIL import Image
-        
-        with Image.open(image) as img:
+        with PIL.Image.open(image) as img:
             return img.size[::-1]
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
 @timer
-#@graph_compile(
-#    support_xla = False, cast_kwargs = False, force_tensorflow = True
-#)
-def load_image(filename : TensorSpec(),
-
+def load_image(filename,
+               *,
+               
+               size = None,
+               multiples    = None,
+               
+               dtype    = None,
                channels = 3,
-               mode     = None,
-               dtype    = 'float32',
-               to_tensor    = True,
+               to_tensor    = False,
                
                boxes    = None,
                
@@ -118,7 +98,7 @@ def load_image(filename : TensorSpec(),
         
         Note : if a filename is given, it loads the image with `tf.image.decode_image` (if tensorflow backend) or `PIL.Image.load` otherwise
     """
-    assert mode in (None, 'rgb', 'gray')
+    assert channels in (1, 3)
     # Get filename / image from dict (if dict)
     if isinstance(filename, dict):
         filename = filename['image' if 'image' in filename else 'filename']
@@ -128,7 +108,7 @@ def load_image(filename : TensorSpec(),
     if ops.is_string(filename):
         if ops.is_tensorflow_backend() or ops.is_tensorflow_graph():
             import tensorflow as tf
-            
+
             image = tf.io.read_file(filename)
             image = tf.image.decode_image(image, channels = channels, expand_animations = False)
         else:
@@ -137,34 +117,29 @@ def load_image(filename : TensorSpec(),
     else:
         image = filename
         if to_tensor: image = ops.convert_to_tensor(image)
-        if len(ops.shape(image)) == 2: image = image[:, :, None]
+        if len(image.shape) == 2: image = image[:, :, None]
 
     if boxes is not None:
-        from utils.image.bounding_box import crop_box
+        from .bounding_box import crop_box
         _, image = crop_box(image, boxes, ** kwargs)
     
     if dtype is not None:
         image = ops.convert_data_dtype(image, dtype = dtype)
 
-    if mode == 'gray' and image.shape[2] == 3:
+    if channels == 1 and image.shape[2] == 3:
         image = ops.rgb_to_grayscale(image)
-    elif mode == 'rgb' and image.shape[2] == 1:
+    elif channels == 3 and image.shape[2] == 1:
         image = ops.grayscale_to_rgb(image)
-
-    if any(kwargs.get(k, None) is not None for k in _resize_kwargs):
-        image = resize_image(image, ** kwargs)
-        if (isinstance(kwargs.get('target_shape', None), tuple)
-            and all(s != -1 for s in kwargs['target_shape'])
-            and not ops.executing_eagerly()
-           ):
-            image = ops.ensure_shape(image, kwargs['target_shape'][:2] + (image.shape[-1],))
+    
+    if size is not None or multiples is not None:
+        image = resize_image(image, size, multiples = multiples, ** kwargs)
 
     return image
 
 def convert_to_uint8(image, ** kwargs):
     """ Converts `image` to `np.uint8` format (useful for subsequent `cv2` calls) """
     return ops.convert_to_numpy(load_image(
-        image, dtype = 'uint8', to_tensor = False, run_eagerly = True, ** kwargs
+        image, dtype = 'uint8', run_eagerly = True, ** kwargs
     ))
 
 @timer
@@ -182,152 +157,25 @@ def save_image(filename, image, ** kwargs):
         Return :
             - filename  : the image filename (the argument)
     """
+    import cv2
+    
     image = convert_to_uint8(image, ** kwargs)
     
     cv2.imwrite(filename, image[:, :, ::-1])
     return filename
 
-def frame_generator_old(cam_id,
-                    fps         = None,
-                    max_time    = None,
-                    
-                    nb_frames   = -1,
-                    frames_step = 1,
-                    frames_offset   = 0,
-                    
-                    add_copy    = False,
-                    return_index    = False,
-                    
-                    max_failure = 5,
-                    
-                    ** kwargs
-                   ):
-    """
-        Yields `fps` frames per second from the given camera (`cam_id`)
-        
-        Arguments :
-            - cam_id    : the camera id (any value supported by `cv2.VideoCapture`) or the raw object
-            - fps       : the number of frames to generate per second
-            - max_time  : the maximum generation time
-            - nb_frames : the maximum number of frames to generate
-            - kwargs    : forwarded to `cv2.VideoCapture`
-        Return :
-            - n     : the number of generated frames
-    """
-    def should_continue(t0, t, n):
-        run = True
-        if max_time > 0:    run = run and t - t0 < max_time
-        if nb_frames > 0:   run = run and n < nb_frames
-        return run
+def set_video_audio(video_filename, audio_filename, codec = 'aac', bitrate = '128k'):
+    import ffmpeg
     
-    if not max_time: max_time = -1
-    if not nb_frames: nb_frames = -1
-    if max_time == -1 and nb_frames == -1: max_time = 60
-    
-    camera  = cam_id
-    if isinstance(cam_id, (int, str)):
-        camera = cv2.VideoCapture(cam_id, ** kwargs)
-    
-    failed      = 0
-    idx, seen   = frames_offset, 0
-    wait_time   = 1. / fps - DELAY_SEC if fps else 1e-3
-    start_time  = time.time()
-    start_iter_time = start_time
-    
-    for _ in range(frames_offset): camera.grab()
-    while should_continue(start_time, start_iter_time, seen):
-        with time_logger.timer('frame generation'):
-            ret, frame = camera.read()
-            if not ret:
-                failed += 1
-                if failed == max_failure: break
-            if frames_step > 1 and idx % frames_step != 0:
-                idx += 1
-                continue
-
-            if ret:
-                frame = frame[..., ::-1]
-                if add_copy or return_index:
-                    data = {'image' : frame, 'frame_index' : idx - 1}
-                    if add_copy: data['image_copy'] = frame.copy()
-                    yield data
-                else:
-                    yield frame
-            
-            idx += 1
-            seen += 1
-            wait = max(1e-2, wait_time - (time.time() - start_iter_time))
-            if fps > 0 and wait > 0: time.sleep(wait)
-            start_iter_time = time.time()
-    
-    return seen
-
-def frame_generator(cam_id,
-                    fps         = None,
-                    max_time    = None,
-                    
-                    nb_frames   = -1,
-                    frames_step = 1,
-                    frames_offset   = 0,
-                    
-                    add_copy    = False,
-                    return_index    = False,
-                    
-                    max_failure = 5,
-                    
-                    ** kwargs
-                   ):
-    """
-        Yields `fps` frames per second from the given camera (`cam_id`)
-        
-        Arguments :
-            - cam_id    : the camera id (any value supported by `cv2.VideoCapture`) or the raw object
-            - fps       : the number of frames to generate per second
-            - max_time  : the maximum generation time
-            - nb_frames : the maximum number of frames to generate
-            - kwargs    : forwarded to `cv2.VideoCapture`
-        Return :
-            - n     : the number of generated frames
-    """
-    def _generate_frames():
-        idx = frames_offset
-        failed  = 0
-        prev_data = None
-        while failed <= max_failure:
-            ret, frame = camera.read()
-            if not ret:
-                print('failed')
-                failed += 1
-                yield prev_data
-            elif frames_step > 0 and idx % frames_step != 0:
-                print('skip')
-                pass
-            else:
-                frame = frame[..., ::-1]
-                if add_copy or return_index:
-                    data = {'image' : frame, 'frame_index' : idx - 1}
-                    if add_copy: data['image_copy'] = frame.copy()
-                    yield data
-                    prev_data = data
-                else:
-                    yield frame
-                    prev_data = frame
-            
-            idx += 1
-            
-            
-    
-    if not max_time: max_time = -1
-    if not nb_frames: nb_frames = -1
-    if max_time == -1 and nb_frames == -1: max_time = 60
-    
-    camera  = cam_id
-    if isinstance(cam_id, (int, str)):
-        camera = cv2.VideoCapture(cam_id, ** kwargs)
-    
-    return create_iterator(
-        _generate_frames(), max_time = max_time, max_items = nb_frames, item_rate = fps
-    )
+    ffmpeg.output(
+        ffmpeg.input(video_filename).video,
+        ffmpeg.input(audio_filename, vn = None, dn = None).audio,
+        video_filename[:-4] + '_audio.mp4',
+        acodec = codec,
+        audio_bitrate = bitrate,
+        loglevel = 'error',
+        scodec   = 'copy'
+    ).overwrite_output().run()
 
 @timer
 def stream_camera(cam_id    = 0,
@@ -340,7 +188,6 @@ def stream_camera(cam_id    = 0,
                   
                   fps   = -1,
                   show_fps  = None,
-                  use_multithreading    = True,
                   
                   add_copy  = False,
                   add_index = False,
@@ -354,12 +201,8 @@ def stream_camera(cam_id    = 0,
                   transformed_file  = None,
                   
                   show  = True,
-                  flags = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED,
+                  flags = None,
                   play_audio    = True,
-                  
-                  view_graph        = False,
-                  output_graph      = False,
-                  graph_filename    = None,
                   
                   ** kwargs
                  ):
@@ -402,56 +245,35 @@ def stream_camera(cam_id    = 0,
             
             - kwargs    : forwarded to `transform_fn`
     """
-    @timer
-    def write_video_frame(writer, frame):
-        """ Writes frames to the corresponding output file """
-        frame = convert_to_uint8(frame)
-        writer.write(frame[:, :, ::-1])
+    import cv2
     
-    @timer
-    def show_frame(frame, prev_time = -1):
-        """ Displays `fps` frames per second with `cv2.imshow` """
-        if isinstance(frame, dict): frame = frame['image']
-        if callable(frame):         frame = frame()
-        cv2.imshow(display_name, frame[..., ::-1])
-        
-        t = time.time()
-        delay    = 0 if prev_time == -1 else (t - prev_time)
-        delay_ms = max(show_wait_time_ms - int(delay * 1000), 1) if use_multithreading else 1
-        if cv2.waitKey(delay_ms) & 0xFF == ord('q'):
-            raise StopIteration()
-        return None, (t, )
-    
-    def play_audio_on_first_frame(frame, first = True):
-        """ Runs the audio once the first frame has been displayed """
-        from utils.audio import audio_io
-        audio_io.play_audio(cam_id, blocking = False)
-        raise StopIteration()
+    if flags is None: flags = cv2.WINDOW_AUTOSIZE  | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_EXPANDED
     
     # variable initialization
     if isinstance(cam_id, (int, str)):
         display_name = '{} {}'.format('Camera' if isinstance(cam_id, int) else 'File', cam_id)
-        cap = cv2.VideoCapture(cam_id)
+        camera = cv2.VideoCapture(cam_id)
     else:
         display_name    = str(cam_id)
-        cap = cam_id
+        camera = cam_id
     
     # if streaming is not on camera but on video file
     if isinstance(cam_id, str):
-        video_frames    = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_frames    = int(camera.get(cv2.CAP_PROP_FRAME_COUNT))
         nb_frames   = video_frames if nb_frames <= 0 else min(nb_frames, video_frames)
-        output_fps  = cap.get(cv2.CAP_PROP_FPS)
+        output_fps  = camera.get(cv2.CAP_PROP_FPS)
         
         logger.info('Start streaming on a video with {:.3f} fps and {} frames'.format(
             output_fps, video_frames
         ))
+    elif not output_fps:
+        output_fps = fps
     
     # set the output fps
-    if not output_fps: output_fps = fps
     if output_file or transformed_file:
         if output_shape is None:
-            frame_h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            frame_w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_h     = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            frame_w     = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         else:
             frame_h, frame_w = output_shape
 
@@ -460,119 +282,183 @@ def stream_camera(cam_id    = 0,
             output_fps  = cap.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
     
     # set the display fps
-    if play_audio and isinstance(cam_id, str):
+    if show and play_audio and isinstance(cam_id, str):
         fps         = min(fps if fps != -1 else output_fps * 5, output_fps * 5)
         show_fps    = output_fps
     elif show_fps is None:
         show_fps    = fps
-    # set the waiting time according to the frame rate
-    show_wait_time_ms    = int(max(1000 // show_fps - DELAY_MS, 1))
 
     #####################
     # Init the pipeline #
     #####################
     
-    prod = Producer(frame_generator(
-        cap,
+    stream_state = {'stop' : False}
+    
+    if show:
+        stream_show = Stream(
+            partial(_show_frame, fps = show_fps, display_name = display_name, stream_state = stream_state, audio_file = cam_id if isinstance(cam_id, str) and play_audio else None),
+            
+            max_workers = 1,
+            start_callback  = lambda: cv2.namedWindow(display_name, flags),
+            stop_callback   = cv2.destroyAllWindows
+        )
+    else:
+        stream_show = lambda x: x
+    
+    if output_file:
+        if os.path.dirname(output_file):
+            os.makedirs(os.path.dirname(output_file), exist_ok = True)
+        video_writer    = cv2.VideoWriter(
+            output_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
+        )
+        stream_write = Stream(
+            partial(_write_video_frame, video_writer),
+            max_workers = 1,
+            stop_callback   = video_writer.release
+        )
+    else:
+        stream_write = lambda x: x
+
+    callbacks = []
+    if transform_fn is not None:
+        if show:
+            callbacks.append(stream_show)
+            stream_show = lambda x: x
+        
+        if transformed_file:
+            if os.path.dirname(transformed_file):
+                os.makedirs(os.path.dirname(transformed_file), exist_ok = True)
+            video_writer    = cv2.VideoWriter(
+                transformed_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
+            )
+            callbacks.append(Stream(
+                partial(_write_video_frame, video_writer),
+                max_workers = 1,
+                stop_callback   = video_writer.release
+            ))
+
+        stream_transform = Stream(
+            transform_fn,
+            stream  = queue.Queue(buffer_size),
+            callback    = callbacks,
+            max_workers = 1,
+        )
+    else:
+        stream_transform = lambda x: x
+    
+    start_time = time.time()
+    
+    frame_stream = frame_generator(
+        cam_id  = camera,
         fps     = fps,
         max_time    = max_time,
         nb_frames   = nb_frames,
         frames_step = frames_step,
         frames_offset   = frames_offset,
-        
+
         add_copy    = add_copy,
-        return_index = add_index
-    ), run_main_thread = not use_multithreading, stop_listener = cap.release)
-    
-    add_stream(cam_id, prod)
-    
-    transformer = prod.add_consumer(
-        transform_fn,
-        start   = True,
-        link_stop   = True,
-        buffer_size = buffer_size,
-        run_main_thread = not use_multithreading,
-        ** kwargs
-    ) if transform_fn is not None else prod
-    
-    # Adds a consumer to display frames (if expected)
-    if show:
-        cons = transformer.add_consumer(
-            show_frame,
-            link_stop = True,
-            stateful = True,
-            run_main_thread = not use_multithreading,
-            stop_no_more_listeners  = False,
-            start_listener  = lambda: cv2.namedWindow(display_name, flags),
-            stop_listener   = cv2.destroyAllWindows
-        )
-        if play_audio and output_fps != -1 and isinstance(cam_id, str):
-            cons.add_listener(play_audio_on_first_frame)
+        add_index   = add_index,
+        stream_state    = stream_state
+    )
+    try:
+        idx = 0
+        for idx, frame in enumerate(frame_stream):
+            if stream_state['stop'] or getattr(stream_transform, 'stopped', False): break
+            stream_transform(frame)
+            stream_show(frame)
+            stream_write(frame)
 
-    # Adds a frame writer if required
-    if output_file is not None:
-        os.makedirs(os.path.dirname(output_file), exist_ok = True)
-        video_writer    = cv2.VideoWriter(
-            output_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
-        )
-        # Creates the video-writer consumer
-        writer_cons     = prod.add_consumer(
-            partial(write_video_frame, video_writer),
-            link_stop = True,
-            run_main_thread = not use_multithreading,
-            stop_listener   = video_writer.release
-        )
-        # Adds a listener to copy the video file's audio to the output file (if expected)
-        if copy_audio and isinstance(cam_id, str):
-            from utils.image import video_utils
-            writer_cons.add_listener(
-                lambda: video_utils.copy_audio(cam_id, output_file), event = 'stop'
-            )
-    
-    if transformed_file is not None:
-        if transform_fn is None:
-            raise RuntimeError('When `transformed_file` is provided, `transform_fn` must not be None')
+        print('Stream stopped')
+        for callback in callbacks + [stream_transform, stream_show, stream_write]:
+            if isinstance(callback, Stream): callback.join(force = stream_state['stop'])
         
-        os.makedirs(os.path.dirname(transformed_file), exist_ok = True)
-
-        transformed_video_writer    = cv2.VideoWriter(
-            transformed_file, cv2.VideoWriter_fourcc(*'MPEG'), output_fps, (frame_w, frame_h)
-        )
-        # Creates the video-writer consumer
-        writer_cons     = transformer.add_consumer(
-            partial(write_video_frame, transformed_video_writer),
-            link_stop = True,
-            run_main_thread = not use_multithreading,
-            stop_listener   = transformed_video_writer.release
-        )
-        # Adds a listener to copy the video file's audio to the output file (if expected)
         if copy_audio and isinstance(cam_id, str):
-            from utils.image import video_utils
-            writer_cons.add_listener(
-                lambda: video_utils.copy_audio(cam_id, transformed_file), event = 'stop'
-            )
-    
-    ####################
-    #  Start pipeline  #
-    ####################
-    
-    start_time = time.time()
-    
-    prod.start()
-    
-    graph   = None
-    if view_graph or graph_filename or output_graph:
-        graph = prod.plot(filename = graph_filename, view = view_graph)[0]
-    
-    # waits until all consumers are finished
-    prod.join(recursive = True)
-    remove_stream(cam_id)
+            if output_file:         set_video_audio(output_file, cam_id)
+            if transformed_file:    set_video_audio(transformed_file, cam_id)
+    finally: # this is executed in all cases (error or not)
+        frame_stream.close()
+        camera.release()
+        if 'player' in stream_state: stream_state['player'].stop()
+        
+        for callback in callbacks + [stream_transform, stream_show, stream_write]:
+            if isinstance(callback, Stream): callback.join(force = True)
     
     total_time = time.time() - start_time
     logger.info("Streaming processed {} frames in {} ({:.2f} fps)".format(
-        prod.size, time_to_string(total_time), prod.size / total_time
+        idx, time_to_string(total_time), idx / total_time
     ))
-    return graph
+
+def frame_generator(cam_id,
+                    *,
+                    
+                    fps     = None,
+                    max_time    = None,
+                    
+                    nb_frames   = -1,
+                    frames_step = 1,
+                    frames_offset   = 0,
+                    
+                    add_copy    = False,
+                    add_index   = False,
+                    
+                    max_failures    = 5,
+                    
+                    ** kwargs
+                   ):
+    """
+        Yields `fps` frames per second from the given camera (`cam_id`)
+        
+        Arguments :
+            - cam_id    : the camera id (any value supported by `cv2.VideoCapture`) or the raw object
+            - fps       : the number of frames to generate per second
+            - max_time  : the maximum generation time
+            - nb_frames : the maximum number of frames to generate
+            - kwargs    : forwarded to `cv2.VideoCapture`
+        Return :
+            - n     : the number of generated frames
+    """
+    import cv2
+    
+    if not max_time:  max_time = -1
+    if not nb_frames: nb_frames = -1
+    fps_time = None if not fps else 1. / fps
+    
+    camera  = cam_id
+    if isinstance(cam_id, (int, str)):
+        camera = cv2.VideoCapture(cam_id, ** kwargs)
+    
+    for _ in range(frames_offset): camera.read()
+    
+    start, idx, failed = time.time(), 0, 0
+    start_iter_time = now = start
+    while (failed <= max_failures) and (nb_frames == -1 or idx < nb_frames) and (max_time == -1 or now - start < max_time):
+        with Timer('frame generation'):
+            ret, frame = camera.read()
+            if not ret:
+                failed += 1
+                print('failure : {}'.format(frame))
+            elif frames_step > 0 and idx % frames_step != 0:
+                failed, idx = 0, idx + 1
+            else:
+                failed, idx = 0, idx + 1
+
+                frame = frame[..., ::-1]
+                if add_copy or add_index:
+                    data = {'image' : frame, 'frame_index' : idx - 1}
+                    if add_copy: data['image_copy'] = frame.copy()
+                    yield data
+                else:
+                    yield frame
+
+            now = time.time()
+            if fps_time:
+                wait_time = fps_time - (now - start_iter_time) - DELAY_SEC
+                if wait_time > 0:
+                    time.sleep(wait_time)
+                    now = time.time()
+            start_iter_time = now
+
+    if isinstance(cam_id, (int, str)): camera.release()
 
 def build_gif(images, filename = 'result.gif', n_repeat = 5, keep_frames = 1):
     """
@@ -657,3 +543,36 @@ def build_sprite(images, image_size = 128, directory = None, filename = 'sprite.
         ] = img
     
     return save_image(filename = filename, image = sprite)
+
+@timer
+def _show_frame(frame, display_name = None, fps = None, audio_file = None, stream_state = {}):
+    """ Displays `fps` frames per second with `cv2.imshow` """
+    import cv2
+    
+    if 'last_show_time' not in stream_state and audio_file:
+        from ..audio import play_audio
+        stream_state['player'] = play_audio(audio_file, blocking = False)
+    
+    if isinstance(frame, dict): frame = frame['image']
+
+    now = time.time()
+    cv2.imshow(display_name, frame[..., ::-1])
+
+    if fps and 'last_show_time' in stream_state:
+        wait_time_ms = max(
+            1, int(1000 * (1. / fps - (now - stream_state['last_show_time']))) - 8
+        )
+    else:
+        wait_time_ms = 1
+    
+    if cv2.waitKey(wait_time_ms) & 0xFF == ord('q'):
+        stream_state['stop'] = True
+        raise StopIteration()
+
+    stream_state['last_show_time'] = time.time()
+
+@timer
+def _write_video_frame(writer, frame):
+    """ Writes frames to the corresponding output file """
+    if isinstance(frame, dict): frame = frame['image']
+    writer.write(convert_to_uint8(frame)[:, :, ::-1])

@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -9,11 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import keras
 import numpy as np
 
-from utils.keras_utils import ops
-from utils.wrapper_utils import dispatch_wrapper
+from ..keras import ops
 
 _clip_means = [0.48145466, 0.4578275, 0.40821073]
 _clip_std   = [0.26862954, 0.26130258, 0.27577711]
@@ -47,6 +45,7 @@ def vgg_normalization(image, ** _):
     return image[..., ::-1] - means
 
 _image_normalization_styles = {
+    'normal'    : lambda image: ops.divide_no_nan(image - ops.mean(image), ops.std(image)),
     '01'    : normalize_01,
     'tanh'  : lambda image: image * 2. - 1.,
     'vgg'   : vgg_normalization,
@@ -60,12 +59,12 @@ _image_normalization_styles = {
 }
 
 
-@dispatch_wrapper(_image_normalization_styles, 'method')
 def get_image_normalization_fn(method):
     """ Returns the normalization function associated to `method` """
-    if callable(method):        return method
-    if isinstance(method, dict): return build_mean_normalize(** method)
-    if isinstance(method, (list, tuple)): return build_mean_normalize(* method)
+    if method in (None, 'identity'):    return None
+    elif callable(method):          return method
+    elif isinstance(method, dict):  return build_mean_normalize(** method)
+    elif isinstance(method, (list, tuple)): return build_mean_normalize(* method)
     
     if method not in _image_normalization_styles:
         raise ValueError('Unknown normalization method ! Accepted : {}\n  Got : {}'.format(
@@ -74,8 +73,4 @@ def get_image_normalization_fn(method):
     
     return _image_normalization_styles[method]
 
-get_image_normalization_fn.dispatch(lambda image: image, (None, 'null', 'identity'))
-get_image_normalization_fn.dispatch(
-    lambda image: (image - ops.mean(image)) / ops.maximum(1e-6, ops.std(image)), ('mean', 'normal')
-)
 

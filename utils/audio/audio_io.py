@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,19 +13,19 @@ import os
 import time
 import queue
 import logging
+import librosa
 import threading
 import collections
 import numpy as np
 
-from scipy.signal import resample
 from scipy.io.wavfile import write, read
 
+from loggers import Timer, timer
+from . import audio_processing
 from .audio_player import AudioPlayer
 from .audio_recorder import AudioRecorder
-from loggers import timer, time_logger
-from utils.audio import audio_processing
-from utils.keras_utils import TensorSpec, ops, execute_eagerly
-from utils import convert_to_str, dispatch_wrapper 
+from ..keras import TensorSpec, ops, execute_eagerly
+from ..wrappers import dispatch_wrapper 
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,7 @@ _write_fn   = {}
 
 """ Streaming functions (microphone recording / speakers playing) """
 
-_audio_player   = None
-_audio_player_lock  = threading.Lock()
-_audio_player_buffer    = queue.Queue()
+_audio_player   = AudioPlayer()
 
 def display_audio(filename, rate = None, play = False, ** kwargs):
     """
@@ -67,32 +65,19 @@ def play_audio(audio, rate = None, blocking = True, raw = False, add_silence = T
     if isinstance(audio, str) or not raw:
         rate, audio = read_audio(audio, target_rate = rate, rate = rate, ** kwargs)
     
-    global _audio_player, _audio_player_lock, _audio_player_buffer
-    
-    with _audio_player_lock:
-        if _audio_player is None:
-            _audio_player = AudioPlayer(buffer = _audio_player_buffer, rate = rate, ** kwargs)
-        
-        if isinstance(audio, np.ndarray):
-            for s in range(0, len(audio), _audio_player.chunk_size):
-                _audio_player_buffer.put(audio[s : s + _audio_player.chunk_size])
-        else:
-            _audio_player_buffer.put(audio)
-        
-        if blocking:
-            event = threading.Event()
-            _audio_player_buffer.put(event)
-        
-        if add_silence:
-            _audio_player_buffer.put(None)
-
-        _audio_player.start()
+    event = _audio_player.append(
+        audio, rate = rate, add_event = blocking, add_silence = add_silence
+    )
+    _audio_player.play()
     
     if blocking: event.wait()
-    
-def record_audio(** kwargs):
+    else: return _audio_player
+
+def record_audio(blocking = True, ** kwargs):
     """ Plays `audio` on speakers """
     recorder = AudioRecorder(** kwargs).start()
+    if not blocking: return recorder
+    
     recorder.join()
     return recorder.rate, recorder.audio
 
@@ -108,6 +93,7 @@ def stream_audio(audio = None, rate = None, callback = None, real_time = True, *
             if real_time: time.sleep(1. / kwargs.get('fps', 10))
     
     return rate, audio
+
 
 """ Generic functions to load audio and mel """
 
@@ -138,11 +124,9 @@ def load_audio(data, rate, ** kwargs):
         raise ValueError("Unknown audio type : {}\n{}".format(type(data), data))
 
     if 'rate' not in kwargs: kwargs['rate'] = rate
-    _, audio = read_audio(data, target_rate = rate, ** kwargs)
-    
-    return audio
+    return read_audio(data, target_rate = rate, ** kwargs)[1]
 
-def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
+def load_mel(data, stft_fn, ** kwargs):
     """
         Load mel from different type of data :
             - dict  : 
@@ -152,34 +136,12 @@ def load_mel(data, stft_fn, trim_mode = None, ** kwargs):
         Return : mel spectrogram (as 2D Tensor)
     """
     if isinstance(data, dict) and 'mel' in data:
-        mel = data['mel']
-    elif isinstance(data, dict) and stft_fn.dir_name in data:
-        mel = load_mel_npy(
-            data[stft_fn.dir_name], shape = (None, stft_fn.n_mel_channels)
-        )
-    elif hasattr(data, 'shape') and len(data.shape) >= 2:
-        mel = data
+        return data['mel']
+    elif hasattr(data, 'shape') and len(data.shape) >= 2 and data.shape[-1] == stft_fn.n_mel_channels:
+        return data
     else:
         mel = stft_fn(load_audio(data, stft_fn.rate, ** kwargs))
-    
-    if len(mel.shape) == 3: mel = mel[0]
-    
-    if trim_mode is not None:
-        kwargs.update({'method' : trim_mode, 'rate' : stft_fn.rate})
-        mel = audio_processing.trim_silence(mel, ** kwargs)
-    
-    return mel
-
-@execute_eagerly(signature = TensorSpec(shape = (None, None), dtype = 'float32'), numpy = True)
-def load_mel_npy(file):
-    return np.load(convert_to_str(file))
-
-@timer
-def resample_audio(audio, rate, target_rate):
-    if rate == target_rate: return audio, rate
-    ratio   = target_rate / rate
-    audio   = resample(audio, int(len(audio) * ratio))
-    return audio, target_rate
+        return mel if len(mel.shape) == 2 else mel[0]
 
 def resample_file(filename, new_rate, filename_out = None, normalize = False, ** kwargs):
     """
@@ -222,19 +184,17 @@ def resample_file(filename, new_rate, filename_out = None, normalize = False, **
     TensorSpec(shape = (None, ), dtype = 'float32')
 ], numpy = True)
 def read_audio(filename,
+               *,
+               
+               rate     = None,
+               dtype    = None,
                target_rate  = None,
+               
                # processing config
-               offset   = 0,
                normalize    = True, 
                reduce_noise = False,
                trim_silence = False,
                
-               start    = 0,
-               end      = 0,
-               time     = 0,
-               
-               rate = None,
-               dtype    = None,
                read_method  = None,
                
                ** kwargs
@@ -266,7 +226,7 @@ def read_audio(filename,
         Note : if `normalize is True`, the audio will be normalized such that values are in the range [0, 1] and the maximal value is 1.
         A contrario, providing a `dtype` will normalize according to the maximal value of the current audio dtype, meaning that providing `dtype = np.float32` will outputs an audio in the range [0, 1] without any guarantee that the maximal value is 1.
     """
-    filename = convert_to_str(filename)
+    if isinstance(filename, bytes): filename = filename.decode()
     if isinstance(filename, str):
         if read_method is None:
             read_method = filename.split('.')[-1]
@@ -281,27 +241,19 @@ def read_audio(filename,
                     tuple(_load_fn.keys()), read_method
                 ))
 
-        with time_logger.timer('read file'):
+        with Timer('read file'):
             rate, audio = read_method(filename, rate = target_rate)
     else:
         assert rate is not None, 'You must provide the `rate` when passing raw audio !'
         audio = filename
     
-    if len(audio) == 0:
-        logger.warning("Audio {} is empty !".format(filename))
-        return rate, np.zeros((rate, ), dtype = np.float32 if dtype is None else dtype)
-    
-    if target_rate is not None and target_rate != rate:
-        audio, rate = resample_audio(audio, rate, target_rate)
-    
-    if offset > 0:
-        if isinstance(offset, float): offset = int(offset * rate)
-        audio = audio[offset : - offset]
+    if target_rate and target_rate != rate:
+        audio, rate = audio_processing.resample_audio(audio, rate, target_rate)
     
     if normalize:
         if normalize is True:
             audio = audio_processing.normalize_audio(audio, max_val = 1.)
-        elif normalize > 1. and np.issubdtype(audio.dtype, np.integer):
+        elif normalize > 1 and np.issubdtype(audio.dtype, np.integer):
             audio = (audio / normalize).astype(np.float32)
     
     if reduce_noise:
@@ -312,19 +264,7 @@ def read_audio(filename,
     if trim_silence:
         audio = audio_processing.trim_silence(audio, rate = rate, ** kwargs)
     
-    if isinstance(start, float):    start = int(start * rate)
-    if isinstance(end, float):      end   = int(end * rate)
-    
-    if time:
-        if isinstance(time, float): time = int(time * rate)
-        if start:   end = start + time
-        elif end:   start = max(0, end - time)
-        else:       end = time
-    
-    if end:     audio = audio[ : end]
-    if start:   audio = audio[start : ]
-    
-    if dtype is not None:
+    if dtype:
         audio = audio_processing.convert_audio_dtype(audio, dtype)
     
     return rate, audio
@@ -347,12 +287,9 @@ def read_pydub(filename, ** kwargs):
 @read_audio.dispatch(_librosa_ext)
 def read_librosa(filename, ** kwargs):
     """ Reads an audio with the `librosa.load` function """
-    import librosa
-    
     audio, rate = librosa.load(filename, sr = None)
     return rate, audio
 
-@read_audio.dispatch(_audiofile_ext)
 def read_audiofile(filename, ** kwargs):
     """ Reads an audio with the `librosa.load` function """
     import audiofile
@@ -383,7 +320,6 @@ def read_ffmpeg(filename, rate = None):
 
     return rate, np.frombuffer(out, np.int16).flatten()
 
-@read_audio.dispatch([])
 def read_moviepy(filename, ** kwargs):
     """ Reads the audio of a video with the `moviepy` library """
     try:
@@ -417,14 +353,12 @@ def write_audio(filename, audio, rate, normalize = True, factor = 32767, verbose
         raise ValueError("Unsupported file extension !\n  Accepted : {}\n  Got : {}".format(
             tuple(_write_fn.keys()), filename
         ))
-        
+    
     logger.log(logging.INFO if verbose else logging.DEBUG, "Saving audio to {}".format(filename))
     
     normalized = audio if isinstance(audio, np.ndarray) else ops.convert_to_numpy(audio)
     if normalize and len(audio) > 0:
-        normalized = audio_processing.normalize_audio(
-            audio, max_val = factor, normalize_by_mean = False
-        )
+        normalized = audio_processing.normalize_audio(audio, max_val = factor)
     
     _write_fn[ext](audio = normalized, filename = filename, rate = rate)
     return filename

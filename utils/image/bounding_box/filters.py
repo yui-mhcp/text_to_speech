@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -15,11 +15,25 @@ import numpy as np
 from dataclasses import dataclass
 
 from .metrics import compute_iou
-from .converter import NORMALIZE_01, BoxFormat, convert_box_format
+from .converter import convert_box_format
 
 logger  = logging.getLogger(__name__)
 
 def filter_boxes(filters, boxes, indices = None, rows = None, ** kwargs):
+    """
+        Filter `boxes` by applying `filters` sequentially. A box is kept if it passes all the filters.
+        
+        Arguments :
+            - filters   : a `list` of `callable`, the filters to apply
+                          Should return the list of box indexes to keep
+            - boxes     : `np.ndarray` of boxes (supposed to be in "xyxy" format)
+            - indices   : `list` of box indexes
+            - rows      : `list` of `np.ndarray`
+        Return :
+            - filtered_boxes    : `np.ndarray` with the boxes to keep
+            - filtered_indices  : indices associated to `filtered_boxes`
+            - filtered_rows     : list of rows associated to `filtered_boxes`
+    """
     if callable(filters): filters = [filters]
     
     for f in filters:
@@ -35,7 +49,7 @@ def filter_boxes(filters, boxes, indices = None, rows = None, ** kwargs):
 
 class BoxFilter:
     """ Abstract class representing a box filtering strategy """
-    def __call__(self, boxes, indices, rows, ** kwargs):
+    def __call__(self, boxes, indices, rows, source = 'xyxy', ** kwargs):
         """
             Filtering method that takes the boxes / indices / rows (typically returned by `combine_boxes`) and returns the indices to keep
             
@@ -48,7 +62,7 @@ class BoxFilter:
             
         """
         self.start()
-        res = self.filter(boxes = boxes, indices = indices, rows = rows)
+        res = self.filter(boxes = boxes, indices = indices, rows = rows, source = source)
         self.finish()
         
         if isinstance(res, np.ndarray) and res.dtype == bool:
@@ -69,7 +83,7 @@ class BoxItem:
     indices    : list
     unseen     : int  = 0
     updated    : bool = True
-    repetition : int  = 0
+    repetition : int  = 1
 
 class RepetitionFilter(BoxFilter):
     def __init__(self, iou_threshold = 0.5, n_repeat = 2, max_unseen = 3, use_memory = False):
@@ -96,6 +110,9 @@ class RepetitionFilter(BoxFilter):
     
     def __len__(self):
         return len(self.waiting)
+    
+    def clear(self):
+        self.waiting = []
     
     def start(self):
         self.index += 1
@@ -139,22 +156,22 @@ class RepetitionFilter(BoxFilter):
     def check_waiting(self, rows, ** kwargs):
         if self.n_repeat <= 1: return True
         
-        indices, boxes = self.get_waiting_boxes(rows = rows, ** kwargs)
-        matches  = get_rows_iou(rows, boxes, threshold = self.iou_threshold)
+        candidate_idx, candidates = self.get_waiting_boxes(rows = rows, ** kwargs)
+        matches  = get_rows_iou(rows, candidates, threshold = self.iou_threshold)
         if len(matches) == 0:
             self.new_boxes.append(BoxItem(index = self.index, rows = rows, ** kwargs))
-        else:
-            if len(matches) > 1:
-                logger.warning('Multiple matches detected ! Maybe your threshold is too low')
-            
+        elif len(matches) == 1:
             for idx in matches[::-1]:
-                idx = indices[idx]
+                idx = candidate_idx[idx]
                 self.waiting[idx].repetition += 1
                 self.waiting[idx].updated = True
                 if self.waiting[idx].repetition >= self.n_repeat:
                     item = self.waiting.pop(idx)
                     if self.use_memory: self.memory.append(item)
                     return True
+        else:
+            logger.warning('Multiple matches detected ! Maybe your threshold is too low')
+            
         return False
 
     def filter(self, boxes, rows, indices, ** _):
@@ -175,10 +192,7 @@ class RegionFilter(BoxFilter):
     def __init__(self, region, mode = 'overlap', ** kwargs):
         self.mode   = mode
         self.x_min, self.y_min, self.x_max, self.y_max = convert_box_format(
-            np.array(region) if not isinstance(region, dict) else region,
-            BoxFormat.XYXY,
-            normalize_mode  = NORMALIZE_01,
-            ** kwargs
+            region, target = 'xyxy', normalize_mode = 'relative', ** kwargs
         )[0]
     
     def filter(self, boxes, ** kwargs):
@@ -230,9 +244,7 @@ def get_rows_iou(rows, boxes, threshold = 0.8):
     if len(boxes) == 0: return []
 
     # ious has shape `(len(rows), len(boxes))`
-    ious = compute_iou(
-        rows, boxes, as_matrix = True, use_graph = False, box_mode = BoxFormat.CORNERS
-    )
+    ious = compute_iou(rows, boxes, as_matrix = True, source = 'xyxy')
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug('IoU between rows and candidates :\n'.format(np.around(ious, decimals = 3)))
     if len(rows) == 1: return np.where(ious[0] > threshold)[0]

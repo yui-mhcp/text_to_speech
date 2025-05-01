@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -13,11 +13,11 @@ import os
 import sys
 import logging
 
+from functools import partial, partialmethod
 from logging.handlers import SMTPHandler
 
 from .time_logging import TIME_LEVEL, TIME_DEBUG_LEVEL, Timer, timer, time_logger
 from .telegram_handler import TelegramHandler
-from .utils import get_object, partial, dispatch_wrapper
 
 logger  = logging.getLogger(__name__)
 
@@ -39,12 +39,6 @@ _levels = {
     'warning'   : logging.WARNING,
     'error'     : logging.ERROR,
     'critical'  : logging.CRITICAL
-}
-_handlers   = {
-    'stream'    : logging.StreamHandler,
-    'file'      : logging.FileHandler,
-    'smtp'      : SMTPHandler,
-    'telegram'  : TelegramHandler
 }
 
 _default_style  = os.environ.get('LOG_STYLE', 'basic').lower()
@@ -87,7 +81,13 @@ def add_level(value, name):
     if not hasattr(logging, name):
         setattr(logging, name, partial(logging.log, value))
     if not hasattr(logging.Logger, name):
-        setattr(logging.Logger, name, partial(logging.Logger.log, value))
+        setattr(logging.Logger, name, partialmethod(logging.Logger.log, value))
+
+def set_level(level, logger = None):
+    """ Sets the `logger` level to `level` """
+    if isinstance(level, str):  level = level.lower()
+    if isinstance(logger, str) or logger is None: logger = logging.getLogger(logger)
+    logger.setLevel(_levels.get(level, level))
 
 def set_style(style, logger = None):
     """ Sets the logging style to `logger` (root logger if None) """
@@ -96,15 +96,9 @@ def set_style(style, logger = None):
     
     formatter = get_formatter(style)
     
-    for handler in logging.getLogger(logger).handlers:
-        handler.setFormatter(formatter)
-
-@dispatch_wrapper(_levels, 'level')
-def set_level(level, logger = None):
-    """ Sets the `logger` level to `level` """
-    if isinstance(level, str):  level = level.lower()
     if isinstance(logger, str) or logger is None: logger = logging.getLogger(logger)
-    logger.setLevel(_levels.get(level, level))
+    for handler in logger.handlers:
+        handler.setFormatter(formatter)
 
 def get_formatter(format = _default_style, style = None, datefmt = None, ** kwargs):
     if isinstance(format, str): format = {'fmt' : _styles.get(format, format)}
@@ -112,29 +106,31 @@ def get_formatter(format = _default_style, style = None, datefmt = None, ** kwar
     
     return format if not isinstance(format, dict) else logging.Formatter(** format)
 
-@dispatch_wrapper(_handlers, 'handler')
 def add_handler(handler, * args, logger = None, level = None, add_formatter = True, ** kwargs):
     global _default_style
     
-    if logger is None:              logger = logging.getLogger()
-    elif isinstance(logger, str):   logger = logging.getLogger(logger)
-    
+    if isinstance(logger, str) or logger is None: logger = logging.getLogger(logger)
     if isinstance(level, str): level = _levels[level.lower()]
     
     fmt = kwargs.pop('format', _default_style)
     
     if isinstance(handler, str):
-        handler = get_object(_handlers, handler, * args, ** kwargs)
+        if handler not in _handlers:
+            raise ValueError('Unknown handler !\n  Accepted : {}\n  Got : {}'.format(
+                handler, tuple(_handlers.keys())
+            ))
+        
+        handler = _handlers[handler](* args, ** kwargs)
+        if handler is None: return
     
-    if isinstance(handler, str) or handler is None: return
     if level is not None: handler.setLevel(level)
     
-    if add_formatter and fmt is not None:
+    if add_formatter and fmt:
         formatter = get_formatter(fmt)
         
         handler.setFormatter(formatter)
     
-    if level is not None and logger.level > handler.level: logger.setLevel(level)
+    if isinstance(level, int) and logger.level > handler.level: logger.setLevel(level)
 
     logger.addHandler(handler)
     return handler
@@ -146,13 +142,20 @@ add_file_handler    = partial(
     add_handler, 'file', filename = 'logs.log', encoding = 'utf-8', format = 'extended'
 )
 
-@add_handler.dispatch('tts')
 def try_tts_handler(* args, ** kwargs):
     try:
-        from loggers.tts_handler import TTSHandler
+        from .tts_handler import TTSHandler
         return TTSHandler(* args, ** kwargs)
     except ImportError as e:
-        logger.error("Error when adding TTSHandler : {}".format(e))
+        logger.error("An error occured while initializing `TTSHandler` : {}".format(e))
         return None
+
+_handlers   = {
+    'stream'    : logging.StreamHandler,
+    'file'      : logging.FileHandler,
+    'smtp'      : SMTPHandler,
+    'telegram'  : TelegramHandler,
+    'tts'       : try_tts_handler
+}
 
 for name, val in _levels.items(): add_level(val, name)

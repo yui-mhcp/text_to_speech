@@ -1,5 +1,5 @@
-# Copyright (C) 2022-now yui-mhcp project author. All rights reserved.
-# Licenced under a modified Affero GPL v3 Licence (the "Licence").
+# Copyright (C) 2025-now yui-mhcp project author. All rights reserved.
+# Licenced under the Affero GPL v3 Licence (the "Licence").
 # you may not use this file except in compliance with the License.
 # See the "LICENCE" file at the root of the directory for the licence information.
 #
@@ -12,9 +12,9 @@
 import logging
 import numpy as np
 
+from loggers import Timer
 from .callback import Callback
-from loggers import time_logger
-from utils.plot_utils import plot
+from ..plot_utils import plot
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class Displayer(Callback):
         if self.max_display > 0 and self.index >= self.max_display: return
         
         self.index += 1
-        with time_logger.timer(self.name):
+        with Timer(self.name):
             for k in self.data_key:
                 if k in output:
                     return self.display(output[k], ** output)
@@ -43,11 +43,14 @@ class Displayer(Callback):
         raise NotImplementedError()
     
 
-class AudioDisplayer(Displayer):
+class AudioPlayer(Displayer):
     def __init__(self,
+                 play,
+                 display,
                  data_key = ('audio', 'filename'),
+                 
                  *,
-                 play   = False,
+
                  show_text  = True,
                  
                  name = 'display audio',
@@ -57,15 +60,22 @@ class AudioDisplayer(Displayer):
         super().__init__(data_key, name = name, ** kwargs)
 
         self.play = play
+        self._display   = display
         self.show_text  = show_text
 
     def display(self, _data, *, rate = None, ** kwargs):
-        from utils.audio import display_audio
+        from utils.audio import display_audio, play_audio
         
-        if self.show_text:
-            logger.info('Text : {}'.format(kwargs['text']))
-        display_audio(_data, rate = rate, play = self.play)
+        if self._display:
+            if self.show_text:
+                logger.info('Text : {}'.format(kwargs['text']))
+            display_audio(_data, rate = rate, play = self.play == 1)
+        if not self._display or self.play > 1:
+            play_audio(_data, rate = rate)
 
+class AudioDisplayer(AudioPlayer):
+    def __init__(self, play = False, display = True, ** kwargs):
+        super().__init__(play = play, display = display, ** kwargs)
 
 class ImageDisplayer(Displayer):
     def __init__(self, data_key = ('image', 'filename'), *, name = 'display image', ** kwargs):
@@ -90,7 +100,7 @@ class BoxesDisplayer(ImageDisplayer):
     def display(self, _data, *, boxes, ** kwargs):
         from utils.image import load_image, show_boxes, sort_boxes
         
-        if isinstance(_data, str): _data = load_image(_data, to_tensor = False, run_eagerly = True)
+        if isinstance(_data, str): _data = load_image(_data, to_tensor = False)
         
         boxes = sort_boxes(boxes, method = 'top', image = _data)
         _boxes = boxes if not isinstance(boxes, dict) else boxes['boxes']
@@ -112,11 +122,11 @@ class OCRDisplayer(Displayer):
         elif isinstance(_data, np.ndarray): _data = _data.copy()
         
         boxes = np.concatenate([res['rows'] for res in ocr], axis = 0)
-        plot(draw_boxes(_data, boxes, source = 'xyxy', show_text = False))
+        plot(draw_boxes(_data, boxes, source = 'xyxy', show_text = False, labels = ['text']))
         for box_infos in ocr:
             logger.info('Text (score {}) : {}'.format(
                 np.around(box_infos['scores'], decimals = 3), box_infos['text']
             ))
             plot(load_image(
-                _data, boxes = box_infos['box'], source = box_infos['source']
+                _data, boxes = box_infos['boxes'], source = box_infos['format']
             ))

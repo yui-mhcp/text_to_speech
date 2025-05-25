@@ -52,6 +52,9 @@ class TensorRTLLMRuntime(Runtime):
         self.eos_token  = -1
         self.pad_token  = -1
         
+        self._token_masking = self.engine.logits_processor_map['token_masking']
+        self._inference_stopper = self.engine.logits_processor_map['inference_stopper']
+        
         self._mutex = Lock()
         self._request_index = 0
         self._max_input_length  = self.engine.max_input_len
@@ -65,6 +68,43 @@ class TensorRTLLMRuntime(Runtime):
         if eos_token not in (-1, None): self.eos_token = eos_token
         if pad_token not in (-1, None): self.pad_token = pad_token
 
+    def start_request(self,
+                      inputs,
+                      *,
+                      
+                      streaming,
+                      batch_size,
+                      
+                      tokenizer = None,
+                      allowed_tokens = None,
+                      stop_condition = None,
+                     ):
+        with self._mutex:
+            self._request_index += batch_size
+            trt_llm_request_id = self._request_index
+            
+            if allowed_tokens is not None:
+                self._token_masking.init_request(trt_llm_request_id, allowed_tokens)
+                inputs['max_new_tokens'] = self._token_masking.get_max_length(trt_llm_request_id),
+                inputs.setdefault('logits_processor_names', []).append('token_masking')
+            
+            if stop_condition is not None:
+                self._inference_stopper.tokenizer = tokenizer
+                self._inference_stopper.init_request(trt_llm_request_id, stop_condition)
+                inputs.setdefault('logits_processor_names', []).append('inference_stopper')
+
+            if streaming:
+                output = self.engine.generate(streaming = True, ** inputs)
+        
+        if not streaming:
+            output = self.engine.generate(streaming = False, ** inputs)
+        
+        return trt_llm_request_id, output
+    
+    def finalize_request(self, req_id):
+        for logits_processor in (self._token_masking, self._inference_stopper):
+            logits_processor.finalize_request(req_id)
+        
     @timer(name = 'TRT-LLM inference')
     def __call__(self,
                  inputs,
@@ -75,10 +115,12 @@ class TensorRTLLMRuntime(Runtime):
                  max_input_len  = None,
                  encoder_output_lengths = None,
                  
+                 tokenizer  = None,
+                 stop_condition = None,
                  allowed_tokens = None,
                  
-                 decode_fn  = None,
                  request_id = None,
+                 decode_fn  = None,
                  stream_callback    = None,
                  add_none_at_eos    = False,
 
@@ -126,13 +168,6 @@ class TensorRTLLMRuntime(Runtime):
         
         inp_lengths = [len(tok) for tok in kwargs['batch_input_ids']]
         
-        if allowed_tokens is not None:
-            self.engine.logits_processor_map['token_masking'].set_tokens(allowed_tokens)
-            kwargs.update({
-                'max_new_tokens'    : len(self.engine.logits_processor_map['token_masking']),
-                'logits_processor_names'    : ['token_masking']
-            })
-        
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Calling `TRT-LLM` generate with {}'.format({
                 k : v if not isinstance(v, list) or not hasattr(v[0], 'shape') else [
@@ -143,17 +178,20 @@ class TensorRTLLMRuntime(Runtime):
         
         t0 = time.time()
         with torch.no_grad():
-            
-            if stream_callback is not None:
-                assert len(inputs) == 1, 'The streaming feature is not supported yet for batches'
+            trt_llm_request_id, output = self.start_request(
+                kwargs,
+                streaming   = stream_callback is not None,
+                batch_size  = len(inputs),
                 
-                if not callable(stream_callback): stream_callback = stream_callback.put
-                with self._mutex:
-                    self._request_index += len(inputs)
-                    trt_llm_request_id = self._request_index
+                tokenizer   = tokenizer,
+                allowed_tokens  = allowed_tokens,
+                stop_condition  = stop_condition
+            )
 
-                    stream = self.engine.generate(streaming = True, ** kwargs)
+            if stream_callback is not None:
+                if not callable(stream_callback): stream_callback = stream_callback.put
                 
+                stream = output
                 for i, output in enumerate(stream):
                     if i == 0 and logger.isEnabledFor(logging.INFO):
                         logger.info('[TRT-LLM] Time to first token : {}'.format(
@@ -173,17 +211,15 @@ class TensorRTLLMRuntime(Runtime):
                     
                     if stream_callback(out_i) is False:
                         self.engine.session.cancel_request(trt_llm_request_id)
-                        stream_callback.send_status(request_id, 'stopped')
+                        if hasattr(stream_callback, 'send_status'):
+                            stream_callback.send_status(request_id, 'stopped')
+                        break
 
                 if add_none_at_eos:
                     final = None if request_id is None else (request_id, None)
                     stream_callback(final)
-            else:
-                with self._mutex:
-                    self._request_index += len(inputs)
 
-                output = self.engine.generate(streaming = False, ** kwargs)
-
+            self.finalize_request(trt_llm_request_id)
         
         if logger.isEnabledFor(logging.INFO):
             n = output['sequence_lengths'].sum().cpu().numpy() - sum(inp_lengths)
@@ -295,34 +331,42 @@ def _get_logits_processor_map():
             super().__init__()
             self.value  = value
 
-            self.tokens = None
-            self.mask   = None
-            self.step   = 0
-
-        def __len__(self):
-            return self.tokens.shape[-1]
+            self._requests  = {}
 
         def __call__(self, req_id, logits, ids, stream_ptr, clint_id):
-            import torch
+            infos = self._requests.get(req_id, {})
+            if infos and infos['step'] < infos['max_length']:
+                import torch
 
-            with torch.cuda.stream(torch.cuda.ExternalStream(stream_ptr)):
-                logits[self.mask[:, :, self.step, :]] = self.value
-                self.step += 1
+                with torch.cuda.stream(torch.cuda.ExternalStream(stream_ptr)):
+                    logits[infos['mask'][:, :, infos['step'], :]] = self.value
+                    infos['step'] += 1
 
             return logits
 
-        def set_tokens(self, tokens):
-            self.step   = 0
-            self.tokens = np.array(tokens)
-            self.mask   = np.ones((1, 1, self.tokens.shape[-1], self.vocab_size), dtype = bool)
+        def get_max_length(self, req_id):
+            return self._requests[req_id]['max_length']
+        
+        def init_request(self, req_id, tokens):
+            tokens = np.array(tokens)
+            mask   = np.ones((1, 1, tokens.shape[-1], self.vocab_size), dtype = bool)
 
-            for step in range(self.tokens.shape[-1]):
-                self.mask[:, :, step, self.tokens[:, step]] = False
+            for step in range(tokens.shape[-1]):
+                mask[:, :, step, tokens[:, step]] = False
 
-    class ToolStopper(tensorrt_llm.runtime.generation.LogitsProcessor):
+            self._requests[req_id] = {
+                'stop'  : 0,
+                'mask'  : mask,
+                'max_length'    : tokens.shape[-1]
+            }
+        
+        def finalize_request(self, req_id):
+            self._requests.pop(req_id, None)
+
+    class InferenceStopper(tensorrt_llm.runtime.generation.LogitsProcessor):
         def __init__(self):
             self._tokenizer = None
-            self._requests  = None
+            self._requests  = {}
             
             self.mask   = None
         
@@ -332,25 +376,37 @@ def _get_logits_processor_map():
         
         @tokenizer.setter
         def tokenizer(self, value):
-            self._requests  = {}
-            
             if value is not self._tokenizer:
                 self._tokenizer = value
                 self.mask   = np.ones((1, 1, value.vocab_size), dtype = bool)
                 self.mask[0, 0, self._tokenizer.blank_token_idx] = False
-
+        
         def __call__(self, req_id, logits, ids, stream_ptr, client_id):
-            if req_id not in self._requests: self._requests[req_id] = ''
-            self._requests[req_id] += self.tokenizer.decode_ids(ids[0][-1]).strip()
+            if req_id not in self._requests: return logits
             
-            if self._requests[req_id].endswith('```') and '```python' in self._requests[req_id]:
+            self._requests[req_id]['text'] += self.tokenizer.decode_ids(ids[0][-1])
+            
+            if self._requests[req_id]['stop_condition'](self._requests[req_id]['text']):
                 import torch
                 with torch.cuda.stream(torch.cuda.ExternalStream(stream_ptr)):
                     logits[self.mask] = float('-inf')
 
             return logits
 
-    return {'token_masking' : TokenMasking(), 'tool_stopper' : ToolStopper()}
+        def init_request(self, req_id, condition):
+            if isinstance(condition, str):
+                _pattern = condition
+                condition = lambda text: re.search(_pattern, text) is not None
+            
+            self._requests[req_id] = {
+                'text'  : '',
+                'stop_condition'    : condition
+            }
+        
+        def finalize_request(self, req_id):
+            self._requests.pop(req_id, None)
+
+    return {'token_masking' : TokenMasking(), 'inference_stopper' : InferenceStopper()}
 
 def _time_to_string(seconds):
     """ Returns a string representation of a time (given in seconds) """

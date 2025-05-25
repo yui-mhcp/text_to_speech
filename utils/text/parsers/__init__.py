@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import os
+import glob
 import logging
 import importlib
 
@@ -34,6 +35,7 @@ globals().update(_parsers)
 _parsers = {
     v.__extensions__ : v for v in _parsers.values() if hasattr(v, '__extensions__')
 }
+_extensions = tuple(_parsers.keys())
 
 @dispatch_wrapper(_parsers, 'Filename extension')
 @timer
@@ -100,7 +102,7 @@ def parse_document(filename,
         _cache = load_data(cache_file, default = {})
 
     if isinstance(filename, list):
-        filename = [f for f in filename if os.path.isdir(f) or f.endswith(tuple(_parsing_methods))]
+        filename = [f for f in filename if os.path.isdir(f) or f.endswith(_extensions)]
         
         documents = None
         for file in filename:

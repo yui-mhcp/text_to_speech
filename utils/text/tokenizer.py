@@ -13,15 +13,15 @@ import os
 import enum
 import glob
 import json
+import time
 import logging
 import numpy as np
 import regex as re
 
-from datetime import datetime
 from functools import cached_property, cache
 
 from loggers import Timer, timer
-from .. import load_json, dump_json, pad_batch, get_enum_item, is_dataframe, convert_to_str
+from .. import load_json, dump_json, pad_batch, get_enum_item, is_dataframe, convert_to_str, timestamp_to_str
 from ..keras import TensorSpec, ops, execute_eagerly
 from .ctc_decoder import ctc_decode
 from .cleaners import get_cleaners_fn, clean_text, strip
@@ -478,8 +478,15 @@ class Tokenizer:
         
         if add_eos is None: add_eos = not add_generation_prompt
         
-        kwargs   = convert_to_str(kwargs)
+        for k, v in kwargs.items():
+            if isinstance(v, str):
+                try:
+                    kwargs[k] = format_text(v, ** kwargs)
+                except Exception as e:
+                    logger.warning('An error occured while formatting {}\n{}'.format(v, e))
+                    
         kwargs.update(self.tokens)
+        kwargs['timestamp_to_str'] = timestamp_to_str
         
         with Timer('messages preparation'):
             if messages is None:                messages = []
@@ -497,20 +504,22 @@ class Tokenizer:
                     'content' : format_text(
                         message_format, text = msg['content'], message = msg, ** kwargs
                     )
-                } for msg in messages]
+                } if msg['role'] != 'system' else msg
+                    for msg in messages]
 
-            if messages and last_message_format:
+            if last_message_format:
                 messages[-1] = {** messages[-1], 'content' : format_text(
-                    last_message_format, text = messages[-1]['content'], ** kwargs
+                    last_message_format, text = messages[-1]['content'], messages = messages, ** kwargs
                 )}
             
             if system_prompt and messages[0]['role'] != 'system':
-                messages = [
-                    {'role' : 'system', 'content' : format_text(system_prompt, messages = messages, ** kwargs)}
-                ] + messages
+                messages = [{
+                    'role'      : 'system',
+                    'content'   : format_text(system_prompt, messages = messages, ** kwargs)
+                }] + messages
 
             if 'date_string' in self.template and 'date_string' not in kwargs:
-                kwargs['date_string'] = datetime.now().strftime("%d %B %Y")
+                kwargs['date_string'] = timestamp_to_str(time.time())
 
         for _ in range(max(1, len(messages) - 1)):
             with Timer('apply template'):
@@ -577,7 +586,7 @@ class Tokenizer:
             sep = ' ' if self.word_split else ''
             text = sep.join(symbols)
         else:
-            text = self._id_to_symbol.get(t, '')
+            text = self._id_to_symbol.get(tokens, '')
         
         if self.byte_encoder is not None:
             try:

@@ -53,6 +53,10 @@ def expand_path(path, recursive = True, unix = True):
             - file  : `list` of files
     """
     if not path: return []
+    elif isinstance(path, list):
+        files = []
+        for p in path: files.extend(expand_path(p, recursive, unix))
+        return files
     
     if path[0] == '~': path = os.path.expanduser(path)
     if '*' not in path:
@@ -314,9 +318,11 @@ def dump_data(filename, data, overwrite = True, ** kwargs):
     return filename
 
 @dump_data.dispatch
-def dump_json(filename, data, ** kwargs):
+def dump_json(filename, data, *, safe = False, ** kwargs):
     """ Safely save data to a json file """
-    data = json.dumps(to_json(data), ** kwargs)
+    if not safe: data = to_json(data)
+    
+    data = json.dumps(data, ** kwargs)
     with open(filename, 'w', encoding = 'utf-8') as file:
         file.write(data)
 

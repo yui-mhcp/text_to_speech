@@ -44,7 +44,7 @@ def time_to_string(seconds):
     )
 
 def timestamp_to_str(timestamp):
-    return datetime.fromtimestamp(timestamp).strftime("%d %B %Y %Hh %Mmin %Ssec")
+    return datetime.datetime.fromtimestamp(timestamp).strftime("%d %B %Y %H:%M:%S")
 
 """ These functions are related to data convertion """
 

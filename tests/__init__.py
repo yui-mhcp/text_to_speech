@@ -23,7 +23,10 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 from utils import load_data, dump_data, is_equal
 
 data_dir    = os.path.join(os.path.dirname(__file__), 'data')
+temp_dir    = os.path.join(os.path.dirname(__file__), 'tmp')
 reproductibility_dir    = os.path.join(os.path.dirname(__file__), '__reproduction')
+
+os.makedirs(temp_dir, exist_ok = True)
 
 @cache
 def is_tensorflow_available():

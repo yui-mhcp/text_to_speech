@@ -183,7 +183,7 @@ def knn(query   : TensorSpec(shape = (None, None), dtype = 'float') = None,
     
     if ids is None:
         if distance_metric not in _similarity_methods: k_nearest_dists = -k_nearest_dists
-        return (k_nearest_dists, k_nearest_idx) if return_scores else k_nearest_idx
+        return (k_nearest_idx, k_nearest_dists) if return_scores else k_nearest_idx
     
     unique_ids, pos_ids = ops.unique(ids, return_inverse = True)
     

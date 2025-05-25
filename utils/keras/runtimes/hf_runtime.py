@@ -13,23 +13,28 @@ from .. import ops, timer
 from .runtime import Runtime
 
 class HFRuntime(Runtime):
+    @property
+    def embedding_dim(self):
+        return self.engine.config.hidden_size
+    
     @timer(name = 'Transformers runtime inference')
     def __call__(self, * args, ** kwargs):
         import torch
-        
-        from transformers import XLMRobertaModel
         
         with torch.no_grad():
             args = [
                 ops.convert_to_torch_tensor(arg, 'int32').to(device = self.engine.device)
                 for arg in args
             ]
+            if len(args) == 1 and len(args[0]) > 1 and 'attention_mask' not in kwargs:
+                kwargs['attention_mask'] = args[0] != self.engine.config.pad_token_id
+            
             out = self.engine(* args, ** kwargs)
-            if isinstance(self.engine, XLMRobertaModel):
+            if self.engine.config.architectures[0] == 'XLMRobertaModel':
                 out = out[0][:, 0]
                 out = out / torch.functional.norm(out, dim = -1, keepdim = True)
             
-            return out
+        return out
     
     @staticmethod
     def load_engine(path, *, torch_dtype = 'float16', ** _):

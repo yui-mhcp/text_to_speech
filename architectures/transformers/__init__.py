@@ -16,6 +16,7 @@ import inspect
 import importlib
 
 from ..hparams import HParams
+from .transformer_arch import Transformer, TransformerBlock
 from utils import load_json, dump_json, partial
 
 for module in os.listdir(__package__.replace('.', os.path.sep)):
@@ -27,6 +28,11 @@ for module in os.listdir(__package__.replace('.', os.path.sep)):
         k : v for k, v in vars(module).items()
         if isinstance(v, HParams) or (isinstance(v, type) and issubclass(v, keras.Model))
     })
+
+_transformers   = {
+    k : v for k, v in globals().items()
+    if isinstance(v, type) and issubclass(v, (Transformer, TransformerBlock))
+}
 
 _hf_path    = os.path.expanduser('~/.cache/huggingface/hub')
 
@@ -60,7 +66,7 @@ _huggingface_config_mapping = {
 def download_hf_model(model_name, reload = False, ** kwargs):
     path    = os.environ.get('HF_HUB_CACHE', _hf_path)
     path    = os.path.join(path, 'models--{}'.format(model_name.replace('/', '--')), 'snapshots')
-    if not os.path.exists(path) or not glob.glob(path + '/**/config.json') or reload:
+    if reload or not os.path.exists(path) or not glob.glob(path + '/**/config.json'):
         from huggingface_hub import snapshot_download
         snapshot_download(
             model_name, allow_patterns = ('*.json', ), ** kwargs
@@ -71,7 +77,7 @@ def download_hf_model(model_name, reload = False, ** kwargs):
             )
             if glob.glob(path + '/**/' + pat):
                 return res
-    return glob.glob(path + '/*')[0]
+    return os.path.dirname(glob.glob(path + '/**/config.json')[0])
 
 def load_hf_checkpoint(model_name, map_location = 'cpu', ** kwargs):
     import torch
@@ -121,7 +127,7 @@ def get_hf_equivalent_class(model_name = None, model_class = None, ** _):
     if model_class is None: model_class = get_hf_class(model_name)
     model_class = model_class.lower()
     
-    for name, obj in _transformers:
+    for name, obj in _transformers.items():
         if name.lower() in model_class:
             return obj
     raise ValueError('No matching class found for {}\n  Candidates : {}'.format(

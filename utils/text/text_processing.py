@@ -307,6 +307,8 @@ def merge_texts(texts,
     if tokens is None:
         tokens = [tokenizer(txt) for txt in texts]
     
+    texts   = [txt.strip(' ') for txt in texts]
+    
     merged_texts    = [[texts[0]]]
     merged_tokens   = [[tokens[0]]]
     merged_indices  = [[0]]
@@ -330,31 +332,22 @@ def merge_texts(texts,
                 _max_overlap_len = min(max_overlap_len, max_length - len(tok))
 
                 overlap_len = 0
-                for i in range(min(max_overlap, len(merged_texts[-2]))):
+                for i in range(1, 1 + min(max_overlap, len(merged_texts[-2]))):
                     if overlap_len + len(merged_tokens[-2][- i]) > _max_overlap_len: break
 
                     merged_texts[-1].insert(0, merged_texts[-2][- i])
-                    merged_tokens[-1].insert(0, merged_tokens[-1][- i])
+                    merged_tokens[-1].insert(0, merged_tokens[-2][- i])
                     merged_indices[-1].insert(0, merged_indices[-2][- i])
                     overlap_len += len(merged_tokens[-2][- i])
                     merged_len  += len(merged_tokens[-2][- i])
-
-    # transform the merged list of list into list of str by concatenating the different groups
-    result_texts, result_tokens = [''] * len(merged_texts), [[] for _ in range(len(merged_tokens))]
-    for i, (merged_txt, merged_tok) in enumerate(zip(merged_texts, merged_tokens)):
-        update_tokens = False
-        for txt, tok in zip(merged_txt, merged_tok):
-            if result_texts[i] and not result_texts[i].endswith((' ', '\n')):
-                update_tokens = True
-                txt = ' ' + txt
-            result_texts[i] += txt
-            result_tokens[i].extend(tok)
-        
-        if update_tokens:
-            result_tokens[i] = tokenizer(result_texts[i])
-
-    return result_texts, result_tokens, merged_indices
     
+    result_texts = [' '.join(texts) for texts in merged_texts]
+    result_tokens = []
+    for i, list_tokens in enumerate(merged_tokens):
+        result_tokens.append([])
+        for toks in list_tokens: result_tokens[-1].extend(toks)
+    
+    return result_texts, result_tokens, merged_indices
 
 def split_sentences(text, eos_pattern = _eos_chars, strip = False):
     """

@@ -131,13 +131,15 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         
         with Timer('processing'):
             if max_text_length == -1:
-                splitted    = [self.clean_text(text)]
+                splitted = [text]
             elif max_text_length == -2:
-                splitted    = [self.clean_text(sent) for sent in split_sentences(text)]
+                splitted = split_sentences(text)
             else:
-                splitted    = [self.clean_text(sent) for sent in split_text(text, max_text_length)]
+                splitted = split_text(text, max_text_length)
+            
+            splitted    = [self.clean_text(sent, ** kwargs) for sent in splitted]
             splitted    = [s for s in splitted if any(c.isalnum() for c in s)]
-            cleaned     = '\n\n'.join(splitted)
+            cleaned     = '\n\n'.join(splitted) if len(splitted) > 1 else splitted[0]
 
             encoded     = [self.encode_text(text, cleaned = True) for text in splitted]
 

@@ -16,7 +16,7 @@ from .txt_parser import TxtParser
 _python_re  = r'\n\s*\n(?=def|\#|class|\@)'
          
 class PyParser(TxtParser):
-    __extensions__ = 'py'
+    __extension__ = 'py'
 
     def get_paragraphs(self, ** kwargs):
         """ Extract a list of paragraphs """

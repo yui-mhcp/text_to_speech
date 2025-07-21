@@ -66,8 +66,8 @@ def distance(x, y, method, *, mode = None, as_matrix = False):
             method, tuple(x.shape), tuple(y.shape)
         ))
     
-    if len(ops.shape(x)) == 1: x = ops.expand_dims(x, axis = 0)
-    if len(ops.shape(y)) == 1: y = ops.expand_dims(y, axis = 0)
+    if len(ops.shape(x)) == 1: x = x[None]
+    if len(ops.shape(y)) == 1: y = y[None]
 
     result = _distance_methods[method](x, y, as_matrix = as_matrix)
 
@@ -122,7 +122,7 @@ def euclidian_distance(x, y, *, fast = True, as_matrix = False):
     return ops.sqrt(ops.sum(ops.square(ops.subtract(x, y)), axis = -1))
 
 @similarity_method_wrapper
-def dice_coeff(x, y, as_matrix = False):
+def dice_coeff(x, y, *, as_matrix = False):
     if as_matrix: raise NotImplementedError()
     
     inter = ops.sum(x * y)

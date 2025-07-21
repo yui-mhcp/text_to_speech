@@ -43,7 +43,7 @@ class ModelInstances(type):
                     raise ValueError("Model `{}` already exists with a non-matching class !\n  Expected : {}\n  Got : {}".format(name, config['class_name'], cls.__name__))
 
                 args = ()
-                kwargs.update(config['config'])
+                kwargs = {** config['config'], ** kwargs}
             kwargs['name'] = name
             
             try:

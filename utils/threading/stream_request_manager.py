@@ -122,18 +122,17 @@ class ChildRequestManager(RequestManager):
         
         self.check_for_message()
     
-    def __call__(self, item):
+    def __call__(self, item, request_id = None):
         """ Send a stream event from the child to the parent process """
-        if isinstance(item, tuple):
+        if isinstance(item, tuple) and len(item) == 2:
             item = {'id' : item[0], 'type' : 'output', 'content' : item[1]}
+        elif not isinstance(item, dict) or request_id is not None:
+            item = {'id' : request_id, 'type' : 'output', 'content' : item}
         
         if item['id'] not in self._requests:
             logger.error('The request {} seems to not have been initialized ! Make sure to send a status "init" message (in the parent process) before starting it.'.format(item['id']))
         
         self.send(item)
-        
-        if item['type'] == 'status' and item['content'] == 'finished':
-            self.pop(item['id'])
         
         return self.is_active(item['id'])
     
@@ -148,6 +147,11 @@ class ChildRequestManager(RequestManager):
         with self.mutex:
             return request_id in self._requests and not self._requests[request_id].is_set()
     
+    def finalize(self, request_id):
+        self(inspect._empty, request_id = request_id)
+        self({'id' : request_id, 'type' : 'status', 'content' : 'finished'})
+        self.pop(request_id)
+
     def wait_finalize(self, request_id):
         """ Wait until the request is stopped or finalized, and return `True` if the request was finalized, and `False` if it was stopped """
         self._requests[request_id].wait()

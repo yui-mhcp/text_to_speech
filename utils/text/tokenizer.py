@@ -457,6 +457,7 @@ class Tokenizer:
                     text = None,
                     *,
                     
+                    prompt_format   = 'markdown',
                     system_prompt   = None,
                     answer_start    = None,
 
@@ -476,6 +477,11 @@ class Tokenizer:
                    ):
         assert text or messages
         
+        kwargs.update({
+            'prompt_format' : prompt_format,
+            'timestamp_to_str'  : timestamp_to_str
+        })
+        
         if add_eos is None: add_eos = not add_generation_prompt
         
         for k, v in kwargs.items():
@@ -483,10 +489,9 @@ class Tokenizer:
                 try:
                     kwargs[k] = format_text(v, ** kwargs)
                 except Exception as e:
-                    logger.warning('An error occured while formatting {}\n{}'.format(v, e))
+                    logger.warning('An error occured while formatting {} : {}'.format(v, e))
                     
         kwargs.update(self.tokens)
-        kwargs['timestamp_to_str'] = timestamp_to_str
         
         with Timer('messages preparation'):
             if messages is None:                messages = []
@@ -519,7 +524,7 @@ class Tokenizer:
                 }] + messages
 
             if 'date_string' in self.template and 'date_string' not in kwargs:
-                kwargs['date_string'] = timestamp_to_str(time.time())
+                kwargs['date_string'] = timestamp_to_str(time.time(), include_time = False)
 
         for _ in range(max(1, len(messages) - 1)):
             with Timer('apply template'):

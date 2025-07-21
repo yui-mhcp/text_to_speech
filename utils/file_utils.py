@@ -9,11 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 import re
 import sys
 import glob
 import json
+import yaml
 import pickle
 import logging
 import numpy as np
@@ -213,6 +215,15 @@ def load_jsonl(filename, ** kwargs):
     with open(filename, 'r', encoding = 'utf-8') as file:
         lines = [l for l in file]
     return [json.loads(l) for l in lines]
+
+@load_data.dispatch
+def load_yaml(filename, default = {}, ** kwargs):
+    """ Safely load data from a json file """
+    if not os.path.exists(filename): return default
+    with open(filename, 'r', encoding = 'utf-8') as file:
+        result = file.read()
+    return yaml.safe_load(io.StringIO(result))
+
 
 @load_data.dispatch
 def load_npz(filename, ** kwargs):

@@ -27,6 +27,8 @@ def process_model_output(output, offset = None, lengths = None):
             if lengths.ndim == 2 and offset.ndim == 1:
                 offset = np.tile(offset[:, None], [1, lengths.shape[1]])
         output  = output.tokens
+    elif lengths is None:
+        return output.tokens
     
     if lengths.ndim:
         return [

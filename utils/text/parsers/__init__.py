@@ -14,10 +14,10 @@ import glob
 import logging
 import importlib
 
+from functools import wraps
+
 from loggers import timer
 from .parser import Parser
-from ...wrappers import dispatch_wrapper
-from ...file_utils import load_data, dump_data
 
 logger  = logging.getLogger(__name__)
 
@@ -33,11 +33,23 @@ for module in os.listdir(__package__.replace('.', os.path.sep)):
 globals().update(_parsers)
 
 _parsers = {
-    v.__extensions__ : v for v in _parsers.values() if hasattr(v, '__extensions__')
+    v.__extension__ : v for v in _parsers.values() if hasattr(v, '__extension__')
 }
 _extensions = tuple(_parsers.keys())
 
-@dispatch_wrapper(_parsers, 'Filename extension')
+def _get_parse_method(parser):
+    @wraps(parser.get_paragraphs)
+    def inner(* args, ** kwargs):
+        return parser(* args, ** kwargs).get_paragraphs(** kwargs)
+    return inner
+
+globals().update({
+    'parse_{}'.format(ext) : _get_parse_method(parser)
+    for ext, parser in _parsers.items()
+})
+
+_cache_dir  = os.path.expanduser('~/.cache/yui_mhcp/parsers')
+
 @timer
 def parse_document(filename,
                    *,
@@ -48,46 +60,61 @@ def parse_document(filename,
                    extract_images   = None,
                    
                    strip    = True,
-                   merge_by = None,
-                   
                    return_raw   = False,
 
+                   cache    = True,
+                   overwrite    = False,
+                   cache_dir    = _cache_dir,
+                   
                    _cache   = None,
-                   cache_file   = None,
                    
                    ** kwargs
                   ):
     """
-        Extracts text from a document with supported extension (see below)
+        Parse `filename` with appropriate parser and returns its paragraphes (or raw text as single paragraph)
         
         Arguments : 
-            - filename  : the file to parse
+            - filename  : the file(s) to parse
+                          - list    : a list of file/directory
+                          - directory   : iterates over all files (possibly recursively)
+                          - unix-formatted  : iterates over all files/directories matching the format
+            
+            - recursive : whether to expand sub-directories
+            
+            - image_folder  : directory to save extracted images
+            - extract_images    : whether to extract images from document (not all parsers support this option)
             
             - strip     : whether to strip texts or not
-            - merge_by  : whether to merge paragraphs that have the same value for the given key
-            - group_by  : whether to group paragraphs by the given key
-            - max_paragraph_length  : split texts up to the given maximum length (if needed)
+            - return_raw    : whether to return raw text or not
             
-            - add_page  : whether to add the `page` key when it is not available (e.g., .txt files)
+            - cache : whether to cache parsing result
+                      This feature uses the `utils.databases.JSONDir` database to save
+                      each parsed result in a different `.json` file within `cache_dir`
+            - cache_dir : where to save the cache database
             
-            - zip_filename  : save the output (processed paragraphs + images) in a .zip file
-
+            - _cache    : reserved keyword to forward cache between nested calls
+            
             - kwargs    : additional arguments given to the parsing method
         Return :
-            - paragraphs    : the processed document
-                If `merge_by` is None: `list` paragraphs
-                Else    : `dict` in the following format `{value : list_of_paragraphs}`
-                    where `values` are all unique values for the `merge_by` key
+            - paragraphs    : a `list` of paragraphs (`dict`) extracted from the document
             
             A `paragraph` is a `dict` containing the following keys :
                 Text paragraphs :
-                - text  : the paragraph text
-                - title_level   : the title level (if applicable)
-                - section       : the section number (if applicable)
-                - section_titles    : section titles hierarchy (if applicable)
+                - type  : the paragraph type (e.g., "text", "image", "list", "table", "code", ...)
+                          Each type has some required entries (see below)
+                - section       : the section title(s)
                 
-                Image paragraphs :
-                - image     : the image filename
+                "text" / "code" / "title" :
+                - text  : the paragraph text
+                
+                "list" :
+                - items : the list of text for each item in the list
+                
+                "table" :
+                - rows  : a list of dict containing each row in the table
+                
+                "image" :
+                - filename  : the image filename
                 - height    : the image height
                 - width     : the image width
     """
@@ -96,17 +123,21 @@ def parse_document(filename,
             filename = glob.glob(filename)
         elif os.path.isdir(filename):
             filename = [os.path.join(filename, f) for f in os.listdir(filename)]
-            if not recursive: filename = [f for f in filename if not os.path.isdir(filename)]
     
-    if cache_file and _cache is None:
-        _cache = load_data(cache_file, default = {})
+    if cache:
+        from ...databases import init_database
+        _cache = init_database('JSONDir', path = cache_dir, primary_key = 'filename')
 
     if isinstance(filename, list):
-        filename = [f for f in filename if os.path.isdir(f) or f.endswith(_extensions)]
+        filename = [
+            f for f in filename if (f.endswith(_extensions)) or (recursive and os.path.isdir(f))
+        ]
+
+        _initial_cache_length = len(_cache) if cache else 0
         
-        documents = None
+        paragraphs = []
         for file in filename:
-            paragraphs = parse_document(
+            paragraphs.extend(parse_document(
                 file,
                 
                 recursive   = recursive,
@@ -114,33 +145,31 @@ def parse_document(filename,
                 extract_images  = extract_images,
                 
                 strip   = strip,
-                merge_by    = merge_by,
                 return_raw  = return_raw,
                 
+                cache   = False,
                 _cache  = _cache,
+                overwrite   = overwrite,
                 
                 ** kwargs
-            )
-            if not documents: documents = paragraphs
-            elif isinstance(documents, list): documents.extend(paragraphs)
-            else: documents.update(paragraphs)
+            ))
         
-        if cache_file:
-            dump_data(cache_file, _cache)
+        if (cache) and (overwrite or len(_cache) != _initial_cache_length):
+            _cache.save()
 
-        return documents if documents is not None else []
+        return paragraphs
     
-    if _cache and filename in _cache:
-        return _cache[filename]
+    if _cache is not None and not overwrite and filename in _cache:
+        return _cache[filename]['paragraphs']
         
-    ext = filename.split('.')[-1]
+    basename, _, ext = filename.rpartition('.')
     if ext not in _parsers:
-        raise ValueError("Unhandled extension !\n  Accepted : {}\n  Got : {} ({})".format(
-            tuple(_parsers.keys()), ext, filename
+        raise NotImplementedError("No parser found for {} !\n  Accepted : {}".format(
+            filename, _extensions
         ))
     
     if extract_images and image_folder is None:
-        image_folder = os.path.splitext(filename)[0] + '-images'
+        image_folder = basename + '-images'
     elif extract_images is False:
         image_folder = None
     
@@ -160,45 +189,11 @@ def parse_document(filename,
             if 'text' in para: para['text'] = para['text'].strip()
         paragraphs = [p for p in paragraphs if p.get('text', None) != '']
     
-    for p in paragraphs: p.setdefault('filename', filename)
-
-    if merge_by:
-        if any(merge_by not in p for p in paragraphs):
-            logger.warning('The `merge_by` key {} is missing in some paragraphs : {}'.format(
-                merge_by, [p for p in paragraphs if merge_by not in p]
-            ))
-        else:
-            paragraphs = merge_paragraphs(paragraphs, merge_by)
+    if paragraphs and 'filename' not in paragraphs[0]:
+        for p in paragraphs: p['filename'] = filename
     
     if _cache is not None:
-        _cache[filename] = paragraphs
-    
-    if cache_file:
-        dump_data(cache_file, _cache)
+        _cache[filename] = {'filename' : filename, 'paragraphs' : paragraphs}
+        if cache: _cache.save()
     
     return paragraphs
-
-def merge_paragraphs(paragraphs, key, sep = '\n\n', pop_keys = ('section', 'section_titles')):
-    merged = paragraphs[0].copy()
-    result = [merged]
-    for para in paragraphs[1:]:
-        if para[key] == merged[key]:
-            for k, v in para.items():
-                if k not in merged:
-                    merged[k] = v
-                elif k == 'text':
-                    merged['text'] = merged['text'] + sep + v
-                elif para[k] != merged[k]:
-                    if isinstance(merged[k], list):
-                        merged[k].append(v)
-                    else:
-                        merged[k] = [merged[k], v]
-        else:
-            merged = para.copy()
-            result.append(merged)
-    
-    pop_keys = [k for k in pop_keys if key not in k]
-    for res in result:
-        for k in pop_keys: res.pop(k, None)
-    
-    return result

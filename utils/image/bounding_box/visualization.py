@@ -63,7 +63,7 @@ def draw_boxes(image,
             if show_text:
                 conf    = boxes['scores'][i] if 'scores' in boxes else None
 
-                text    = '{}{}'.format(label, '' if not conf else ' ({:.2f} %)'.format(conf))
+                text    = '{}{}'.format(label, '' if not conf else ' ({:.1f} %)'.format(100 * conf))
                 font_scale   = 1e-3 * image_h
                 (text_width, text_height), baseline = cv2.getTextSize(
                     text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness

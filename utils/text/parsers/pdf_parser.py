@@ -19,10 +19,13 @@ from .combination import combine_boxes_horizontal, combine_boxes_vertical, compu
 logger = logging.getLogger(__name__)
 
 class PdfParser(Parser):
-    __extensions__ = 'pdf'
+    __extension__ = 'pdf'
     
     def __new__(cls, * args, method = 'pypdfium2', ** kwargs):
-        return Pypdfium2Parser(* args, ** kwargs)
+        if method == 'pypdfium2':
+            return Pypdfium2Parser(* args, ** kwargs)
+        else:
+            raise NotImplementedError('The pdf parser {} does not exist !'.format(method))
 
 class Pypdfium2Parser(Parser):
     def get_text(self, *, pagenos = None, ** kwargs):

@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import os
-import inspect
 import numpy as np
 
 def is_equal(target, value, ** kwargs):

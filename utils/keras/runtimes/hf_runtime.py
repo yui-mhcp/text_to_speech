@@ -9,6 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
+
+from functools import cached_property
+
 from .. import ops, timer
 from .runtime import Runtime
 
@@ -17,9 +21,16 @@ class HFRuntime(Runtime):
     def embedding_dim(self):
         return self.engine.config.hidden_size
     
+    @cached_property
+    def argnames(self):
+        return inspect.signature(self.engine.forward).parameters.keys()
+    
     @timer(name = 'Transformers runtime inference')
     def __call__(self, * args, ** kwargs):
         import torch
+        
+        if 'kwargs' not in self.argnames:
+            kwargs = {k : v for k, v in kwargs.items() if k in self.argnames}
         
         with torch.no_grad():
             args = [

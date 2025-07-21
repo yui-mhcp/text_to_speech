@@ -44,7 +44,7 @@ class NumpyIndex(VectorIndex):
         if isinstance(index, int): index = [index]
         self.vectors = self.vectors[~np.isin(np.arange(len(self)), index)]
 
-    def top_k(self, query, k = 10, ** kwargs):
+    def top_k(self, query, k = 10, *, run_eagerly = True, ** kwargs):
         """
             Returns a tuple `(top_k_indices, top_k_scores)`
             
@@ -56,7 +56,8 @@ class NumpyIndex(VectorIndex):
                 - scores    : a 2-D `Tensor` of shape `(n_queries, k)`, the scores of the nearest data
         """
         indices, scores = knn(
-            query, self.vectors, distance_metric = self.metric, k = k, return_scores = True, ** kwargs
+            query, self.vectors, distance_metric = self.metric, k = k,
+            run_eagerly = run_eagerly, return_scores = True, ** kwargs
         )
         return ops.convert_to_numpy(indices), ops.convert_to_numpy(scores)
 

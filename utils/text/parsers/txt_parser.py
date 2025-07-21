@@ -12,7 +12,7 @@
 from .parser import Parser
 
 class TxtParser(Parser):
-    __extensions__ = 'txt'
+    __extension__ = 'txt'
     
     def get_text(self, *, encoding = 'utf-8', ** kwargs):
         with open(self.filename, 'r', encoding = encoding) as f:

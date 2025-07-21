@@ -49,20 +49,20 @@ _attn_patterns = {'/v_' : '/value_', '/q_' : '/query_', '/k_' : '/key_', '/c_' :
 _transformer_patterns = {
     '/mlp' : '/ffn', '/(layers|resblocks)/' : '/layer_', '/(self_)?attn' : '/mha',
     'c_fc$' : 'dense_1', 'c_proj$' : 'dense_2', '_projection' : '_layer', '_proj' : '_layer',
-    '/(ln\_|norm)1' : '/norm_input', '/(ln|LayerNorm)_' : '/norm_', '/proj$' : 'output_layer',
+    r'/(ln\_|norm)1' : '/norm_input', '/(ln|LayerNorm)_' : '/norm_', '/proj$' : 'output_layer',
     # for BART
-    '(?<=\d)/final_layer_norm' : '/norm',
+    r'(?<=\d)/final_layer_norm' : '/norm',
     'encoder_(attn|mha)' : 'enc_mha',
     'mha_layer_norm$' : 'mha/norm_output',
-    '/model(\.|/)shared' : '/encoder/token_embedding',
+    r'/model(\.|/)shared' : '/encoder/token_embedding',
     # BERT
     '/word_'    : '/token_',
     '/attention(/self)?'    : '/mha',
     '/intermediate/dense'   : '/ffn/dense_1',
-    '(?<=\d)/output/dense$' : '/ffn/dense_2',
+    r'(?<=\d)/output/dense$' : '/ffn/dense_2',
     'output/dense$'         : 'output_layer',
     # GPT-2
-    '(/h_\._|/h/)' : '/layer_',
+    r'(/h_\._|/h/)' : '/layer_',
     'wte$'  : 'token_embedding',
     'wpe$'  : 'position_embedding',
     'mha/dense_.*' : 'mha/output_layer',

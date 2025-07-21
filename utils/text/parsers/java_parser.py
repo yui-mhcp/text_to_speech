@@ -12,7 +12,7 @@
 from .txt_parser import TxtParser
          
 class JavaParser(TxtParser):
-    __extensions__ = 'java'
+    __extension__ = 'java'
 
     def get_paragraphs(self, ** kwargs):
         """ Extract a list of paragraphs """

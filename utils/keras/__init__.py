@@ -12,11 +12,16 @@
 import logging
 
 try:
-    from loggers import timer
+    from loggers import Timer, timer
 except:
     def timer(fn = None, ** _):
         if fn is not None: return fn
         return lambda fn: fn
+    
+    class Timer:
+        def __init__(self, * args, ** _):   pass
+        def __enter__(self):        pass
+        def __exit__(self, * _):    pass
 
 from . import ops
 from .gpu import *

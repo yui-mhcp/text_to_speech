@@ -39,7 +39,7 @@ class CustomEmbedding(keras.layers.Embedding):
         
         return K.not_equal(inputs, self.mask_value)
 
-    def call(self, inputs, mask = None):
+    def call(self, inputs):
         return K.take(self.embeddings, K.cast(inputs, 'int32'), axis = 0)
     
     def get_config(self):

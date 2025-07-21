@@ -14,7 +14,9 @@ import sys
 import logging
 import numpy as np
 
-from .. import ops, timer
+from math import prod
+
+from .. import Timer, ops, timer
 from .runtime import Runtime
 from .onnx_runtime import ONNXRuntime
 
@@ -22,11 +24,17 @@ logger = logging.getLogger(__name__)
 
 class TensorRTRuntime(Runtime):
     def __init__(self, path, *, prepare = None, ** kwargs):
-        import torch
         import tensorrt as trt
-        
+        import pycuda.driver as cuda
+
+        cuda.init()
+        self.cuda_ctx   = cuda.Device(0).make_context()
+
         super().__init__(path, ** kwargs)
         
+        self.context    = self.engine.create_execution_context()
+        self.stream     = cuda.Stream()
+
         DTYPE_MAPPING   = {
             trt.DataType.BF16   : 'bfloat16',
             
@@ -41,17 +49,21 @@ class TensorRTRuntime(Runtime):
             trt.DataType.UINT8  : 'uint8'
         }
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_prepare_args   = None
         
         if not prepare and os.path.exists(os.path.splitext(self.path)[0] + '-prepare.pth'):
             prepare = os.path.splitext(self.path)[0] + '-prepare.pth'
         
         if isinstance(prepare, str):
-            prepare = torch.jit.load(prepare, map_location = self.device)
+            import torch
+            
+            prepare = torch.jit.load(prepare, map_location = torch.device('cuda'))
 
         self.prepare    = prepare
         self.num_prepare_args   = None if not prepare else len(prepare.forward.schema.arguments) - 1
+        if prepare is not None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         
         self.bindings   = list(self.engine)
         self._inputs    = tuple(
@@ -69,6 +81,11 @@ class TensorRTRuntime(Runtime):
         self._var_shapes    = set([
             n for n in self._inputs if any(s == -1 for s in self.engine.get_tensor_shape(n))
         ])
+        
+        self._inp_shapes    = {}
+        self._out_shapes    = {}
+        self._cpu_buffers   = {}
+        self._gpu_buffers   = {}
     
     @property
     def argnames(self):
@@ -93,75 +110,135 @@ class TensorRTRuntime(Runtime):
     
     @timer(name = 'TensorRT runtime inference')
     def __call__(self, * args, ** kwargs):
-        import torch
-        
+        """Inférence avec gestion du contexte CUDA"""
+        import pycuda.driver as cuda
+        # Activer le contexte CUDA
         kwargs.update({name : arg for name, arg in zip(self.bindings, args)})
         
         if self.prepare is not None:
-            with torch.no_grad():
-                inputs = [
-                    self.prepare_tensor(kwargs[k], self.shapes[i], self.dtypes[i], self.device)
-                    for i, k in enumerate(self.argnames[: self.num_prepare_args])
+            import torch
+            
+            with Timer('pre-processing'):
+                with torch.no_grad():
+                    inputs = [
+                        self.prepare_tensor(kwargs[k], self.shapes[i], self.dtypes[i], self.device, torch = True)
+                        for i, k in enumerate(self.argnames[: self.num_prepare_args])
+                    ]
+
+                    processed = self.prepare(* inputs)
+                    if isinstance(processed, (list, tuple)):
+                        kwargs.update({name : t for name, t in zip(self.argnames, processed)})
+                    elif isinstance(processed, dict):
+                        kwargs.update({
+                            k : v for i, (k, v) in enumerate(processed.items())
+                            if i < len(inputs) or k not in kwargs
+                        })
+                    else:
+                        kwargs[self.argnames[0]] = processed
+        
+
+        self.cuda_ctx.push()
+
+        inp_shapes = {k : getattr(kwargs[k], 'shape', ()) for k in self.argnames}
+        if inp_shapes != self._inp_shapes:
+            with Timer('Memory allocation'):
+                self.cuda_ctx.push()
+
+                for buf in self._gpu_buffers.values(): buf.free()
+
+                self._inp_shapes    = inp_shapes
+                self._out_shapes    = {}
+                self._cpu_buffers   = {}
+                self._gpu_buffers   = {}
+
+                try:
+                    for i, name in enumerate(self.bindings):
+                        if name in kwargs:
+                            kwargs[name] = inp = self.prepare_tensor(
+                                kwargs[name], self.shapes[i], dtype = self.dtypes[i]
+                            )
+                            shape = inp.shape
+
+                            if name in self._var_shapes and i < len(self.argnames):
+                                self.context.set_input_shape(name, inp.shape)
+
+                        elif i >= len(self.argnames): # output tensor
+                            shape = tuple(self.context.get_tensor_shape(name))
+                            self._out_shapes[name] = shape
+                        else:
+                            raise RuntimeError('Missing input #{} : {}'.format(i, name))
+
+                        self._cpu_buffers[name] = cuda.pagelocked_empty(prod(shape), self.dtypes[i])
+                        self._gpu_buffers[name] = cuda.mem_alloc(self._cpu_buffers[name].nbytes)
+
+                    for name in self.bindings:
+                        self.context.set_tensor_address(name, int(self._gpu_buffers[name]))
+                finally:
+                    self.cuda_ctx.pop()
+        else:
+            for i, name in enumerate(self._inputs):
+                kwargs[name] = self.prepare_tensor(
+                    kwargs[name], self.shapes[i], dtype = self.dtypes[i]
+                )
+
+        if False and logger.isEnabledFor(logging.DEBUG):
+            logger.debug('Calling TensorRT engine with :\n  Inputs : {}\n  Outputs : {}'.format(
+                {name : tuple(tensors[i].shape) for i, name in enumerate(self.argnames)},
+                {name : tuple(tensors[i].shape) for i, name in enumerate(self.outputs, start = len(self.argnames))},
+            ))
+
+        try:
+            with Timer('execution'):
+                for name in self._inputs:
+                    np.copyto(self._cpu_buffers[name], kwargs[name].ravel())
+                    cuda.memcpy_htod_async(
+                        self._gpu_buffers[name],  self._cpu_buffers[name],  self.stream
+                    )
+
+                if not self.context.execute_async_v3(stream_handle = self.stream.handle):
+                    raise RuntimeError("TensorRT inference failed.")
+
+                for name in self._outputs:
+                    cuda.memcpy_dtoh_async(
+                        self._cpu_buffers[name],  self._gpu_buffers[name],  self.stream
+                    )
+
+                self.stream.synchronize()
+
+                outputs = [
+                    self._cpu_buffers[name].reshape(self._out_shapes[name]) for name in self._outputs
                 ]
-
-                processed = self.prepare(* inputs)
-                if isinstance(processed, (list, tuple)):
-                    kwargs.update({name : t for name, t in zip(self.argnames, processed)})
-                elif isinstance(processed, dict):
-                    kwargs.update({
-                        k : v for i, (k, v) in enumerate(processed.items())
-                        if i < len(inputs) or k not in kwargs
-                    })
-                else:
-                    kwargs[self.argnames[0]] = processed
+        finally:
+            self.cuda_ctx.pop()
         
-        
-        with self.engine.create_execution_context() as context:
-            tensors = [None] * len(self.bindings)
-            
-            for i, name in enumerate(self.bindings):
-                if name in kwargs:
-                    tensors[i] = self.prepare_tensor(
-                        kwargs[name], self.shapes[i], dtype = self.dtypes[i], device = self.device
-                    )
-                    if name in self._var_shapes and i < len(self.argnames):
-                        context.set_input_shape(name, tensors[i].shape)
-
-                elif i >= len(self.argnames): # output tensor
-                    tensors[i] = torch.empty(
-                        tuple(context.get_tensor_shape(name)),
-                        dtype   = getattr(torch, self.dtypes[i]),
-                        device  = self.device
-                    )
-                else:
-                    raise RuntimeError('Missing input #{} : {}'.format(i, name))
-            
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug('Calling TensorRT engine with :\n  Inputs : {}\n  Outputs : {}'.format(
-                    {name : tuple(tensors[i].shape) for i, name in enumerate(self.argnames)},
-                    {name : tuple(tensors[i].shape) for i, name in enumerate(self.outputs, start = len(self.argnames))},
-                ))
-
-            if not context.execute_v2(bindings = [t.data_ptr() for t in tensors]):
-                raise RuntimeError('An exception occured while running the TensorRT context')
-            
-            return tensors[len(self.argnames) :] if len(self.outputs) > 1 else tensors[-1]
+        return outputs[0] if len(outputs) == 1 else outputs
     
     @staticmethod
-    def prepare_tensor(tensor, shape, dtype, device):
-        tensor = ops.convert_to_torch_tensor(tensor, dtype = dtype)
+    def prepare_tensor(tensor, shape, dtype, device = None, torch = False):
+        if torch:
+            tensor = ops.convert_to_torch_tensor(tensor, dtype = dtype)
+        else:
+            tensor = ops.convert_to_numpy(tensor, dtype = dtype)
         
-        if len(tensor.shape) < len(shape): tensor = tensor.unsqueeze(0)
+        if len(tensor.shape) < len(shape): tensor = tensor[None]
         
         if TensorRTRuntime.should_permute(tensor, shape):
             last = len(tensor.shape) - 1
-            tensor = tensor.permute(0, last, * range(1, last))
+            if torch:
+                tensor = tensor.permute(0, last, * range(1, last))
+            else:
+                tensor = tensor.transpose([0, last] + list(range(1, last)))
         
-        return tensor.to(device = device)
+        if torch:
+            tensor = tensor.to(device = device)
+        elif not tensor.flags['C_CONTIGUOUS'] or not tensor.flags['WRITEABLE']:
+            tensor = np.ascontiguousarray(tensor)
+
+        return tensor
 
     @staticmethod
     def should_permute(tensor, shape):
-        return len(shape) > 2 and tensor.size(1) != -1 and tensor.size(1) != shape[1]
+        return len(shape) > 2 and shape[1] != -1 and tensor.shape[1] != shape[1]
     
     @staticmethod
     def load_engine(filename, ** _):

@@ -12,7 +12,7 @@
 from .parser import Parser
 
 class DocxParser(Parser):
-    __extensions__ = 'docx'
+    __extension__ = 'docx'
     
     def get_paragraphs(self, ** kwargs):
         """ Extract a list of paragraphs """

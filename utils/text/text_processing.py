@@ -93,7 +93,7 @@ def chunks_from_paragraphs(paragraphs,
     
     if group_by:
         groups = group_paragraphs(paragraphs, group_by)
-        texts  = [separator.join([para['text'] for para in group]) for group in groups]
+        texts  = [separator.join(para['text'] for para in group) for group in groups]
         paragraphs  = [merge_paragraphs(group, missmatch_mode, skip = 'text') for group in groups]
         
         for para, text in zip(paragraphs, texts):
@@ -111,20 +111,19 @@ def chunks_from_paragraphs(paragraphs,
             ** kwargs
         )
         
-        for text in chunks:
-            splitted.append({** para, 'text' : text})
-    
+        splitted.extend(
+            {** para, 'text' : text} for text in chunks
+        )
+        
     return splitted
 
 def group_paragraphs(paragraphs, key):
     """ Group `paragraphs` into groups that have the same value for `key` entry(ies) """
-    if isinstance(key, str):                key = {key : lambda x: x}
-    elif isinstance(key, (list, tuple)):    key = {k : lambda x: x for k in key}
+    if isinstance(key, str): key = [key]
     
     groups = collections.OrderedDict()
     for para in paragraphs:
-        group = tuple(v(para.get(k, ())) for k, v in key.items())
-        group = tuple(v if not isinstance(v, list) else tuple(v) for v in group)
+        group = tuple(_to_hashable(para.get(k, ())) for k in key)
         groups.setdefault(group, []).append(para)
     return list(groups.values())
 
@@ -428,10 +427,12 @@ def format_text(format, ** kwargs):
     """
     if '{' not in format:
         return format
-    elif '{%' not in format and '{{' not in format:
+    elif '{%' in format or '{{' in format:
+        return compile_jinja_template(format).render(** kwargs)
+    elif re.search(r'\{\w+\}', format):
         return format.format(** kwargs)
     else:
-        return compile_jinja_template(format).render(** kwargs)
+        return format
 
 @cache
 def compile_jinja_template(template):
@@ -510,3 +511,6 @@ def _is_end_of_quote(sentences, sent):
     if not sentences or not sent.strip(): return False
     prev, sent = sentences[-1], sent.strip().split()[0]
     return all(c in _closing_punctuation and _closing_punctuation[c] in prev for c in sent)
+
+def _to_hashable(x):
+    return tuple(x) if isinstance(x, list) else x

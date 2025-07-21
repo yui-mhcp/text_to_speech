@@ -43,8 +43,10 @@ def time_to_string(seconds):
         '{:.3f} sec'.format(s) if m + h == 0 else '{}sec'.format(int(s))
     )
 
-def timestamp_to_str(timestamp):
-    return datetime.datetime.fromtimestamp(timestamp).strftime("%d %B %Y %H:%M:%S")
+def timestamp_to_str(timestamp, include_time = True):
+    return datetime.datetime.fromtimestamp(timestamp).strftime(
+        "%d %B %Y %H:%M:%S" if include_time else '%d %B %Y'
+    )
 
 """ These functions are related to data convertion """
 

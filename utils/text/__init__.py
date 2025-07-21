@@ -12,6 +12,7 @@
 import os
 import logging
 
+from .web import *
 from .parsers import *
 from .metrics import *
 from .cleaners import *

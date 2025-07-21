@@ -14,7 +14,6 @@ import logging
 
 from abc import ABCMeta, abstractmethod
 
-from loggers import timer
 from ..file_utils import dump_json, load_json
 
 logger = logging.getLogger(__name__)
@@ -70,20 +69,40 @@ class Database(metaclass = DatabaseLoader):
         self.path   = path
         self.primary_key    = primary_key
         
-        self._skip_keys = (primary_key, ) if isinstance(primary_key, str) else primary_key
+        self._is_single_key = isinstance(primary_key, str)
     
     def _get_entry(self, data):
         """ Return the `data` primary key(s) used to identify the data in the database """
-        return get_entry(data, self.primary_key)
+        if self._is_single_key:
+            if isinstance(data, dict):
+                return str(data[self.primary_key])
+            elif isinstance(data, str):
+                return data
+            elif isinstance(data, int):
+                return str(data)
+            else:
+                raise ValueError('Data of type {} is unsupported for key {}'.format(
+                    type(data), self.primary_key
+                ))
+        elif isinstance(data, dict):
+            return tuple(str(data[k]) for k in self.primary_key)
+        elif isinstance(data, tuple):
+            if len(data) == len(self.primary_key):
+                return tuple(str(d) for d in data)
+            else:
+                raise ValueError('Expected {} values for entry but {} are given'.format(
+                    len(self.primary_key), len(data)
+                ))
+        else:
+            raise ValueError('Data of type {} is unsupported : {}'.format(type(data), data))
     
-    @timer
     def _prepare_data(self, data):
         """ Return a tuple `(entry, data_wo_primary_keys)` """
         data  = data.copy()
-        if isinstance(self.primary_key, str):
-            entry = data.pop(self.primary_key)
+        if self._is_single_key:
+            entry = str(data.pop(self.primary_key))
         else:
-            entry = tuple(data.pop(k) for k in self.primary_key)
+            entry = tuple(str(data.pop(k)) for k in self.primary_key)
         
         return entry, data
 
@@ -105,11 +124,16 @@ class Database(metaclass = DatabaseLoader):
 
     def _add_entry_to_value(self, entry, value):
         value = value.copy()
-        if isinstance(entry, str):
+        if self._is_single_key:
             value[self.primary_key] = entry
         else:
             value.update({k : v for k, v in zip(self.primary_key, entry)})
         return value
+
+    
+    @property
+    def is_single_key(self):
+        return self._is_single_key
 
     @property
     def config_file(self):
@@ -194,11 +218,13 @@ class Database(metaclass = DatabaseLoader):
             value = {column : value}
         
         entry = self._get_entry(key)
-        value = value.copy()
-        if isinstance(self.primary_key, (list, tuple)):
-            value.update({k : v for k, v in zip(self.primary_key, entry)})
-        else:
-            value[self.primary_key] = entry
+        if self._is_single_key:
+            if self.primary_key not in value:
+                value = value.copy()
+                value[self.primary_key] = entry
+        elif any(k not in value for k in self.primary_key):
+            value = value.copy()
+            value.update({k : e for k, e in zip(self.primary_key, entry)})
         
         self.insert_or_update(value)
     
@@ -235,6 +261,9 @@ class Database(metaclass = DatabaseLoader):
     def extend(self, iterable, /, ** kwargs):
         return self.multi_insert(iterable, ** kwargs)
     
+    def close(self):
+        pass
+
     def get_config(self):
         return {
             'class_name'    : self.__class__.__name__,
@@ -249,9 +278,6 @@ class Database(metaclass = DatabaseLoader):
         self.save_data(** kwargs)
         self.save_config(** kwargs)
     
-    def close(self):
-        pass
-    
     @staticmethod
     def load_config(path):
         """
@@ -265,11 +291,3 @@ class Database(metaclass = DatabaseLoader):
             config_file = os.path.splitext(path)[0] + '-config.json'
         
         return load_json(config_file, default = {})
-
-def get_entry(data, key):
-    if isinstance(data, (str, tuple)):  return data
-    elif isinstance(data, list):        return tuple(data)
-    elif not isinstance(data, dict):    return data
-    elif isinstance(key, str):          return data[key]
-    elif isinstance(key, (list, tuple)):    return tuple(data[k] for k in key)
-    else:   raise KeyError('Unsupported `key` : {}'.format(key))

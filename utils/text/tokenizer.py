@@ -166,6 +166,18 @@ class Tokenizer:
             
             setattr(self, name, token)
             setattr(self, name + '_idx', self[token])
+        
+        if self.level != TokenizerLevel.TOKEN:
+            tokenize_fn = lambda token: [token]
+        elif self.bpe_pairs is not None:
+            tokenize_fn = self._bpe_tokenize
+        else:
+            tokenize_fn = self._sub_word_tokenize
+        
+        self._tokenize = timer(
+            fn = tokenize_fn, name = '_tokenize', log_if_root = False
+        )
+
 
     def __build_indexes(self, vocab_size, add_special_tokens_at_end):
         def _add_symbols(symbols):
@@ -314,10 +326,8 @@ class Tokenizer:
                 break
                 
             start += len(sub_token)
-            
-        if valid:
-            return sub_tokens
-        return self.ukn_token
+        
+        return sub_tokens if valid else [self.ukn_token]
     
     def _bpe_tokenize(self, token):
         if token not in self._bpe_cache:
@@ -327,21 +337,6 @@ class Tokenizer:
             self._bpe_cache[token] = bpe(token, self.bpe_ranks, end_of_word = self.bpe_end_of_word)
         
         return self._bpe_cache[token]
-    
-    @timer(log_if_root = False)
-    def _tokenize(self, token):
-        if isinstance(token, (list, tuple)):
-            tokens = []
-            for t in token:
-                t = self._tokenize(t)
-                tokens.extend(t if isinstance(t, (list, tuple)) else [t])
-            return tokens
-        elif self.level != TokenizerLevel.TOKEN or token in self._special_tokens:
-            return token
-        elif self.bpe_pairs is not None:
-            return self._bpe_tokenize(token)
-        else:
-            return self._sub_word_tokenize(token)
 
     @timer(log_if_root = False)
     def clean_text(self, text, tokens = {}, ** kwargs):
@@ -378,7 +373,12 @@ class Tokenizer:
         
         splitted = self.split_text(text)
         
-        tokens = self._tokenize(splitted)
+        tokens = []
+        for token in splitted:
+            if token in self._special_tokens:
+                tokens.append(token)
+            else:
+                tokens.extend(self._tokenize(token))
         
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Cleaned  : {}\nSplitted : {}\nTokens  : {}'.format(text, splitted, tokens))

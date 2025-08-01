@@ -71,7 +71,7 @@ def download_hf_model(model_name, reload = False, ** kwargs):
         snapshot_download(
             model_name, allow_patterns = ('*.json', ), ** kwargs
         )
-        for pat in ('model.bin', '*.pt'):
+        for pat in ('model.bin', '*.pt', '*.safetensors'):
             res = snapshot_download(
                 model_name, allow_patterns = (pat, ), ** kwargs
             )

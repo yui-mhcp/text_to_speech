@@ -120,7 +120,9 @@ class Pypdfium2Parser(Parser):
         
         paragraphs = []
         for index, page in pages.items():
-            paragraphs.extend(combine_blocks(page, ** kwargs))
+            blocks = combine_blocks(page, ** kwargs)
+            for block in blocks: block['page'] = index
+            paragraphs.extend(blocks)
 
         return paragraphs
     

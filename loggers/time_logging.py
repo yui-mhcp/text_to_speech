@@ -183,6 +183,36 @@ def timer(name = None, *, debug = False, log_if_root = True, fn = None):
             - debug : whether to use TIME_LEVEL or TIME_DEBUG_LEVEL
             - log_if_root   : whether to print if it is the root timer
             - fn    : the function to decorate
+        
+        Example :
+        ```python
+        import time
+        
+        from loggers import Timer, timer, set_level
+        
+        @timer
+        def slow_function(x):
+            time.sleep(0.1)
+            return x ** 2
+        
+        @timer
+        def foo(x):
+            res = slow_function(x)
+            for i in range(5):
+                # This enables inner-function time tracking
+                with Timer('loop_body', debug = True):
+                    res = res * 2
+            return res
+        
+        # Timers are executed only if the log level is lower or equal to TIME_LEVEL (= 15)
+        # This will not display the "loop_body" timer, as it is in "debug" mode
+        # Use `set_level('time_debug')` to display it (TIME_DEBUG_LEVEL = 13)
+        set_level('time')
+        
+        foo(5)
+        ```
+        
+        Note : all timers are thread-safe by design ! And will display the times for each thread separately.
     """
     def wrapper(fn):
         @wraps(fn)

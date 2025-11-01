@@ -145,17 +145,14 @@ def convert_to_tf_tensor(x, dtype = None):
         return tf.cast(x, dtype)
 
 @timer(debug = True)
-def convert_to_torch_tensor(x, dtype = None):
-    if is_torch_backend(): return convert_to_tensor(x, dtype)
-    
-    import keras.src.backend.torch as torch
+def convert_to_torch_tensor(x, dtype = None, device = 'cuda'):
+    import torch
     
     if not torch.is_tensor(x):
-        return torch.convert_to_tensor(convert_to_numpy(x, dtype))
-    elif dtype is None or (dtype == 'float' and is_float(x)) or (dtype == 'int' and is_int(x)):
-        return x
+        return torch.from_numpy(convert_to_numpy(x, dtype)).to(device = torch.device(device))
     else:
-        return torch.cast(x, dtype)
+        if isinstance(dtype, str): dtype = getattr(torch, dtype)
+        return x.to(dtype = dtype, device = torch.device(device))
 
 
 """ `dtype` functions """

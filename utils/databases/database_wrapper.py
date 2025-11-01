@@ -15,12 +15,6 @@ from functools import wraps
 
 from .database import Database
 
-def _redirect(name):
-    @wraps(getattr(Database, name))
-    def inner(self, * args, ** kwargs):
-        return getattr(self._db, name)(* args, ** kwargs)
-    return inner
-
 class DatabaseWrapper(Database):
     def __init__(self, path, primary_key, *, database, ** kwargs):
         super().__init__(path, primary_key)
@@ -33,26 +27,93 @@ class DatabaseWrapper(Database):
         
         self._db    = database
     
-    def __len__(self):  return len(self._db)
-    def __contains__(self, key):    return key in self._db
+    def __len__(self):
+        """ Return the number of entries in the database """
+        return len(self._db)
     
-    def get(self, key):     return self._db.get(key)
-    def insert(self, data): return self._db.insert(data)
-    def update(self, data): return self._db.update(data)
-    def pop(self, key):     return self._db.pop(key)
-
-    def get_column(self, column):   return self._db.get_column(column)
-
-    def save_data(self):    return self._db.save_data()
+    def __contains__(self, key):
+        """ Return whether the entry is in the database or not """
+        return key in self._db
     
-    multi_get     = _redirect('multi_get')
-    multi_insert  = _redirect('multi_insert')
-    multi_update  = _redirect('multi_update')
-    multi_pop     = _redirect('multi_pop')
+    def get(self, key, ** kwargs):
+        """ Return the information stored for the given entry """
+        return self._db.get(key, ** kwargs)
 
-    insert_or_update    = _redirect('insert_or_update')
+    def insert(self, data, ** kwargs):
+        """
+            Add a new entry to the database
+            Raise a `ValueError` if `data` is already in the database
+        """
+        return self._db.insert(data, ** kwargs)
+
+    def update(self, data, ** kwargs):
+        """
+            Update an entry from the database
+            Raise a `KeyError` if the data is not in the database
+        """
+        return self._db.update(data, ** kwargs)
     
-    close   = _redirect('close')
+    def pop(self, key):
+        """
+            Remove an entry from the database and return its value
+            Raise a `KeyError` if the entry is not in the database
+        """
+        return self._db.pop(key)
+
+    def get_column(self, column):
+        """ Return the values stored in `column` for each data in the database """
+        return self._db.get_column(column)
+    
+    def save_data(self, ** kwargs):
+        """ Save the database to `self.path` """
+        return self._db.save_data(** kwargs)
+    
+    def __enter__(self):
+        self._db.__enter__()
+        return self
+    
+    def __setitem__(self, key, value):
+        """
+            Add a new entry (`data`) with the given `value`, or update its current value
+            
+        Example usage :
+        ````python
+        db = JSONFile('test.json', 'filename')
+        
+        data = {'filename' : 'test1.jpg', 'label' : 'cat'}
+        
+        db['test1.jpg'] = data  # equivalent to `db[data] = data`, insert the data
+        db['test1.jpg', 'label'] = 'dog'    # update the entry
+        ```
+        
+        **IMPORTANT** if `data` is already in the database, it will update its value (`self.update`), and will not trigger the `insert` method
+        """
+        self._db[key] = value
+    
+    def __getitem__(self, key):
+        return self._db[key]
+        
+    def __delitem__(self, key):
+        """ Remove an entry from the database """
+        del self._db[key]
+    
+    def insert_or_update(self, data, ** kwargs):
+        return self._db.insert_or_update(data, ** kwargs)
+    
+    def multi_get(self, iterable, /, ** kwargs):
+        return self._db.multi_get(iterable, ** kwargs)
+
+    def multi_insert(self, iterable, /, ** kwargs):
+        return self._db.multi_insert(iterable, ** kwargs)
+    
+    def multi_update(self, iterable, /, ** kwargs):
+        return self._db.multi_update(iterable, ** kwargs)
+    
+    def multi_pop(self, iterable, /, ** kwargs):
+        return self._db.multi_pop(iterable, ** kwargs)
+    
+    def close(self):
+        return self._db.close()
     
     def get_config(self):
         return {

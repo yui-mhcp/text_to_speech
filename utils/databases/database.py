@@ -52,7 +52,7 @@ class Database(metaclass = DatabaseLoader):
         
         Example usage :
         ````python
-        db = JSONFile('test.json', 'filename')
+        db = JSONDatabase('test.json', 'filename')
         
         data = {'filename' : 'test1.jpg', 'label' : 'cat'}
         
@@ -66,14 +66,17 @@ class Database(metaclass = DatabaseLoader):
         ```
     """
     def __init__(self, path, primary_key):
+        if not isinstance(primary_key, str) and len(primary_key) == 1:
+            primary_key = primary_key[0]
+        
         self.path   = path
         self.primary_key    = primary_key
         
         self._is_single_key = isinstance(primary_key, str)
     
     def _get_entry(self, data):
-        """ Return the `data` primary key(s) used to identify the data in the database """
-        if self._is_single_key:
+        """ Return the `data` primary key(s) (`str`) used to identify the data in the database """
+        if self.is_single_key:
             if isinstance(data, dict):
                 return str(data[self.primary_key])
             elif isinstance(data, str):
@@ -99,7 +102,7 @@ class Database(metaclass = DatabaseLoader):
     def _prepare_data(self, data):
         """ Return a tuple `(entry, data_wo_primary_keys)` """
         data  = data.copy()
-        if self._is_single_key:
+        if self.is_single_key:
             entry = str(data.pop(self.primary_key))
         else:
             entry = tuple(str(data.pop(k)) for k in self.primary_key)
@@ -124,7 +127,7 @@ class Database(metaclass = DatabaseLoader):
 
     def _add_entry_to_value(self, entry, value):
         value = value.copy()
-        if self._is_single_key:
+        if self.is_single_key:
             value[self.primary_key] = entry
         else:
             value.update({k : v for k, v in zip(self.primary_key, entry)})
@@ -137,10 +140,69 @@ class Database(metaclass = DatabaseLoader):
 
     @property
     def config_file(self):
-        if os.path.isdir(self.path):
-            return os.path.join(self.path, 'config.json')
-        else:
+        if os.path.exists(self.path) and os.path.isfile(self.path):
             return os.path.splitext(self.path)[0] + '-config.json'
+        else:
+            return os.path.join(self.path, 'config.json')
+
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, * args):
+        self.close()
+    
+    def __del__(self):
+        self.close()
+        
+    def __repr__(self):
+        return '<{} path={} key={} length={}>'.format(
+            self.__class__.__name__, self.path, self.primary_key, len(self)
+        )
+    
+    def __setitem__(self, key, value):
+        """
+            Add a new entry (`data`) with the given `value`, or update its current value
+            
+            Example usage :
+            ````python
+            db = JSONDatabase('test.json', 'filename')
+
+            data = {'filename' : 'test1.jpg', 'label' : 'cat'}
+
+            db['test1.jpg'] = data  # equivalent to `db[data] = data`, insert the data
+            db['test1.jpg', 'label'] = 'dog'    # update the entry
+            ```
+
+            **IMPORTANT** if `data` is already in the database, it will update its value (`self.update`), and will not trigger the `insert` method
+        """
+        if (
+            (isinstance(key, tuple) and len(key) == 2)
+            and isinstance(key[1], str)
+            and (isinstance(self.primary_key, str) or isinstance(data[0], (tuple, dict)))):
+            key, column = key
+            value = {column : value}
+        
+        entry = self._get_entry(key)
+        if self._is_single_key:
+            if self.primary_key not in value:
+                value = value.copy()
+                value[self.primary_key] = entry
+        elif any(k not in value for k in self.primary_key):
+            value = value.copy()
+            value.update({k : e for k, e in zip(self.primary_key, entry)})
+        
+        self.insert_or_update(value)
+    
+    def __getitem__(self, key):
+        if isinstance(key, list):
+            return self.multi_get(key)
+        else:
+            return self.get(key)
+        
+    def __delitem__(self, key):
+        """ Remove an entry from the database """
+        if isinstance(key, list): self.multi_pop(key)
+        else: self.pop(key)
 
     @abstractmethod
     def __len__(self):
@@ -183,83 +245,46 @@ class Database(metaclass = DatabaseLoader):
     def save_data(self, ** kwargs):
         """ Save the database to `self.path` """
 
-    def __enter__(self):
-        return self
     
-    def __exit__(self, * args):
-        self.close()
-    
-    def __repr__(self):
-        return '<{} path={} key={} length={}>'.format(
-            self.__class__.__name__, self.path, self.primary_key, len(self)
-        )
-    
-    def __setitem__(self, key, value):
-        """
-            Add a new entry (`data`) with the given `value`, or update its current value
-            
-        Example usage :
-        ````python
-        db = JSONFile('test.json', 'filename')
-        
-        data = {'filename' : 'test1.jpg', 'label' : 'cat'}
-        
-        db['test1.jpg'] = data  # equivalent to `db[data] = data`, insert the data
-        db['test1.jpg', 'label'] = 'dog'    # update the entry
-        ```
-        
-        **IMPORTANT** if `data` is already in the database, it will update its value (`self.update`), and will not trigger the `insert` method
-        """
-        if (
-            (isinstance(key, tuple) and len(key) == 2)
-            and isinstance(key[1], str)
-            and (isinstance(self.primary_key, str) or isinstance(data[0], (tuple, dict)))):
-            key, column = key
-            value = {column : value}
-        
-        entry = self._get_entry(key)
-        if self._is_single_key:
-            if self.primary_key not in value:
-                value = value.copy()
-                value[self.primary_key] = entry
-        elif any(k not in value for k in self.primary_key):
-            value = value.copy()
-            value.update({k : e for k, e in zip(self.primary_key, entry)})
-        
-        self.insert_or_update(value)
-    
-    def __getitem__(self, key):
-        if isinstance(key, list):
-            return self.multi_get(key)
+    def keys(self):
+        if self.is_single_key:
+            return self.get_column(self.primary_key)
         else:
-            return self.get(key)
-        
-    def __delitem__(self, key):
-        """ Remove an entry from the database """
-        if isinstance(key, list): self.multi_pop(key)
-        else: self.pop(key)
+            return zip(* [self.get_column(k) for k in self.primary_key])
+    
+    def values(self):
+        for entry in self.keys():
+            yield self[entry]
+    
+    def items(self):
+        for entry in self.keys():
+            yield entry, self[entry]
     
     def insert_or_update(self, data):
         try:
-            self.insert(data)
+            return self.insert(data)
         except ValueError:
-            self.update(data)
+            return self.update(data)
     
-    def multi_get(self, iterable, /):
-        return [self.get(data) for data in iterable]
+    def multi_get(self, iterable, /, ** kwargs):
+        return [self.get(data, ** kwargs) for data in iterable]
 
-    def multi_insert(self, iterable, /):
-        for data in iterable: self.insert(data)
+    def multi_insert(self, iterable, /, ** kwargs):
+        return [self.insert(data, ** kwargs) for data in iterable]
     
-    def multi_update(self, iterable, /):
-        for data in iterable: self.update(data)
+    def multi_update(self, iterable, /, ** kwargs):
+        return [self.update(data, ** kwargs) for data in iterable]
     
-    def multi_pop(self, iterable, /):
-        return [self.pop(data) for data in iterable]
+    def multi_pop(self, iterable, /, ** kwargs):
+        return [self.pop(data, ** kwargs) for data in iterable]
     
 
     def extend(self, iterable, /, ** kwargs):
         return self.multi_insert(iterable, ** kwargs)
+    
+    def filter(self, ** filters):
+        to_filter = [entry for entry, value in self.items() if _match_filters(filters, value)]
+        return self.multi_pop(to_filter)
     
     def close(self):
         pass
@@ -285,9 +310,20 @@ class Database(metaclass = DatabaseLoader):
                 - `{path}-config.json` if `path` is a file
                 - `{path}/config.json` if `path` is a directory
         """
-        if os.path.isdir(path):
-            config_file = os.path.join(path, 'config.json')
-        else:
+        if os.path.exists(path) and os.path.isfile(path):
             config_file = os.path.splitext(path)[0] + '-config.json'
+        else:
+            config_file = os.path.join(path, 'config.json')
         
         return load_json(config_file, default = {})
+
+def _match_filters(filters, value, /):
+    """ Return `True` if `value` matches all `filters` """
+    for k, filt in filters.items():
+        if callable(filt):
+            if not filt(value.get(k, None)):
+                return False
+        elif filt != value.get(k, None):
+            return False
+    return True
+            

@@ -26,26 +26,28 @@ for module in os.listdir(__package__.replace('.', os.path.sep)):
 
 globals().update(_indexes)
 
+_indexes = {k.lower() : v for k, v in _indexes.items()}
+
 def init_index(_index = None, /, path = None, ** kwargs):
     assert _index is not None or path
     
     if isinstance(_index, VectorIndex):
         return _index
     
-    if not isinstance(_index, dict) and path and os.path.exists(path + '-config.json'):
-        _index = VectorIndex.load_config(path)
+    if path and os.path.exists(path + '-config.json'):
+        config = VectorIndex.load_config(path)
+        cls = config.pop('class_name', 'numpy')
+        if not _index: _index = cls
+        kwargs.update(config)
     
-    if isinstance(_index, dict):
-        assert 'class_name' in _index, 'Invalid index (missing `class_name`) : {}'.format(_index)
-        
-        if path and 'vectors' not in _index: _index['vectors'] = path
-        
-        cls = _index.pop('class_name')
-        _index, kwargs = cls, {** kwargs, ** _index}
-    
+    kwargs['path'] = path
     if isinstance(_index, str):
+        _index = _index.lower()
+        if not _index.endswith('index'):
+            _index = _index + 'index'
+        
         if _index not in _indexes:
-            raise ValueError('The database class {} does not exist !\n  Accepted : {}'.format(
+            raise ValueError('The vectors index class {} does not exist !\n  Accepted : {}'.format(
                 _index, tuple(_indexes.keys())
             ))
         _index = _indexes[_index]

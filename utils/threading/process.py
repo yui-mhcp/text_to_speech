@@ -253,6 +253,7 @@ class Process(metaclass = MetaProcess):
 
     def is_running(self):
         self._apply_async(IS_RUNNING).get()
+        return True
     
     def keep_alive(self):
         self.input_stream.put(KEEP_ALIVE)

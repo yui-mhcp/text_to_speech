@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 from .database import Database
 from ..file_utils import dump_json, load_json
 
@@ -18,7 +20,11 @@ class JSONFile(Database):
         assert isinstance(primary_key, str), 'JSONFile only supports single primary key. Use `JSONDir` instead'
         super().__init__(path, primary_key)
         
-        self._data  = load_json(path, default = {})
+        self._data  = load_json(self.data_file, default = {})
+    
+    @property
+    def data_file(self):
+        return os.path.join(self.path, 'data.json')
     
     def __len__(self):
         """ Return the number of data in the database """
@@ -27,6 +33,9 @@ class JSONFile(Database):
     def __contains__(self, key):
         """ Return whether the entry is in the database or not """
         return self._get_entry(key) in self._data
+    
+    def __delitem__(self, key):
+        del self._data[self._get_entry(key)]
     
     def get(self, key):
         """ Return the information stored for the given entry """
@@ -40,6 +49,7 @@ class JSONFile(Database):
         """
         key, value = self._assert_not_contains(data)
         self._data[key] = value
+        return key
 
     def update(self, data):
         """
@@ -48,6 +58,7 @@ class JSONFile(Database):
         """
         key, value = self._assert_contains(data)
         self._data[key].update(value)
+        return key
 
     def pop(self, key):
         """
@@ -60,6 +71,7 @@ class JSONFile(Database):
     def insert_or_update(self, data):
         key, value = self._prepare_data(data)
         self._data.setdefault(key, {}).update(value)
+        return key
 
     def get_column(self, column):
         """ Return the values stored in `column` for each data in the database """
@@ -70,5 +82,6 @@ class JSONFile(Database):
 
     def save_data(self, ** kwargs):
         """ Save the database to `self.path` """
-        dump_json(self.path, self._data, ** kwargs)
+        os.makedirs(self.path, exist_ok = True)
+        dump_json(self.data_file, self._data, ** kwargs)
     

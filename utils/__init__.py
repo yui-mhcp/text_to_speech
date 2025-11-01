@@ -21,6 +21,7 @@ from .sequence_utils import *
 from .wrappers import *
 
 from .keras import *
+from .databases import *
 from .callbacks import *
 from .threading import *
 

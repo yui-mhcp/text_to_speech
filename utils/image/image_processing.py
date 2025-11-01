@@ -141,6 +141,7 @@ def get_output_size(image,
                     size    = None,
                     *,
                     
+                    round   = False,
                     multiples   = None,
                     preserve_aspect_ratio = False
                    ):
@@ -180,8 +181,12 @@ def get_output_size(image,
     
     if multiples is not None:
         multiples   = ops.convert_to_numpy(multiples, dtype = 'int32')
+        if round:
+            new_values = ops.cast(ops.round(out_size / multiples) * multiples, 'int32')
+        else:
+            new_values = (out_size // multiples + 1) * multiples
         out_size    = ops.where(
-            out_size % multiples != 0, (out_size // multiples + 1) * multiples, out_size
+            out_size % multiples != 0, new_values, out_size
         )
     
     if size is not None:

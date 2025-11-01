@@ -125,6 +125,8 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
 
               ** kwargs
              ):
+        if isinstance(text, dict): text = get_text_from_paragraph(text)
+        
         if predicted and not overwrite and text in predicted:
             if callbacks: apply_callbacks(callbacks, predicted[text], {}, save = False)
             return predicted[text]
@@ -374,3 +376,5 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             'max_output_length' : self.max_output_length
         }
     
+def get_text_from_paragraph(paragraph):
+    return paragraph['text' if 'text' in paragraph else 'content']

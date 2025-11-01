@@ -81,7 +81,6 @@ class VectorIndex(ABC):
     
     def get_config(self):
         return {
-            'class_name'    : self.__class__.__name__,
             'metric'    : self.metric,
             'embedding_dim' : self.embedding_dim
         }
@@ -94,10 +93,6 @@ class VectorIndex(ABC):
     def load(cls, path, ** kwargs):
         """ Load the database from the given path """
         kwargs.update(VectorIndex.load_config(path))
-        
-        cls_name = kwargs.pop('class_name', None)
-        if cls_name and cls_name != cls.__name__:
-            raise ValueError('{} is restored but expected {}'.format(cls_name, cls.__name__))
         
         return cls(** kwargs)
     

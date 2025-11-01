@@ -24,9 +24,8 @@ class Parser(ABC):
             Extract a list of paragraphs from `self.filename`
             
             A paragraph is a `dict` with (at least) these entries :
-                - type  : the paragraph type (e.g., 'text', 'link', 'image', ...)
-                - text  : the paragraph text content (only if relevant)
-                - filename / width / heigth : the image information (only if "type == image")
+                - content   : the paragraph content
+                - content_type  : the type of content
         """
     
     def get_text(self, sep = '\n\n', ** kwargs):

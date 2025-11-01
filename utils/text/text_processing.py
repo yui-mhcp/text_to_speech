@@ -9,10 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import re
 import logging
 import warnings
-import collections
 
 from functools import cache
 
@@ -30,127 +30,6 @@ _closing_punctuation = {
     ')' : '(', ']' : '[', '}' : '{', '"' : '"', "'" : "'", "`" : "`"
 }
 _sentence_split_pattern = (r',(?!\d)', ': ', r'\(.*\)')
-
-def chunks_from_paragraphs(paragraphs,
-                           max_length,
-                           *,
-                           
-                           group_by = None,
-                           missmatch_mode   = 'ignore',
-                           
-                           separator    = '\n\n',
-                           
-                           max_overlap  = 5,
-                           max_overlap_len  = 0.2,
-                           
-                           ** kwargs
-                          ):
-    """
-        Creates chunks from the given `paragraphs` by splitting then merging them
-        
-        Arguments :
-            - paragraphs    : a list of paragraph (i.e., `dict` containing at least `text` entry)
-            - max_length    : maximum length for a given chunk
-            
-            - separator : character used to separate two sentences from different paragraphs
-            - group_by  : controls which paragraphs to merge together
-                          This allows to only merge paragraph with the same section or filename
-                          The value should be a (list of) paragraph's entries to use to group them
-            
-            - max_overlap[_len] : forwarded to `merge_texts`
-            
-            - tokenizer : forwarded to `split_text` and `merge_texts`
-            - kwargs    : forwarded to `split_text` and `merge_texts`
-        Return :
-            - chunks    : a list of splitted/merged paragraphs
-        
-        Note : in order to enforce overlaps, the paragraphs are splitted with `max_length = max_overlap_len / max_overlap` with a sentence tolerance of `max_length`. This means that a paragraph is splitted into sentences of at most `max_overlap_len / max_overlap`, but a single sentence is only splitted if it is longer than `max_length`.
-        
-        Here is a comprehensive example of this procedure :
-            Inputs :
-            - 2 paragraphs with 3 sentences each
-                1st paragraph sentence lengths : [32, 100, 20] (total 152)
-                2nd paragraph sentence lengths : [25, 150, 15] (total 190)
-            - max_length    = 200
-            - max_overlap   = 50
-            
-            Splitted paragraphs :
-            - 6 paragraphs, as each sentence is <= max_length (200) but both paragraphs are longer than `max_overlap_len / max_overlap` (10)
-            
-            Output :
-            - 3 paragraphs :
-                1st output paragraph sentence lengths : [32, 100, 20, 25] (total 177)
-                2nd output paragraph sentence lengths : [20, 25, 150] (total 195)
-                3rd output paragraph sentence lengths : [15] (total 15)
-            
-            // Explanations
-            - The 1st paragraph now includes an additional sentence as it does not exceeds `max_length`
-            The 2nd paragraph starts with the 2 last sentences of the previous paragraph, as their cumulated length is smaller than `max_overlap_len` (45 <= 50)
-            The final paragraph only contains 1 sentence without overlap because the last sentence exceeds `max_overlap_len` (150 > 50)
-    """
-    if any(isinstance(para, str) for para in paragraphs):
-        paragraphs = [{'text' : para} if isinstance(para, str) else para for para in paragraphs]
-    
-    if group_by:
-        groups = group_paragraphs(paragraphs, group_by)
-        texts  = [separator.join(para['text'] for para in group) for group in groups]
-        paragraphs  = [merge_paragraphs(group, missmatch_mode, skip = 'text') for group in groups]
-        
-        for para, text in zip(paragraphs, texts):
-            para['text'] = text
-    
-    splitted = []
-    for para in paragraphs:
-        chunks  = split_text(
-            para['text'],
-            max_length  = max_length,
-            
-            max_overlap = max_overlap,
-            max_overlap_len = max_overlap_len,
-            
-            ** kwargs
-        )
-        
-        splitted.extend(
-            {** para, 'text' : text} for text in chunks
-        )
-        
-    return splitted
-
-def group_paragraphs(paragraphs, key):
-    """ Group `paragraphs` into groups that have the same value for `key` entry(ies) """
-    if isinstance(key, str): key = [key]
-    
-    groups = collections.OrderedDict()
-    for para in paragraphs:
-        group = tuple(_to_hashable(para.get(k, ())) for k in key)
-        groups.setdefault(group, []).append(para)
-    return list(groups.values())
-
-def merge_paragraphs(paragraphs, missmatch_mode = 'ignore', skip = None):
-    """ Takes the intersection or union of a list of paragraphs """
-    if not skip:                    skip = {}
-    elif isinstance(skip, str):     skip = {skip}
-    else:                           skip = set(skip)
-    
-    merged = {k : v for k, v in paragraphs[0].items() if k not in skip}
-    for para in paragraphs[1:]:
-        for k, v in para.items():
-            if hasattr(v, 'shape') or hasattr(merged.get(k, None), 'shape'): continue
-            
-            if k in skip:           continue
-            elif k not in merged:   merged[k] = v
-            elif merged[k] == v:    continue
-            elif missmatch_mode == 'first': continue
-            elif missmatch_mode == 'error':
-                raise RuntimeError('Values for key {} missmatch : {} vs {}'.format(k, merged[k], v))
-            else:
-                if missmatch_mode == 'skip':
-                    warnings.warn('Values for key {} missmatch : {} vs {}'.format(k, merged[k], v))
-                merged.pop(k)
-                skip.add(k)
-    
-    return merged
 
 def split_text(text,
                max_length,
@@ -177,11 +56,11 @@ def split_text(text,
         such that a single text in the result has at most `max_length` tokens (with possible tolerance)
         
         Arguments :
-            - text  : the text to split (or list of text parts)
+            - text  : the text to split
             - max_length    : the maximum length for a given text
             
             - tokens    : pre-computed tokens for `text`
-            - tokenizer : a tokenization function (or a `TextEncoder` instance)
+            - tokenizer : a tokenization function (or a `Tokenizer` instance)
             
             - eos_pattern   : the split patterns to transform `text` in sentences
             - sent_pattern  : the split pattern to transform a sentence into sub-sentences
@@ -203,10 +82,9 @@ def split_text(text,
             - splitted_tokens   : a list of text tokens
     """
     if tokenizer is None:
-        tokenizer = lambda text: list(text)
-    elif hasattr(tokenizer, 'encode'):
-        _tokenizer = tokenizer
-        tokenizer = lambda text: _tokenizer.encode(text, strip = False, return_type = 'list')
+        tokenizer = list
+    elif hasattr(tokenizer, 'tokenize'):
+        tokenizer = tokenizer.tokenize
     
     if isinstance(tolerance, float):      tolerance = int(tolerance * max_length)
     if isinstance(sent_tolerance, float): sent_tolerance = int(sent_tolerance * max_length)
@@ -218,7 +96,7 @@ def split_text(text,
     if len(tokens) <= max_text_length: return [text] if not return_tokens else ([text], [tokens])
     
     splitted    = split_sentences(text, eos_pattern, strip = False)
-    tokens      = [tokenizer(txt) for txt in splitted]
+    tokens      = [tokenizer(sent) for sent in splitted]
     
     result_text, result_tokens = [splitted[0]], [tokens[0]]
     for split, tok in zip(splitted[1:], tokens[1:]):
@@ -298,10 +176,9 @@ def merge_texts(texts,
     if isinstance(max_overlap_len, float): max_overlap_len = int(max_overlap_len * max_length)
     
     if tokenizer is None:
-        tokenizer = lambda text: list(text)
-    elif hasattr(tokenizer, 'encode'):
-        _tokenizer = tokenizer
-        tokenizer = lambda text: _tokenizer.encode(text, strip = False, return_type = 'list')
+        tokenizer = list
+    elif hasattr(tokenizer, 'tokenize'):
+        tokenizer = tokenizer.tokenize
 
     if tokens is None:
         tokens = [tokenizer(txt) for txt in texts]
@@ -429,7 +306,7 @@ def format_text(format, ** kwargs):
         return format
     elif '{%' in format or '{{' in format:
         return compile_jinja_template(format).render(** kwargs)
-    elif re.search(r'\{\w+\}', format):
+    elif re.search(r'\{[^\s\'\"]+\}', format):
         return format.format(** kwargs)
     else:
         return format
@@ -446,6 +323,7 @@ def compile_jinja_template(template):
 
     env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     env.globals['raise_exception'] = raise_exception
+    env.globals['basename'] = os.path.basename
     return env.from_string(template)
 
 
@@ -511,6 +389,3 @@ def _is_end_of_quote(sentences, sent):
     if not sentences or not sent.strip(): return False
     prev, sent = sentences[-1], sent.strip().split()[0]
     return all(c in _closing_punctuation and _closing_punctuation[c] in prev for c in sent)
-
-def _to_hashable(x):
-    return tuple(x) if isinstance(x, list) else x

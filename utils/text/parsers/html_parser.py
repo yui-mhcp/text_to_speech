@@ -181,13 +181,19 @@ def _simplify_html(html):
 
 @timer
 def _parse_table(tag):
-    row_tags = tag.find_all('tr')
-    columns = [
-        t.get_text().strip() for t in row_tags[0].find_all('td')
-    ]
+    header = tag.find('thead')
+    if header:
+        columns = [t.get_text().strip() for t in header.find_all('th')]
+        body_tags = tag.find('tbody').find_all('tr')
+    else:
+        row_tags = tag.find_all('tr')
+        columns = [
+            t.get_text().strip() for t in row_tags[0].find_all('td')
+        ]
+        body_tags = row_tags[1:]
     
     rows = []
-    for row_tag in row_tags[1:]:
+    for row_tag in body_tags:
         rows.append({
             col : _extract_text(t) for col, t in zip(columns, row_tag.find_all('td'))
         })
@@ -214,4 +220,8 @@ def _parse_title(tag, titles):
 
 @timer
 def _extract_text(tag):
-    return re.sub(_whitespace_re, ' ', tag.get_text().strip())
+    text = tag.get_text().strip()
+    if text:
+        return re.sub(_whitespace_re, ' ', text)
+    else:
+        return ' '.join([t['title'] for t in tag.find_all(attrs = {'title' : lambda t: bool(t)})])

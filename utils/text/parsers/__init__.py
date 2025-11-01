@@ -99,24 +99,32 @@ def parse_document(filename,
             - paragraphs    : a `list` of paragraphs (`dict`) extracted from the document
             
             A `paragraph` is a `dict` containing the following keys :
-                Text paragraphs :
-                - type  : the paragraph type (e.g., "text", "image", "list", "table", "code", ...)
-                          Each type has some required entries (see below)
-                - section       : the section title(s)
+                - type  : the type of content (see below for a list of types)
+                - filename  : the file from which it has been extracted
+            
+            Optional keys (depending on the document format) :
+                - page  : the page from the paragraph
+                - box   : the coordinates of the paragraph within the page
+                - title : the document title
+                - section   : the section title(s)
+            
+            Eaxh `type` has some specific keys :
+                - `text` : a paragraph containing raw text
+                    - text  : the raw text
                 
-                "text" / "code" / "title" :
-                - text  : the paragraph text
+                - `code` : a paragraph containing code
+                    - text  : the raw code
+                    - language  : the programming language (if any)
                 
-                "list" :
-                - items : the list of text for each item in the list
+                - `image` : an image embedded in the document
+                    - filename  : the path to the extracted image
+                    - height / width    : the image dimensions
                 
-                "table" :
-                - rows  : a list of dict containing each row in the table
+                - `table` : a table
+                    - rows  : `list` of rows (mapping `{column : value}`)
                 
-                "image" :
-                - filename  : the image filename
-                - height    : the image height
-                - width     : the image width
+                - `list` : an enumeration
+                    - items : `list` of items (`str`)
     """
     if isinstance(filename, str):
         if '*' in filename:
@@ -160,7 +168,7 @@ def parse_document(filename,
         return paragraphs
     
     if _cache is not None and not overwrite and filename in _cache:
-        return _cache[filename]['paragraphs']
+        return _normalize_paragraphs(_cache[filename]['paragraphs'], filename, strip = strip)
         
     basename, _, ext = filename.rpartition('.')
     if ext not in _parsers:
@@ -184,16 +192,19 @@ def parse_document(filename,
         logger.warning('An exception occured while loading {} : {}'.format(filename, e))
         raise e
     
-    if strip:
-        for para in paragraphs:
-            if 'text' in para: para['text'] = para['text'].strip()
-        paragraphs = [p for p in paragraphs if p.get('text', None) != '']
-    
-    if paragraphs and 'filename' not in paragraphs[0]:
-        for p in paragraphs: p['filename'] = filename
-    
     if _cache is not None:
         _cache[filename] = {'filename' : filename, 'paragraphs' : paragraphs}
         if cache: _cache.save()
+
+    return _normalize_paragraphs(paragraphs, filename, strip = strip)
+
+def _normalize_paragraphs(paragraphs, filename, *, strip = True, ** kwargs):
+    if strip:
+        for para in paragraphs:
+            if 'text' in para: para['text'] = para['text'].strip()
+        paragraphs = [p for p in paragraphs if p.get('text', True)]
     
+    if paragraphs and 'filename' not in paragraphs[0]:
+        for p in paragraphs: p['filename'] = filename
+
     return paragraphs

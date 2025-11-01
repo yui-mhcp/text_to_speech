@@ -18,9 +18,10 @@ from .metrics import *
 from .cleaners import *
 from .numbers import *
 from .sentencepiece_tokenizer import SentencePieceTokenizer
-from .text_processing import *
 from .tokenizer import Tokenizer, TokenizerLevel, pretty_print_template
+from .text_processing import *
 from .tokens_processing import *
+from .paragraphs_processing import *
 
 logger = logging.getLogger(__name__)
 

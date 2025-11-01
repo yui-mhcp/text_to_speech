@@ -167,16 +167,17 @@ class Tokenizer:
             setattr(self, name, token)
             setattr(self, name + '_idx', self[token])
         
-        if self.level != TokenizerLevel.TOKEN:
-            tokenize_fn = lambda token: [token]
-        elif self.bpe_pairs is not None:
-            tokenize_fn = self._bpe_tokenize
-        else:
-            tokenize_fn = self._sub_word_tokenize
-        
-        self._tokenize = timer(
-            fn = tokenize_fn, name = '_tokenize', log_if_root = False
-        )
+        if not hasattr(self, '_tokenize'):
+            if self.level != TokenizerLevel.TOKEN:
+                tokenize_fn = lambda token: [token]
+            elif self.bpe_pairs is not None:
+                tokenize_fn = self._bpe_tokenize
+            else:
+                tokenize_fn = self._sub_word_tokenize
+
+            self._tokenize = timer(
+                fn = tokenize_fn, name = '_tokenize', log_if_root = False
+            )
 
 
     def __build_indexes(self, vocab_size, add_special_tokens_at_end):
@@ -331,21 +332,24 @@ class Tokenizer:
     
     def _bpe_tokenize(self, token):
         if token not in self._bpe_cache:
-            token = ''.join([
-                self.byte_encoder[b] for b in token.encode('utf-8') if b in self.byte_encoder
+            byte_token = ''.join([
+                self.byte_encoder.get(b, '') for b in token.encode('utf-8')
             ])
-            self._bpe_cache[token] = bpe(token, self.bpe_ranks, end_of_word = self.bpe_end_of_word)
+            self._bpe_cache[token] = bpe(
+                byte_token, self.bpe_ranks, end_of_word = self.bpe_end_of_word
+            )
         
         return self._bpe_cache[token]
 
     @timer(log_if_root = False)
     def clean_text(self, text, tokens = {}, ** kwargs):
         """ Apply all cleaners to 'text' """
-        if not isinstance(tokens, dict):
-            tokens = {self.clean_text(token, ** kwargs) : token for token in tokens}
-        
-        cleaned = clean_text(text, self.cleaners_fn, tokens = tokens, ** kwargs)
-        return strip(cleaned, lstrip = self.lstrip, rstrip = self.rstrip)
+        if self.cleaners_fn:
+            if not isinstance(tokens, dict):
+                tokens = {self.clean_text(token, ** kwargs) : token for token in tokens}
+
+            text = clean_text(text, self.cleaners_fn, tokens = tokens, ** kwargs)
+        return strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
     
     @timer(log_if_root = False)
     def split_text(self, text):
@@ -398,7 +402,8 @@ class Tokenizer:
                add_eos  = None,
                add_sos_and_eos  = None,
                
-               return_type  = 'np'
+               return_type  = 'np',
+               return_text  = False
               ):
         """
             Encode text (str) into tokens (int)
@@ -443,11 +448,13 @@ class Tokenizer:
         if (add_eos and self.eos_token) and (len(tokens) == 0 or tokens[-1] != self.eos_token_idx):
             tokens.append(self.eos_token_idx)
         
-        if return_type == 'list': return tokens
-        elif return_type == 'np': return np.array(tokens, dtype = np.int32)
-        elif return_type == 'tf': return ops.convert_to_tf_tensor(tokens, dtype = 'int32')
-        elif return_type == 'tensor':   return ops.convert_to_tensor(tokens, dtype = 'int32')
+        if return_type == 'list': pass
+        elif return_type == 'np': tokens = np.array(tokens, dtype = np.int32)
+        elif return_type == 'tf': tokens = ops.convert_to_tf_tensor(tokens, dtype = 'int32')
+        elif return_type == 'tensor':   tokens = ops.convert_to_tensor(tokens, dtype = 'int32')
         else:   raise ValueError("Unknown `return_type` : {}".format(return_type))
+        
+        return tokens if not return_text else (text, tokens)
 
     __call__    = encode
     
@@ -456,56 +463,90 @@ class Tokenizer:
     def encode_chat(self,
                     text = None,
                     *,
-                    
-                    prompt_format   = 'markdown',
-                    system_prompt   = None,
-                    answer_start    = None,
 
                     messages    = None,
+                    paragraphs  = None,
+                    answer_start    = None,
+                    add_generation_prompt   = True,
+
+                    system_prompt   = None,
+                    prompt_format   = 'markdown',
+                    
                     message_format  = None,
+                    paragraphs_format   = None,
                     last_message_format = None,
-               
+
                     encode  = True,
                     add_eos = None,
                     max_length  = None,
-                    add_generation_prompt   = True,
                     
                     return_text = False,
                     return_type = 'np',
                     
                     ** kwargs
                    ):
+        """
+            Encode `messages` according to `self.chat_template`. This is used for chat-based LLM.
+            
+            Arguments :
+                - text  : the new message (handled as the new user message)
+                
+                - messages  : `list` of messages (`dict` or `models.nlu.Message`)
+                              should have at least `content` and `role` entries
+                - paragraphs    : `list` of paragraphs (`dict`) with a `type` entry (text, table, ...)
+                - answer_start  : string added after the chat template, used to guide the start of generation
+                - add_generation_prompt : bool, whether to add generation special tokens or not
+                                          This special argument is used in most of modern templates
+                
+                
+                - system_prompt : custom system message (used as the first message)
+                                  if `messages[0]['role'] == 'system'`, this argument is ignored
+                - prompt_format : special string used in custom system prompts (`models.nlu.prompts`)
+                - message_format    : special format applied to each message
+                - paragraphs_format : custom string to format paragraphs
+                                      arguments are `paragraphs` and `kwargs`
+                
+                - last_message_format   : special format applied only on the last message
+            Return :
+                - tokens    : the encoded chat message
+            
+            **Important Note**: the `paragraphs` and `prompt_format` are custom arguments used in the custom system prompts defined in `models.nlu.prompts`. If these arguments are not exploited in any of the format (e.g., system_prompt, message_format, last_message_format), they will be ignored.
+            If `paragraphs_format` is provided, the `paragraphs` argument forwarded to the chat template will be a `string`, while if `paragraphs_format` is not provided, `paragraphs` will be forwarded directly no matter what it is.
+        """
         assert text or messages
         
+        if add_eos is None: add_eos = not add_generation_prompt
+
         kwargs.update({
             'prompt_format' : prompt_format,
             'timestamp_to_str'  : timestamp_to_str
         })
-        
-        if add_eos is None: add_eos = not add_generation_prompt
-        
-        for k, v in kwargs.items():
-            if isinstance(v, str):
-                try:
-                    kwargs[k] = format_text(v, ** kwargs)
-                except Exception as e:
-                    logger.warning('An error occured while formatting {} : {}'.format(v, e))
+        if 'date_string' in self.template and 'date_string' not in kwargs:
+            kwargs['date_string'] = timestamp_to_str(time.time(), include_time = False)
                     
         kwargs.update(self.tokens)
         
+        if paragraphs and paragraphs_format:
+            with Timer('paragraphs preparation'):
+                paragraphs = format_text(paragraphs_format, paragraphs = paragraphs, ** kwargs)
+        
+        kwargs['paragraphs'] = paragraphs
+
         with Timer('messages preparation'):
             if messages is None:                messages = []
             elif isinstance(messages, dict):    messages = [messages]
             elif isinstance(messages, str):     messages = [{'role' : 'user', 'content' : messages}]
             elif not isinstance(messages, list):
-                raise ValueError('Unsupported `messages` argument : {}'.format(messages))
+                raise ValueError('Unsupported `messages` type ({}) : {}'.format(
+                    type(messages), messages
+                ))
 
             if text:
                 messages += [{'role' : 'user', 'content' : text}]
 
             if message_format:
                 messages    = [{
-                    ** (msg if isinstance(msg, dict) else msg.get_config()),
+                    ** (msg if isinstance(msg, dict) else msg.to_json()),
                     'content' : format_text(
                         message_format, text = msg['content'], message = msg, ** kwargs
                     )
@@ -522,9 +563,6 @@ class Tokenizer:
                     'role'      : 'system',
                     'content'   : format_text(system_prompt, messages = messages, ** kwargs)
                 }] + messages
-
-            if 'date_string' in self.template and 'date_string' not in kwargs:
-                kwargs['date_string'] = timestamp_to_str(time.time(), include_time = False)
 
         for _ in range(max(1, len(messages) - 1)):
             with Timer('apply template'):
@@ -669,11 +707,14 @@ class Tokenizer:
     @classmethod
     def from_transformers_pretrained(cls, name, ** kwargs):
         def get_vocab_from_encoder(tokenizer):
+            if hasattr(tokenizer, 'get_vocab'):
+                vocab = tokenizer.get_vocab()
+                return list(sorted(vocab, key = vocab.get))
             vocab = tokenizer.encoder if hasattr(tokenizer, 'encoder') else tokenizer.vocab
             specials = [w for w in tokenizer.all_special_tokens if w not in vocab]
             return list(sorted(vocab, key = vocab.get)) + specials
         
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, LlamaTokenizer, WhisperTokenizer
+        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, LlamaTokenizer, WhisperTokenizer, Qwen2Tokenizer
         
         pretrained = name
         if isinstance(name, str):
@@ -696,7 +737,7 @@ class Tokenizer:
                 'sos_token'         : pretrained.cls_token,
                 'eos_token'         : pretrained.sep_token
             })
-        elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer, WhisperTokenizer)):
+        elif isinstance(pretrained, (GPT2Tokenizer, BartTokenizer, WhisperTokenizer, Qwen2Tokenizer)):
             # Note that RoBERTa and BART Tokenizer are subclasses of GPT2Tokenizer
             kwargs.update({
                 'vocab' : get_vocab_from_encoder(pretrained),

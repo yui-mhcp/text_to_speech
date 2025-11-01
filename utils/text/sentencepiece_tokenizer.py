@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import regex as re
+
 from functools import cached_property
 
 from ..file_utils import dump_json
@@ -37,13 +39,11 @@ class SentencePieceTokenizer(Tokenizer):
     @cached_property
     def space_replacement(self):
         return self.tokenizer.encode_as_pieces(' !')[0][0]
-        
-    def split_text(self, text, tokens = None):
-        if not tokens: return [text]
-        return super().split_text(text, tokens = tokens)
+
+    def split_text(self, text):
+        return re.split(self._tokens_split_re, text)
 
     def _tokenize(self, token):
-        if isinstance(token, (list, tuple)): return super()._tokenize(token)
         return self.tokenizer.encode_as_pieces(token)
 
     def decode_ids(self, tokens):

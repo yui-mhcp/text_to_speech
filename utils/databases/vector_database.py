@@ -12,6 +12,7 @@
 import os
 
 from loggers import timer
+from ..keras import ops
 from .vectors import VectorIndex, init_index
 from .ordered_database_wrapper import OrderedDatabaseWrapper
 
@@ -25,14 +26,12 @@ class VectorDatabase(OrderedDatabaseWrapper):
                  database   = 'JSONDatabase',
                  
                  vector_key = 'embedding',
-                 vector_primary_key = None,
                  
                  ** kwargs
                 ):
         super().__init__(path, primary_key, database = database, ** kwargs)
         
         self.vector_key = vector_key
-        self.vector_primary_key = vector_primary_key
         
         if not isinstance(index, VectorIndex):
             index = init_index(index, path = self.index_path, ** kwargs)
@@ -56,11 +55,12 @@ class VectorDatabase(OrderedDatabaseWrapper):
     def embedding_dim(self):
         return self._index.embedding_dim
     
-    def insert(self, data):
+    def insert(self, data, ** kwargs):
         data    = data.copy()
         vector = data.pop(self.vector_key)
-        super().insert(data)
+        entry  = super().insert(data, ** kwargs)
         self.vectors.add(vector)
+        return entry
     
     def update(self, data):
         if self.vector_key in data:
@@ -69,24 +69,25 @@ class VectorDatabase(OrderedDatabaseWrapper):
         
         return super().update(data)
     
-    def pop(self, key):
+    def pop(self, key, ** kwargs):
         """ Remove and return the given entry from the database """
         entry = self._get_entry(key)
         index = self.index(entry)
-        item  = super().pop(entry)
+        item  = super().pop(entry, ** kwargs)
         self.vectors.remove(index)
         
         return item
     
-    def multi_insert(self, iterable, /, vectors = None):
+    def multi_insert(self, iterable, /, vectors = None, ** kwargs):
         if vectors is None:
             iterable = [data.copy() for data in iterable]
             vectors  = np.array([data.pop(self.vector_key) for data in iterable])
         
-        super().multi_insert(iterable)
+        entries = super().multi_insert(iterable, ** kwargs)
         self.vectors.add(vectors)
+        return entries
     
-    def multi_pop(self, iterable, /):
+    def multi_pop(self, iterable, /, ** kwargs):
         entries = [self._get_entry(data) for data in iterable]
         indexes = [self.index(entry) for entry in iterable]
         
@@ -98,8 +99,10 @@ class VectorDatabase(OrderedDatabaseWrapper):
     @timer
     def search(self, query, reverse = False, ** kwargs):
         indexes, scores = self.vectors.top_k(query, ** kwargs)
+        indexes = ops.convert_to_numpy(indexes)
+        scores  = ops.convert_to_numpy(scores)
         if reverse: indexes = indexes[:, ::-1]
-        
+
         results = [self[idx] for idx in indexes.tolist()]
         for res_list, score_list in zip(results, scores):
             for res, score in zip(res_list, score_list): res['score'] = score
@@ -115,9 +118,6 @@ class VectorDatabase(OrderedDatabaseWrapper):
         return {
             ** super().get_config(),
             
-            'index' : self._index.get_config(),
-            
             'vector_key'    : self.vector_key,
-            'vector_primary_key'    : self.vector_primary_key
         }
     

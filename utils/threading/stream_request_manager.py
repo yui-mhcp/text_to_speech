@@ -11,6 +11,7 @@
 
 import queue
 import logging
+import inspect
 
 from threading import Lock, Event
 from multiprocessing import Pipe

@@ -14,38 +14,23 @@ import numpy as np
 
 from utils.keras import ops
 from utils.distances import distance
-from .vector_index import VectorIndex
+from .numpy_index import NumpyIndex
 
-class NumpyIndex(VectorIndex):
-    def __len__(self):
-        """ Return the number of vectors in the index """
-        return len(self.vectors) if self.vectors is not None else 0
-    
-    def __getitem__(self, index):
-        """ Return the vectors at the given `index`(es) """
-        if self.vectors is None: raise IndexError('The index is empty')
-        return self.vectors[index]
-
+class KerasIndex(NumpyIndex):
     def add(self, vectors, ** kwargs):
         """ Add `vectors` to the index """
         assert vectors.shape[-1] == self.embedding_dim, 'Expected dim {}, got {}'.format(self.embedding_dim, vectors.shape[-1])
         
-        vectors = ops.convert_to_numpy(vectors)
+        vectors = ops.convert_to_tensor(vectors)
         if len(vectors.shape) == 1: vectors = vectors[None]
         
         if self.metric == 'cosine':
             vectors = ops.normalize(vectors)
-
+        
         if self.vectors is None:
             self.vectors = vectors
         else:
-            self.vectors = np.concatenate([self.vectors, vectors], axis = 0)
-
-    def remove(self, index):
-        """ Remove the vectors at the given `index`(es) """
-        if self.vectors is None: raise IndexError('The index is empty')
-        if isinstance(index, int): index = [index]
-        self.vectors = self.vectors[~np.isin(np.arange(len(self)), index)]
+            self.vectors = ops.concatenate([self.vectors, vectors], axis = 0)
 
     def top_k(self, query, k = 10, ** kwargs):
         """
@@ -58,7 +43,7 @@ class NumpyIndex(VectorIndex):
                 - indices   : a 2-D `Tensor` of shape `(n_queries, k)`, the indexes of nearest data
                 - scores    : a 2-D `Tensor` of shape `(n_queries, k)`, the scores of the nearest data
         """
-        query = ops.convert_to_numpy(query)
+        query = ops.convert_to_tensor(query)
         if self.metric == 'cosine':
             metric = 'dp'
             query  = ops.normalize(query)
@@ -66,7 +51,7 @@ class NumpyIndex(VectorIndex):
             metric = self.metric
             
         distance_matrix = distance(
-            query, self.vectors, metric, as_matrix = True, mode = 'similarity'
+            query, self.vectors, metric, as_matrix = True, mode = 'dimilarity'
         )
         dists, indices = ops.top_k(distance_matrix, k)
         return indices, dists
@@ -74,8 +59,11 @@ class NumpyIndex(VectorIndex):
     def load_vectors(self, filename):
         """ Load the index from `filename` """
         if not filename.endswith('.npy'): filename += '.npy'
-        return np.load(filename) if os.path.exists(filename) else None
+        if not os.path.exists(filename):
+            return None
+        else:
+            return ops.convert_to_tensor(np.load(filename))
 
     def save_vectors(self, filename):
         """ Save the index to `filename` """
-        if self.vectors is not None: np.save(filename, self.vectors)
+        if self.vectors is not None: np.save(filename, ops.convert_to_numpy(self.vectors))

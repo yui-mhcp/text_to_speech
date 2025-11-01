@@ -109,7 +109,8 @@ class Pypdfium2Parser(Parser):
                             obj.extract(image_path)
                             paragraphs.append({
                                 'page'  : page_index,
-                                'image' : image_path,
+                                'type'  : 'image',
+                                'filename'  : image_path,
                                 'height': obj.height,
                                 'width' : obj.width,
                                 'box'   : scaled_box
@@ -120,7 +121,7 @@ class Pypdfium2Parser(Parser):
         
         paragraphs = []
         for index, page in pages.items():
-            blocks = combine_blocks(page, ** kwargs)
+            blocks = combine_blocks(page)
             for block in blocks: block['page'] = index
             paragraphs.extend(blocks)
 

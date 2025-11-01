@@ -18,17 +18,17 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
         super().__init__(path, primary_key, database = database)
         
         self._idx_to_entry = entries if entries else []
-        if not isinstance(self.primary_key, str):
+        if entries and isinstance(entries[0], (list, tuple)):
             self._idx_to_entry = [tuple(entry) for entry in self._idx_to_entry]
         self._entry_to_idx = {entry : i for i, entry in enumerate(self._idx_to_entry)}
+
+    def __iter__(self):
+        for key in self._idx_to_entry:
+            yield self[key]
 
     def __len__(self):
         """ Return the number of data in the database """
         return len(self._idx_to_entry)
-    
-    def __iter__(self):
-        for key in self._idx_to_entry:
-            yield self[key]
         
     def __contains__(self, key):
         """ Return whether the entry is in the database or not """
@@ -42,21 +42,24 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
         
         if isinstance(index, int):
             index = self._idx_to_entry[index]
-        elif isinstance(index, list) and len(index) and isinstance(index[0], int):
-            index = [self._idx_to_entry[idx] for idx in index]
+        elif isinstance(index, list):
+            index = [
+                self._idx_to_entry[idx] if isinstance(idx, int) else idx
+                for idx in index
+            ]
         
         return super().__getitem__(index)
     
     def index(self, key):
         return self._entry_to_idx[self._get_entry(key)]
     
-    def insert(self, data):
+    def insert(self, data, ** kwargs):
         """ Add a new entry to the database """
-        super().insert(data)
+        entry = super().insert(data, ** kwargs)
         
-        entry = self._get_entry(data)
         self._idx_to_entry.append(entry)
         self._entry_to_idx[entry] = len(self._entry_to_idx)
+        return entry
         
     def pop(self, key):
         """ Remove and return the given entry from the database """
@@ -68,17 +71,10 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
         self._entry_to_idx = {entry : i for i, entry in enumerate(self._idx_to_entry)}
         
         return item
-    
-    def insert_or_update(self, data):
-        try:
-            self.insert(data)
-        except ValueError:
-            self.update(data)
 
-    def multi_insert(self, iterable, /):
-        super().multi_insert(iterable)
+    def multi_insert(self, iterable, /, ** kwargs):
+        entries = super().multi_insert(iterable, ** kwargs)
         
-        entries = [self._get_entry(data) for data in iterable]
         self._idx_to_entry.extend(entries)
         self._entry_to_idx.update({
             entry : len(self._entry_to_idx) + i for i, entry in enumerate(entries)

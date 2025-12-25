@@ -9,9 +9,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .audio_processing import *
-from .audio_io import *
 from .stft import *
+from .audio_io import *
+from .audio_processing import *
 from .audio_io import _load_fn, _write_fn
 
 from ..file_utils import load_data, dump_data

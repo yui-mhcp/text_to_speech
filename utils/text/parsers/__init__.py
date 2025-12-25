@@ -63,7 +63,7 @@ def parse_document(filename,
                    return_raw   = False,
 
                    cache    = True,
-                   overwrite    = False,
+                   reload   = False,
                    cache_dir    = _cache_dir,
                    
                    _cache   = None,
@@ -156,20 +156,20 @@ def parse_document(filename,
                 return_raw  = return_raw,
                 
                 cache   = False,
+                reload  = reload,
                 _cache  = _cache,
-                overwrite   = overwrite,
                 
                 ** kwargs
             ))
         
-        if (cache) and (overwrite or len(_cache) != _initial_cache_length):
+        if (cache) and (reload or len(_cache) != _initial_cache_length):
             _cache.save()
 
         return paragraphs
     
-    if _cache is not None and not overwrite and filename in _cache:
-        return _normalize_paragraphs(_cache[filename]['paragraphs'], filename, strip = strip)
-        
+    if _cache is not None and not reload and filename in _cache:
+        return normalize_paragraphs(_cache[filename]['paragraphs'], filename, strip = strip)
+    
     basename, _, ext = filename.rpartition('.')
     if ext not in _parsers:
         raise NotImplementedError("No parser found for {} !\n  Accepted : {}".format(
@@ -180,6 +180,8 @@ def parse_document(filename,
         image_folder = basename + '-images'
     elif extract_images is False:
         image_folder = None
+    elif image_folder and '{}' in image_folder:
+        image_folder = image_folder.format(os.path.basename(basename))
     
     try:
         parser = _parsers[ext](filename)
@@ -196,9 +198,15 @@ def parse_document(filename,
         _cache[filename] = {'filename' : filename, 'paragraphs' : paragraphs}
         if cache: _cache.save()
 
-    return _normalize_paragraphs(paragraphs, filename, strip = strip)
+    return normalize_paragraphs(paragraphs, filename, strip = strip)
 
-def _normalize_paragraphs(paragraphs, filename, *, strip = True, ** kwargs):
+def normalize_paragraphs(paragraphs, filename, *, strip = True, ** kwargs):
+    for para in paragraphs:
+        if 'type' not in para:
+            if 'text' not in para:
+                raise RuntimeError('All paragraphs should either have a `type` or `text` entry, got {}'.format(para))
+            para['type'] = 'text'
+    
     if strip:
         for para in paragraphs:
             if 'text' in para: para['text'] = para['text'].strip()
@@ -208,3 +216,4 @@ def _normalize_paragraphs(paragraphs, filename, *, strip = True, ** kwargs):
         for p in paragraphs: p['filename'] = filename
 
     return paragraphs
+

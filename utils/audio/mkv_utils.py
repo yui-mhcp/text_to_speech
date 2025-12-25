@@ -14,7 +14,7 @@ import json
 import logging
 import subprocess
 
-from utils import load_json, dump_json
+from ..file_utils import load_json, dump_json
 
 logger = logging.getLogger(__name__)
 

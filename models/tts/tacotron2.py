@@ -132,14 +132,16 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             return predicted[text]
         
         with Timer('processing'):
-            if max_text_length == -1:
+            if isinstance(max_text_length, str):
+                splitted = text.split(max_text_length)
+            elif max_text_length == -1:
                 splitted = [text]
             elif max_text_length == -2:
                 splitted = split_sentences(text)
             else:
                 splitted = split_text(text, max_text_length)
             
-            splitted    = [self.clean_text(sent, ** kwargs) for sent in splitted]
+            splitted    = [self.clean_text(sent.strip(), ** kwargs) for sent in splitted]
             splitted    = [s for s in splitted if any(c.isalnum() for c in s)]
             cleaned     = '\n\n'.join(splitted) if len(splitted) > 1 else splitted[0]
 
@@ -151,7 +153,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         synth_gen_time, vocoder_gen_time = 0., 0.
 
         mels, attention_weights, audios = [], [], []
-        for inp in encoded:
+        for i, inp in enumerate(encoded):
             start_synth_infer_time = time.time()
 
             length  = len(inp)
@@ -176,8 +178,11 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             synth_gen_time   += time.time() - start_synth_infer_time
 
             if not success:
-                logger.warning('Inference failed too much time ! Result is probably not perfect')
+                logger.warning('Inference failed too much time ! Result is probably not perfect\n  Text : {}'.format(splitted[i]))
 
+            if outputs.lengths[0] <= 5:
+                continue
+            
             mels.append(outputs.mel[0, : outputs.lengths[0]])
             attention_weights.append(outputs.attention_weights[0, : outputs.lengths[0]])
 
@@ -352,8 +357,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         return predicted, callbacks
 
     def precompile_for_stream(self, ** kwargs):
-        for m in (64, 128):
-            self.infer('hello {}'.format(m), max_trial = 1, padding_multiple = m, ** kwargs)
+        self.infer('hello world !', max_trial = 1, ** kwargs)
 
     @timer
     def predict(self, inputs, ** kwargs):

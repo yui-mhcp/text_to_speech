@@ -20,7 +20,6 @@ from functools import cached_property, partialmethod
 from loggers import Timer, timer
 from utils import JSONSaver, Stream, dump_json, load_json, time_to_string, copy_methods
 from utils.keras import TensorSpec, ops, build_runtime, graph_compile
-from utils.datasets import prepare_dataset, summarize_dataset
 from custom_train_objects import CheckpointManager, History
 
 from ..utils import get_saving_dir, get_model_dir, is_model_name, describe_model, loss_to_str, optimizer_to_str, metrics_to_str
@@ -527,6 +526,8 @@ class BaseModel(metaclass = ModelInstances):
         return kwargs
     
     def prepare_dataset(self, dataset, mode, ** kwargs):
+        from utils.datasets import prepare_dataset
+        
         return prepare_dataset(dataset, ** self.get_dataset_config(mode, ** kwargs))
     
     def prepare_for_training(self,
@@ -595,6 +596,8 @@ class BaseModel(metaclass = ModelInstances):
         
         ds_infos    = {}
         if add_dataset_infos:
+            from utils.datasets import summarize_dataset
+            
             ds_infos    = {
                 'train' : summarize_dataset(train_dataset, ** summary_kwargs),
                 'valid' : summarize_dataset(valid_dataset, ** summary_kwargs)

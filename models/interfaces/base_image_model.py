@@ -48,6 +48,10 @@ class BaseImageModel(BaseModel):
             resize_kwargs['interpolation'] = resize_kwargs.pop('method')
     
     @property
+    def image_dtype(self):
+        return 'float32'
+    
+    @property
     def color_mode(self):
         return 'gray' if self.input_size[-1] == 1 else 'rgb'
     
@@ -102,7 +106,7 @@ class BaseImageModel(BaseModel):
             
             filename = filename['image' if 'image' in filename else 'filename']
         
-        if self.should_pad_to_multiple and 'multiples' not in self.resize_kwargs:
+        if 'multiples' not in self.resize_kwargs and self.should_pad_to_multiple:
             kwargs['multiples'] = self.downsampling_factor
         
         return load_image(
@@ -111,7 +115,7 @@ class BaseImageModel(BaseModel):
             
             boxes   = box,
             
-            dtype   = 'float32',
+            dtype   = self.image_dtype,
             to_tensor   = True,
             channels    = self.input_size[-1],
             ** {** self.resize_kwargs, ** kwargs}
@@ -125,6 +129,13 @@ class BaseImageModel(BaseModel):
         return self.image_normalization_fn(image) if self.image_normalization_fn else image
 
     process_image = normalize_image
+    
+    def prepare_image(self, image, ** kwargs):
+        """ Load and normalize image """
+        if isinstance(image, list):
+            return [self.prepare_image(img, ** kwargs) for img in image]
+        else:
+            return self.normalize_image(self.get_image(image, ** kwargs))
     
     def get_config_image(self):
         return {

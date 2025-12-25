@@ -18,13 +18,15 @@ from .waveglow import WaveGlow
 from ..interfaces import BaseModel
 from ..utils import get_model_dir, get_model_config, is_model_name
 
+_models = {}
 for module in os.listdir(__package__.replace('.', os.path.sep)):
     if module.startswith(('.', '_')) or '_old' in module: continue
     module = importlib.import_module(__package__ + '.' + module[:-3])
     
-    globals().update({
+    _models.update({
         k : v for k, v in vars(module).items() if isinstance(v, type) and issubclass(v, BaseModel)
     })
+globals().update(_models)
 
 _default_vocoder = 'WaveGlow'
 

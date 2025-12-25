@@ -15,7 +15,6 @@ import queue
 import logging
 import multiprocessing.queues
 
-from datetime import datetime
 from functools import wraps
 from threading import Thread, RLock
 
@@ -126,8 +125,8 @@ class Process(metaclass = MetaProcess):
         elif isinstance(self.result_key, (list, tuple)):
             return tuple(data[k] for k in self.result_key) if isinstance(data, dict) else data
     
-    def _apply_async(self, data, *, priority = 0, callback = None):
-        result = AsyncResult(callback = callback)
+    def _apply_async(self, data, *, priority = 0, callback = None, loop = None):
+        result = AsyncResult(callback = callback, loop = loop)
         with self.mutex:
             if self._stopped:
                 raise RuntimeError('Cannot add new data to a stopped process')
@@ -153,7 +152,7 @@ class Process(metaclass = MetaProcess):
             _args, _kwargs = (data, ), {}
         
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('[{}] Add new item to queue'.format(datetime.now()))
+            logger.debug('[{}] Add new item to queue'.format(self.name))
         
         self.input_stream.put(DataWithResult(
             args = _args, kwargs = _kwargs, index = index, priority = priority
@@ -295,7 +294,7 @@ class Process(metaclass = MetaProcess):
             if isinstance(data, DataWithResult):
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug('[{}] New result received (index {}) : {}'.format(
-                        datetime.now(), data.index, data.result
+                        self.name, data.index, data.result
                     ))
 
                 with self.mutex:
@@ -306,7 +305,7 @@ class Process(metaclass = MetaProcess):
                 result = data.result
             else:
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug('[{}] New result received : {}'.format(datetime.now(), data))
+                    logger.debug('[{}] New result received : {}'.format(self.name, data))
                 result = data
             
             _run_callbacks(self.callbacks, None, result)

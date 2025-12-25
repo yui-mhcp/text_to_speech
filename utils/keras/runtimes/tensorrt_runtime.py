@@ -14,8 +14,6 @@ import sys
 import logging
 import numpy as np
 
-from math import prod
-
 from .. import Timer, ops, timer
 from .runtime import Runtime
 from .onnx_runtime import ONNXRuntime
@@ -23,17 +21,15 @@ from .onnx_runtime import ONNXRuntime
 logger = logging.getLogger(__name__)
 
 class TensorRTRuntime(Runtime):
-    def __init__(self, path, *, prepare = None, ** kwargs):
+    def __init__(self, path, *, prepare = None, context = None, device = 'cuda', ** kwargs):
+        import torch
         import tensorrt as trt
-        import pycuda.driver as cuda
-
-        cuda.init()
-        self.cuda_ctx   = cuda.Device(0).make_context()
 
         super().__init__(path, ** kwargs)
         
-        self.context    = self.engine.create_execution_context()
-        self.stream     = cuda.Stream()
+        self.context    = self.engine.create_execution_context() if context is None else context
+        self.stream     = torch.cuda.Stream()
+        self.device     = torch.device(device)
 
         DTYPE_MAPPING   = {
             trt.DataType.BF16   : 'bfloat16',
@@ -49,21 +45,16 @@ class TensorRTRuntime(Runtime):
             trt.DataType.UINT8  : 'uint8'
         }
         
-        self.num_prepare_args   = None
-        
         if not prepare and os.path.exists(os.path.splitext(self.path)[0] + '-prepare.pth'):
             prepare = os.path.splitext(self.path)[0] + '-prepare.pth'
         
         if isinstance(prepare, str):
-            import torch
-            
-            prepare = torch.jit.load(prepare, map_location = torch.device('cuda'))
+            prepare = torch.jit.load(prepare, map_location = torch.device(device))
 
-        self.prepare    = prepare
-        self.num_prepare_args   = None if not prepare else len(prepare.forward.schema.arguments) - 1
+        self.prepare = prepare
+        self.num_prepare_args   = None
         if prepare is not None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+            self.num_prepare_args = len(prepare.forward.schema.arguments) - 1
         
         self.bindings   = list(self.engine)
         self._inputs    = tuple(
@@ -81,11 +72,6 @@ class TensorRTRuntime(Runtime):
         self._var_shapes    = set([
             n for n in self._inputs if any(s == -1 for s in self.engine.get_tensor_shape(n))
         ])
-        
-        self._inp_shapes    = {}
-        self._out_shapes    = {}
-        self._cpu_buffers   = {}
-        self._gpu_buffers   = {}
     
     @property
     def argnames(self):
@@ -110,18 +96,15 @@ class TensorRTRuntime(Runtime):
     
     @timer(name = 'TensorRT runtime inference')
     def __call__(self, * args, ** kwargs):
-        """Inférence avec gestion du contexte CUDA"""
-        import pycuda.driver as cuda
-        # Activer le contexte CUDA
+        import torch
+
         kwargs.update({name : arg for name, arg in zip(self.bindings, args)})
         
         if self.prepare is not None:
-            import torch
-            
             with Timer('pre-processing'):
                 with torch.no_grad():
                     inputs = [
-                        self.prepare_tensor(kwargs[k], self.shapes[i], self.dtypes[i], self.device, torch = True)
+                        self.prepare_tensor(kwargs[k], self.shapes[i], self.dtypes[i], self.device)
                         for i, k in enumerate(self.argnames[: self.num_prepare_args])
                     ]
 
@@ -135,110 +118,53 @@ class TensorRTRuntime(Runtime):
                         })
                     else:
                         kwargs[self.argnames[0]] = processed
+
         
+        context = self.context
+        tensors = [None] * len(self.bindings)
+        with Timer('placeholders creation'):
+            for i, name in enumerate(self.bindings):
+                if name in kwargs:
+                    tensors[i] = self.prepare_tensor(
+                        kwargs[name], self.shapes[i], dtype = self.dtypes[i], device = self.device
+                    )
+                    if name in self._var_shapes and i < len(self.argnames):
+                        context.set_input_shape(name, tensors[i].shape)
+                elif i >= len(self.argnames): # output tensor
+                    tensors[i] = torch.empty(
+                        tuple(context.get_tensor_shape(name)),
+                        dtype   = getattr(torch, self.dtypes[i]),
+                        device  = self.device
+                    )
+                else:
+                    raise RuntimeError('Missing input #{} : {}'.format(i, name))
+                
+                context.set_tensor_address(name, tensors[i].data_ptr())
 
-        self.cuda_ctx.push()
-
-        inp_shapes = {k : getattr(kwargs[k], 'shape', ()) for k in self.argnames}
-        if inp_shapes != self._inp_shapes:
-            with Timer('Memory allocation'):
-                self.cuda_ctx.push()
-
-                for buf in self._gpu_buffers.values(): buf.free()
-
-                self._inp_shapes    = inp_shapes
-                self._out_shapes    = {}
-                self._cpu_buffers   = {}
-                self._gpu_buffers   = {}
-
-                try:
-                    for i, name in enumerate(self.bindings):
-                        if name in kwargs:
-                            kwargs[name] = inp = self.prepare_tensor(
-                                kwargs[name], self.shapes[i], dtype = self.dtypes[i]
-                            )
-                            shape = inp.shape
-
-                            if name in self._var_shapes and i < len(self.argnames):
-                                self.context.set_input_shape(name, inp.shape)
-
-                        elif i >= len(self.argnames): # output tensor
-                            shape = tuple(self.context.get_tensor_shape(name))
-                            self._out_shapes[name] = shape
-                        else:
-                            raise RuntimeError('Missing input #{} : {}'.format(i, name))
-
-                        self._cpu_buffers[name] = cuda.pagelocked_empty(prod(shape), self.dtypes[i])
-                        self._gpu_buffers[name] = cuda.mem_alloc(self._cpu_buffers[name].nbytes)
-
-                    for name in self.bindings:
-                        self.context.set_tensor_address(name, int(self._gpu_buffers[name]))
-                finally:
-                    self.cuda_ctx.pop()
-        else:
-            for i, name in enumerate(self._inputs):
-                kwargs[name] = self.prepare_tensor(
-                    kwargs[name], self.shapes[i], dtype = self.dtypes[i]
-                )
-
-        if False and logger.isEnabledFor(logging.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Calling TensorRT engine with :\n  Inputs : {}\n  Outputs : {}'.format(
                 {name : tuple(tensors[i].shape) for i, name in enumerate(self.argnames)},
                 {name : tuple(tensors[i].shape) for i, name in enumerate(self.outputs, start = len(self.argnames))},
             ))
 
-        try:
-            with Timer('execution'):
-                for name in self._inputs:
-                    np.copyto(self._cpu_buffers[name], kwargs[name].ravel())
-                    cuda.memcpy_htod_async(
-                        self._gpu_buffers[name],  self._cpu_buffers[name],  self.stream
-                    )
-
-                if not self.context.execute_async_v3(stream_handle = self.stream.handle):
-                    raise RuntimeError("TensorRT inference failed.")
-
-                for name in self._outputs:
-                    cuda.memcpy_dtoh_async(
-                        self._cpu_buffers[name],  self._gpu_buffers[name],  self.stream
-                    )
-
-                self.stream.synchronize()
-
-                outputs = [
-                    self._cpu_buffers[name].reshape(self._out_shapes[name]) for name in self._outputs
-                ]
-        finally:
-            self.cuda_ctx.pop()
+        with Timer('execution'):
+            if not context.execute_async_v3(self.stream.cuda_stream):
+                raise RuntimeError('An exception occured while running the TensorRT context')
         
-        return outputs[0] if len(outputs) == 1 else outputs
+            self.stream.synchronize()
+        
+        return tensors[len(self.argnames) :] if len(self.outputs) > 1 else tensors[-1]
     
     @staticmethod
-    def prepare_tensor(tensor, shape, dtype, device = None, torch = False):
-        if torch:
-            tensor = ops.convert_to_torch_tensor(tensor, dtype = dtype)
-        else:
-            tensor = ops.convert_to_numpy(tensor, dtype = dtype)
+    def prepare_tensor(tensor, shape, dtype, device = None):
+        tensor = ops.convert_to_torch_tensor(tensor, dtype = dtype, device = device)
+        if len(tensor.shape) < len(shape): tensor = tensor.unsqueeze(0)
         
-        if len(tensor.shape) < len(shape): tensor = tensor[None]
-        
-        if TensorRTRuntime.should_permute(tensor, shape):
+        if should_permute(tensor, shape):
             last = len(tensor.shape) - 1
-            if torch:
-                tensor = tensor.permute(0, last, * range(1, last))
-            else:
-                tensor = tensor.transpose([0, last] + list(range(1, last)))
-        
-        if torch:
-            tensor = tensor.to(device = device)
-        elif not tensor.flags['C_CONTIGUOUS'] or not tensor.flags['WRITEABLE']:
-            tensor = np.ascontiguousarray(tensor)
+            tensor = tensor.permute(0, last, * range(1, last)).contiguous()
 
         return tensor
-
-    @staticmethod
-    def should_permute(tensor, shape):
-        return len(shape) > 2 and shape[1] != -1 and tensor.shape[1] != shape[1]
     
     @staticmethod
     def load_engine(filename, ** _):
@@ -274,8 +200,9 @@ class TensorRTRuntime(Runtime):
         builder = trt.Builder(trt_logger)
         config  = builder.create_builder_config()
 
-        #explicit_batch = 1 << (int)(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-        network = builder.create_network(0)
+        network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        
+
         with trt.OnnxParser(network, trt_logger) as parser:
             with open(function, "rb") as f:
                 if not parser.parse(f.read()):
@@ -296,6 +223,8 @@ class TensorRTRuntime(Runtime):
         
         if any(inp.dtype == trt.DataType.HALF for inp in inputs):
             config.set_flag(trt.BuilderFlag.FP16)
+        elif any(inp.dtype == trt.DataType.BF16 for inp in inputs):
+            config.set_flag(trt.BuilderFlag.BF16)
         
         if any(any(s == -1 for s in inp.shape) for inp in inputs):
             profile = builder.create_optimization_profile()
@@ -309,5 +238,10 @@ class TensorRTRuntime(Runtime):
         if engine is not None:
             with open(path, 'wb') as file:
                 file.write(engine)
+        else:
+            raise RuntimeError('Failed to build TensorRT engine')
         
         return cls(path)
+
+def should_permute(tensor, shape):
+    return len(shape) > 2 and shape[1] != -1 and tensor.shape[1] != shape[1]

@@ -12,13 +12,12 @@
 import os
 import time
 import queue
+import scipy
 import logging
 import librosa
 import threading
 import collections
 import numpy as np
-
-from scipy.io.wavfile import write, read
 
 from loggers import Timer, timer
 from . import audio_processing
@@ -271,8 +270,8 @@ def read_audio(filename,
 
 @read_audio.dispatch
 def read_wav(filename, ** kwargs):
-    """ Reads .wav audio with the `scipy.io.wavfile.read` method """
-    return read(filename)
+    """ Reads `.wav` audio with `scipy.io.wavfile.read` """
+    return scipy.io.wavfile.read(filename)
 
 @read_audio.dispatch(_pydub_ext)
 def read_pydub(filename, ** kwargs):
@@ -366,7 +365,7 @@ def write_audio(filename, audio, rate, normalize = True, factor = 32767, verbose
 @write_audio.dispatch
 def write_wav(audio, filename, rate):
     """ Writes audio with `scipy.io.wavfile.write()` """
-    write(filename, rate, audio)
+    scipy.io.wavfile.write(filename, rate, audio)
     
 @write_audio.dispatch(_write_pydub_ext)
 def write_pydub(audio, filename, rate):

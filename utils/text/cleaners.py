@@ -34,7 +34,9 @@ _special_symbols    = {
 # Regular expression matching whitespace:
 _whitespace_re = re.compile(r'\s+')
 
-_acronym_re     = re.compile(r"\b[A-Z]+(?!')\b")
+_url_re     = re.compile(r'[a-z]+://[\S\n]+')
+_file_re    = re.compile(r'\S+\.(?:pdf|docx|txt|md|html)\b')
+_acronym_re     = re.compile(r"[A-Z]{2,5}\b")
 _punctuation    = '_!?.,’“”‚‘—–()[]{}:;\'"`+-*/^=\\<>&#$%@¿′″·§~'
 _left_punctuation   = '([{'
 _right_punctuation  = ')]},.'
@@ -138,13 +140,19 @@ def strip(text, lstrip = True, rstrip = True, ** kwargs):
     if lstrip and rstrip: return text.strip()
     elif lstrip: return text.lstrip()
     elif rstrip: return text.rstrip()
-    return text
+    else:        return text
 
 def lstrip(text, ** kwargs):
     return text.lstrip()
 
 def rstrip(text, ** kwargs):
     return text.rstrip()
+
+def remove_urls(text):
+    return re.sub(_url_re, '', text)
+
+def remove_files(text):
+    return re.sub(_file_re, '', text)
 
 def replace_patterns(text, patterns, ** kwargs):
     """ Replaces a `dict` of `{pattern : replacement}` """
@@ -210,9 +218,9 @@ def remove_markdown(text):
 
 def _expand_acronym(text, lang, extensions = _letter_pronounciation, ** kwargs):
     if len(text) > 4 or (text == 'I' and lang == 'en'): return text
-    return ' '.join([extensions.get(c.lower(), {}).get(lang, c) for c in text])
+    return ' '.join(extensions.get(c.lower(), {}).get(lang, c) for c in text)
 
-def expand_acronym(text, lang, ** kwargs):
+def expand_acronyms(text, lang, ** kwargs):
     """ Expand all words composed of uppercases """
     if lang == 'be': lang = 'fr'
     return re.sub(_acronym_re, lambda m: _expand_acronym(m.group(0), lang), text)
@@ -322,14 +330,16 @@ def complete_cleaners(text,
     """
     if patterns:        text = replace_patterns(text, patterns, ** kwargs)
     if replacements:    text = replace_words(text, replacements, ** kwargs)
-    if to_lowercase:    text = lowercase(text, ** kwargs)
     
     if to_expand:
         text = remove_markdown(text)
         if to_expand_abrev:     text = expand_abreviations(text, lang = lang, ** kwargs)
+        if to_expand_acronyms:  text = expand_acronyms(text, lang = lang, ** kwargs)
         text = expand_numbers(text, lang = lang, expand_symbols = to_expand_symbols, ** kwargs)
         if to_expand_symbols:   text = expand_special_symbols(text, lang = lang, ** kwargs)
     
+    if to_lowercase:    text = text.lower()
+
     if lang in ('fr', 'be'):
         text = expand_tremas(text)
         text = fr_convert_to_ascii(text, ** kwargs)

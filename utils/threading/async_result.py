@@ -9,14 +9,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from threading import Event
+import asyncio
+import threading
 
 class AsyncResult:
-    """ This class is inspired from the `AsyncResult` used in `multiprocessing.Pool`s """
-    def __init__(self, callback = None):
+    """
+        This class is inspired from the `AsyncResult` used in `multiprocessing.Pool`s
+        Additionally, it supports `await` and `aget` for async-compatible functions
+    """
+    def __init__(self, callback = None, *, loop = None):
+        self.loop   = loop
         self._callback  = callback
         
-        self._event     = Event()
+        self._event     = threading.Event()
+        self._abuffer   = asyncio.Queue() if loop is not None else None
         self._result    = None
     
     @property
@@ -24,21 +30,22 @@ class AsyncResult:
         return self._event.is_set()
     
     def __call__(self, result):
-        self._result    = result
-        self._success   = not isinstance(result, Exception)
-        if self._callback is not None:
-            self._callback(self._result)
+        self._result = result
         self._event.set()
+        
+        if self.loop is not None:
+            asyncio.run_coroutine_threadsafe(self._abuffer.put(True), self.loop)
+        
+        if self._callback is not None:
+            self._callback(result)
     
     def wait(self, timeout = None):
         self._event.wait(timeout)
     
     def get(self, timeout = None):
         self.wait(timeout)
-        if not self.ready:
-            raise TimeoutError
-        elif self._success:
-            return self._result
-        else:
-            raise self._result
-    
+        return self._result
+
+    async def aget(self, timeout = None):
+        await self._abuffer.get()
+        return self._result

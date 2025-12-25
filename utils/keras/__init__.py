@@ -29,11 +29,9 @@ from .compile import *
 from .runtimes import *
 from .ops.execution_contexts import *
 
-logger = logging.getLogger(__name__)
-
 def show_version():
     import keras
     
-    logger.info('Keras version : {} - backend ({}) : {}'.format(
+    logging.getLogger(__name__).info('Keras version : {} - backend ({}) : {}'.format(
         keras.__version__, ops.get_backend(), ops.get_backend_module().__version__
     ))

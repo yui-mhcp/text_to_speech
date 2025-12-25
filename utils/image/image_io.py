@@ -122,10 +122,10 @@ def load_image(filename,
     if boxes is not None:
         from .bounding_box import crop_box
         _, image = crop_box(image, boxes, ** kwargs)
-    
+
     if dtype is not None:
         image = ops.convert_data_dtype(image, dtype = dtype)
-
+    
     if channels == 1 and image.shape[2] == 3:
         image = ops.rgb_to_grayscale(image)
     elif channels == 3 and image.shape[2] == 1:

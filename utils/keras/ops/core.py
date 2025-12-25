@@ -73,10 +73,16 @@ ensure_shape    = Ops(
 
 @timer(debug = True)
 def is_array(x):
+    """
+        Return whether `x` is a `np.ndarray` or a `keras` tensor
+        **Important Note**: the function returns `False` if `x` is a `Tensor` from another backend
+        For example, if the backend is `tensorflow` but `x` is a `torch.Tensor`, it will return `False`
+    """
     return (hasattr(x, 'shape')) and (isinstance(x, np.ndarray) or is_tensor(x))
 
 @timer(debug = True)
 def is_tensor(x):
+    """ Return `True` if `x` is a `keras` Tensor (equivalent to `keras.ops.is_tensor`) """
     if fast_is_not_tensor(x):   return False
     elif 'keras' not in sys.modules:    return False
     elif is_tensorflow_backend() or not is_tensorflow_graph():
@@ -85,18 +91,22 @@ def is_tensor(x):
         return sys.modules['tensorflow'].is_tensor(x)
 
 @timer(debug = True)
+def is_tf_tensor(x):
+    """ Equivalent to `tf.is_tensor` """
+    tf = sys.modules.get('tensorflow', None)
+    return False if tf is None else tf.is_tensor(x)
+
+@timer(debug = True)
 def is_torch_tensor(x):
-    if 'torch' not in sys.modules: return False
-    import torch
-    return torch.is_tensor(x)
+    """ Equivalent to `torch.is_tensor` """
+    torch = sys.modules.get('torch', None)
+    return False if torch is None else torch.is_tensor(x)
 
 
 @timer(debug = True)
 def convert_to_numpy(x, dtype = None, copy = False):
-    if dtype == 'float' and hasattr(x, 'dtype') and is_float(x):
-        dtype = None
-    elif dtype:
-        dtype = dtype_to_str(dtype)
+    """ Convert `x` to a `np.ndarray` """
+    if dtype is not None: dtype = _get_cast_dtype(x, dtype)
     
     if not fast_is_not_tensor(x) and is_tensorflow_graph():
         return convert_to_tf_tensor(x, dtype)
@@ -121,39 +131,80 @@ def convert_to_tensor(x, dtype = None):
         This function uses the `tf.cast` with the inferred output type
         The other benefit is the standardization between types (e.g., floating --> tf.float32)
     """
-    if not is_tensor(x):
-        return array(x, dtype_to_str(dtype) if dtype else get_convertion_dtype(x))
-    elif dtype is None or (dtype == 'float' and is_float(x)) or (dtype == 'int' and is_int(x)):
-        return x
+    if dtype is not None:
+        dtype = _get_cast_dtype(x, dtype)
     else:
-        return cast(x, dtype)
+        dtype = get_convertion_dtype(x)
+
+    if isinstance(x, np.ndarray) or not hasattr(x, 'shape'):
+        return array(x, dtype)
+    elif is_tensor(x):
+        return x if dtype is None else cast_ops(x, dtype)
+    elif is_tensorflow_backend() and is_torch_tensor(x):
+        return convert_torch_to_tf(x, dtype)
+    elif is_torch_backend() and is_tf_tensor(x):
+        return convert_tf_to_torch(x, dtype)
+    else:
+        return array(convert_to_numpy(x), dtype)
 
 @timer(debug = True)
 def convert_to_tf_tensor(x, dtype = None):
-    if is_tensorflow_backend(): return convert_to_tensor(x, dtype)
+    import tensorflow as tf
     
-    try:
-        import tensorflow as tf
-    except ImportError:
-        raise TensorflowNotAvailable()
-    
-    if not tf.is_tensor(x):
-        return tf.convert_to_tensor(convert_to_numpy(x, dtype))
-    elif dtype is None or (dtype == 'float' and is_float(x)) or (dtype == 'int' and is_int(x)):
-        return x
+    if dtype is not None: dtype = _get_cast_dtype(x, dtype)
+
+    if isinstance(x, np.ndarray) or not hasattr(x, 'shape'):
+        return tf.convert_to_tensor(x, dtype)
+    elif tf.is_tensor(x):
+        return x if dtype is None else tf.cast(x, dtype)
+    elif is_torch_tensor(x):
+        return convert_torch_to_tf(x, dtype)
     else:
-        return tf.cast(x, dtype)
+        return tf.convert_to_tensor(convert_to_numpy(x), dtype)
 
 @timer(debug = True)
 def convert_to_torch_tensor(x, dtype = None, device = 'cuda'):
     import torch
     
-    if not torch.is_tensor(x):
-        return torch.from_numpy(convert_to_numpy(x, dtype)).to(device = torch.device(device))
-    else:
+    if dtype is not None:
+        dtype = _get_cast_dtype(x, dtype)
         if isinstance(dtype, str): dtype = getattr(torch, dtype)
+    
+    if not hasattr(x, 'shape'):
+        return torch.from_numpy(convert_to_numpy(x)).to(device = torch.device(device), dtype = dtype)
+    elif isinstance(x, np.ndarray):
+        return torch.from_numpy(x).to(device = torch.device(device), dtype = dtype)
+    elif torch.is_tensor(x):
         return x.to(dtype = dtype, device = torch.device(device))
+    elif is_tf_tensor(x):
+        return convert_tf_to_torch(x).to(device = torch.device(device), dtype = dtype)
+    else:
+        return torch.from_numpy(convert_to_numpy(x)).to(device = torch.device(device), dtype = dtype)
 
+def convert_torch_to_tf(x, dtype = None):
+    import torch
+    import tensorflow as tf
+
+    x = tf.experimental.dlpack.from_dlpack(torch.utils.dlpack.to_dlpack(x))
+    return x if dtype is None else tf.cast(x, dtype)
+
+def convert_tf_to_torch(x, dtype = None):
+    import torch
+    import tensorflow as tf
+    
+    x = torch.utils.dlpack.from_dlpack(tf.experimental.dlpack.to_dlpack(x))
+    return x if dtype is None else x.to(dtype = getattr(torch, dtype))
+
+def _get_cast_dtype(x, dtype):
+    if not isinstance(dtype, str):
+        dtype = dtype_to_str(dtype)
+    
+    if hasattr(x, 'dtype') and dtype in dtype_to_str(x.dtype):
+        return None
+    elif dtype != 'float':
+        return dtype
+    else:
+        return dtype_to_str(dtype)
 
 """ `dtype` functions """
 

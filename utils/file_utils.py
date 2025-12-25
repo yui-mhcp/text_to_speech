@@ -20,6 +20,7 @@ import pickle
 import logging
 import numpy as np
 
+from tqdm import tqdm
 from functools import partial, wraps
 
 from .generic_utils import _naive_is_tensor, _naive_convert_to_numpy, is_dataframe, to_json, convert_to_str

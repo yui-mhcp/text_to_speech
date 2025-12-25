@@ -13,24 +13,32 @@ import re
 
 from .txt_parser import TxtParser
 
-_hlinks_re   = r'\[(.*?)\]\((.*?)\)'
+_audio_ext  = ('wav', 'mp3', 'flac', 'opus', 'ogg')
+_image_ext  = ('gif', 'png', 'jpeg', 'jpg')
+_video_ext  = ('mp4', 'mov', 'ovg', 'avi')
+
+_hlinks_re  = r'\[(.*?)\]\((.*?)\)'
          
 class MarkdownParser(TxtParser):
     __extension__ = 'md'
 
     def get_text(self, *, remove_hyperlink = True, ** kwargs):
         text = super().get_text(** kwargs)
-        return re.sub(_hlinks_re, r'\1', text)
+        return re.sub(_hlinks_re, r'\1', text) if remove_hyperlink else False
     
     def get_paragraphs(self, ** kwargs):
         """ Extract a list of paragraphs """
         if hasattr(self, 'paragraphs'): return self.paragraphs
         
-        lines = self.get_text(** kwargs).split('\n')
+        with open(self.filename, 'r', encoding = 'utf-8') as f:
+            lines = [l.strip() for l in f]
 
         self.paragraphs = []
         text, code_type, section = '', None, []
         for line in lines:
+            if not line:
+                text = self._maybe_add_paragraph(text, section, code_type)
+                continue
             if line.startswith('```'):
                 text = self._maybe_add_paragraph(text, section, code_type)
                 if code_type: # end of code block
@@ -40,10 +48,9 @@ class MarkdownParser(TxtParser):
                 continue
             elif code_type:
                 pass
-            elif not line.strip():
-                text = self._maybe_add_paragraph(text, section, code_type)
-                continue
             elif line.startswith('!['): # skip images
+                text = self._maybe_add_paragraph(text, section, code_type)
+                text = self._maybe_add_paragraph(None, section, data = line[2:].split(']')[0])
                 continue
             elif line.startswith('#'):
                 text = self._maybe_add_paragraph(text, section, code_type)
@@ -58,12 +65,23 @@ class MarkdownParser(TxtParser):
 
         return self.paragraphs
 
-    def _maybe_add_paragraph(self, text, section, code_type = None):
+    def _maybe_add_paragraph(self, text, section, code_type = None, data = None):
+        paragraph = {}
         if text:
             paragraph = {'type' : 'text', 'text' : text.strip()}
             if section:     paragraph['section'] = section
             if code_type:   paragraph.update({'type' : 'code', 'language' : code_type})
+        elif data:
+            if data.endswith(_image_ext):
+                paragraph = {'type' : 'image', 'image' : data, 'section' : section}
+            if data.endswith(_audio_ext):
+                paragraph = {'type' : 'audio', 'audio' : data, 'section' : section}
+            if data.endswith(_video_ext):
+                paragraph = {'type' : 'video', 'video' : data, 'section' : section}
+            else:
+                warnings.warn('Unknown file type : {}'.format(data))
         
+        if paragraph:
             self.paragraphs.append(paragraph)
         
         return ''

@@ -140,10 +140,7 @@ class Tokenizer:
 
         if additional_tokens is None:            additional_tokens = []
         elif isinstance(additional_tokens, str): additional_tokens = [additional_tokens]
-        if isinstance(additional_tokens, (list, tuple)):
-            additional_tokens = {_create_token_name(tok) : tok for tok in additional_tokens}
-        self.additional_tokens  = additional_tokens
-        
+        self._additional_tokens  = additional_tokens
         
         self.splitter   = re.compile(split_pattern) if split_pattern else None
         self.bpe_ranks  = {pair : i for i, pair in enumerate(self.bpe_pairs)} if bpe_pairs else None
@@ -162,7 +159,7 @@ class Tokenizer:
         }
         
         for name, token in self.additional_tokens.items():
-            assert not hasattr(self, name), '{} is already defined'.format(name)
+            if hasattr(self, name): continue
             
             setattr(self, name, token)
             setattr(self, name + '_idx', self[token])
@@ -178,6 +175,15 @@ class Tokenizer:
             self._tokenize = timer(
                 fn = tokenize_fn, name = '_tokenize', log_if_root = False
             )
+        
+        if not hasattr(self, '_split_text'):
+            if self.splitter is not None:
+                self._split_text = lambda text: re.findall(self.splitter, text)
+            elif self.word_split:
+                self._split_text = lambda text: text.split()
+            else:
+                self._split_text = lambda text: list(text)
+
 
 
     def __build_indexes(self, vocab_size, add_special_tokens_at_end):
@@ -228,6 +234,13 @@ class Tokenizer:
     def special_tokens(self):
         return set(v for k, v in self.get_config().items() if k.endswith('_token') and v is not None)
     
+    @cached_property
+    def additional_tokens(self):
+        if isinstance(self._additional_tokens, (list, tuple)):
+            return _create_tokens_name(self._additional_tokens)
+        else:
+            return self._additional_tokens
+        
     @cached_property
     def tokens(self):
         _tokens = ('sep', 'ukn', 'sos', 'eos')
@@ -352,7 +365,7 @@ class Tokenizer:
         return strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
     
     @timer(log_if_root = False)
-    def split_text(self, text):
+    def split_text(self, text, tokenize = False):
         """ Splits `text` into a list of tokens """
         parts = re.split(self._tokens_split_re, text)
 
@@ -361,12 +374,8 @@ class Tokenizer:
             if not part: continue
             elif part in self._special_tokens:
                 splitted.append(part)
-            elif self.splitter is not None:
-                splitted.extend(re.findall(self.splitter, part))
-            elif self.word_split:
-                splitted.extend(part.split())
             else:
-                splitted.extend(part)
+                splitted.append(self._split_text(part))
 
         return splitted
     
@@ -379,10 +388,11 @@ class Tokenizer:
         
         tokens = []
         for token in splitted:
-            if token in self._special_tokens:
+            if isinstance(token, str):
                 tokens.append(token)
             else:
-                tokens.extend(self._tokenize(token))
+                for tok in token:
+                    tokens.extend(self._tokenize(tok))
         
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Cleaned  : {}\nSplitted : {}\nTokens  : {}'.format(text, splitted, tokens))
@@ -681,7 +691,7 @@ class Tokenizer:
             'sep_token' : self.sep_token,
             'ukn_token' : self.ukn_token,
             'mask_token'    : self.mask_token,
-            'additional_tokens' : self.additional_tokens,
+            'additional_tokens' : self._additional_tokens,
             
             'sub_word_prefix'   : self.sub_word_prefix,
             'use_sos_and_eos'   : self.use_sos_and_eos,
@@ -714,11 +724,15 @@ class Tokenizer:
             specials = [w for w in tokenizer.all_special_tokens if w not in vocab]
             return list(sorted(vocab, key = vocab.get)) + specials
         
-        from transformers import AutoTokenizer, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, LlamaTokenizer, WhisperTokenizer, Qwen2Tokenizer
+        from transformers import AutoProcessor, BertTokenizer, GPT2Tokenizer, BartTokenizer, BarthezTokenizer, GPT2TokenizerFast, PreTrainedTokenizerFast, T5Tokenizer, LlamaTokenizer, WhisperTokenizer, Qwen2Tokenizer
         
         pretrained = name
         if isinstance(name, str):
-            pretrained = AutoTokenizer.from_pretrained(name, use_fast = False)
+            pretrained = AutoProcessor.from_pretrained(name, use_fast = False)
+        
+        chat_template = getattr(pretrained, 'chat_template', None)
+        if hasattr(pretrained, 'tokenizer'):
+            pretrained    = pretrained.tokenizer
         
         # /!\ WARNING /!\ The original transformers tokenizers have the `remove_control`
         # cleaner but it reduces performances by 30% for really rare occurences. 
@@ -763,6 +777,9 @@ class Tokenizer:
             vocab = data['model']['vocab']
             for token in data['added_tokens']:
                 vocab[token['content']] = token['id']
+
+            if data['model']['merges'] and isinstance(data['model']['merges'][0], str):
+                data['model']['merges'] = [pair.split(' ') for pair in data['model']['merges']]
             
             if isinstance(vocab, dict): vocab = list(sorted(vocab.keys(), key = vocab.get))
             kwargs.update({
@@ -773,7 +790,7 @@ class Tokenizer:
                 'sos_token' : pretrained.bos_token,
                 'eos_token' : pretrained.eos_token,
                 'split_pattern'     : _llama_pattern,
-                'bpe_pairs'         : [pair.split(' ') for pair in data['model']['merges']],
+                'bpe_pairs'         : data['model']['merges'],
                 'byte_encoder'      : bytes_to_unicode(),
                 'additional_tokens' : [tok['content'] for tok in data.get('added_tokens', [])]
             })
@@ -803,7 +820,7 @@ class Tokenizer:
             'sep_token'     : pretrained.sep_token,
             'ukn_token'     : pretrained.unk_token,
             'mask_token'    : pretrained.mask_token,
-            'template'  : getattr(pretrained, 'chat_template', None)
+            'template'  : chat_template
         })
         if 'additional_tokens' not in kwargs and getattr(pretrained, 'additional_special_tokens', []):
             kwargs['additional_tokens'] = pretrained.additional_special_tokens
@@ -854,12 +871,26 @@ class Tokenizer:
     def from_whisper_pretrained(cls, multilingual = True, ** kwargs):
         return cls.from_transformers_pretrained('openai/whisper-base')
 
-def _create_token_name(token):
-    name = ''.join([c for c in token.lower() if c.isalnum() or c == '_'])
-    for suffix in ('_id', '_tag'):
-        if name.endswith(suffix): name = name.replace(suffix, '_token')
-    if 'token' not in name: name += '_token'
-    return name
+def _create_tokens_name(tokens):
+    names = {}
+    for token in tokens:
+        name = ''.join([c for c in token.lower() if c.isalnum() or c == '_'])
+        for suffix in ('_id', '_tag'):
+            if name.endswith(suffix): name = name.replace(suffix, '_token')
+        if 'token' not in name: name += '_token'
+        
+        if name in names:
+            if 'start' in name or 'end' in name:
+                raise RuntimeError('Unable to infer a unique name for token {}'.format(token))
+            
+            if '/' in token:
+                name += '_end'
+            else:
+                name += '_start'
+        
+        names[name] = token
+    
+    return names
 
 def pretty_print_template(template):
     if '\n' in template: return template

@@ -20,7 +20,9 @@ def resize_image(image  : TensorSpec(),
                  size   = None,
                  *,
                  
+                 round  : bool  = False,
                  multiples  : TensorSpec(dtype = 'int32')   = None,
+                 max_shape  = None,
                  
                  antialias  = False,
                  interpolation  = 'bilinear',
@@ -46,13 +48,15 @@ def resize_image(image  : TensorSpec(),
         Return :
             - resized   : the resized image(s) with same rank as `image` and `float` dtype
     """
-    if size is None and multiples is None: return image
+    if size is None and multiples is None and max_shape is None: return image
     if method is not None: interpolation = method
     
     img_size    = ops.shape(image)[-3 : -1]
     output_size = get_output_size(
         image,
         size    = size,
+        round   = round,
+        max_shape   = max_shape,
         multiples   = multiples,
         preserve_aspect_ratio   = preserve_aspect_ratio
     )
@@ -67,9 +71,9 @@ def resize_image(image  : TensorSpec(),
             ratio       = ops.min(ops.divide(ops.cast(output_size, 'float32'), img_size))
             intermediate_size = ops.cast(img_size * ratio, 'int32')
 
-        image = ops.image_resize(
+        image = ops.cast(ops.image_resize(
             image, intermediate_size, antialias = antialias, interpolation = interpolation
-        )
+        ), image.dtype)
 
         if preserve_aspect_ratio:
             image = pad_image(image, output_size, pad_value = pad_value, pad_mode = pad_mode)
@@ -143,6 +147,7 @@ def get_output_size(image,
                     
                     round   = False,
                     multiples   = None,
+                    max_shape   = None,
                     preserve_aspect_ratio = False
                    ):
     """
@@ -180,14 +185,27 @@ def get_output_size(image,
             out_size    = ops.cast(ops.cast(img_size, ratio.dtype) * ratio, 'int32')
     
     if multiples is not None:
-        multiples   = ops.convert_to_numpy(multiples, dtype = 'int32')
         if round:
-            new_values = ops.cast(ops.round(out_size / multiples) * multiples, 'int32')
+            multiples   = ops.convert_to_numpy(multiples, dtype = 'float32')
+            new_values = ops.cast(
+                ops.round(ops.cast(out_size, 'float32') / multiples) * multiples, 'int32'
+            )
+            multiples = ops.cast(multiples, 'int32')
         else:
+            multiples   = ops.convert_to_numpy(multiples, dtype = 'int32')
             new_values = (out_size // multiples + 1) * multiples
         out_size    = ops.where(
             out_size % multiples != 0, new_values, out_size
         )
+    
+    if max_shape is not None:
+        if preserve_aspect_ratio:
+            ratio   = ops.max(
+                ops.where(out_size > max_shape, out_size / ops.minimum(out_size, max_shape), 1)
+            )
+            out_size    = ops.cast(ops.cast(out_size, ratio.dtype) / ratio, out_size.dtype)
+        else:
+            out_size = ops.minimum(out_size, max_shape)
     
     if size is not None:
         out_size = ops.where(size != -1, size, out_size)

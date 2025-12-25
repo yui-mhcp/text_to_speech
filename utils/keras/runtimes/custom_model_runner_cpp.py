@@ -46,13 +46,7 @@ class CustomModelRunnerCpp(ModelRunnerCpp):
                  encoder_input_features : List[Union[torch.Tensor, np.ndarray]]  = None,
                  encoder_output_lengths : List[int] = None,
                  cross_attention_masks  : List[torch.Tensor]  = None,
-                 
-                 lora_uids  : Optional[list] = None,
-                 mrope_params   : Optional[MropeParams] = None,
-                 sampling_config    : Optional[trtllm.SamplingConfig] = None,
-                 lookahead_config   : Optional[List[int]]   = None,
-                 kv_cache_retention_config  : Optional[trtllm.KvCacheRetentionConfig]   = None,
-                 
+
                  end_id : Optional[int] = None,
                  pad_id : Optional[int] = None,
                  max_new_tokens : int   = 1,
@@ -62,7 +56,13 @@ class CustomModelRunnerCpp(ModelRunnerCpp):
                  stopping_criteria  = None,
                  logits_processors  : Optional[List[Callable]]  = None,
                  logits_processor_names : Optional[List[str]] = None,
-                 
+
+                 lora_uids  : Optional[list] = None,
+                 mrope_params   : Optional[MropeParams] = None,
+                 sampling_config    : Optional[trtllm.SamplingConfig] = None,
+                 lookahead_config   : Optional[List[int]]   = None,
+                 kv_cache_retention_config  : Optional[trtllm.KvCacheRetentionConfig]   = None,
+
                  streaming  : bool = False,
                  return_dict    : bool = False,
                  output_log_probs   : bool = False,

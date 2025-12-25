@@ -12,13 +12,9 @@
 import os
 import json
 import math
+import scipy
 import librosa
 import numpy as np
-
-from scipy.linalg import pinv
-from scipy.signal import get_window
-from librosa.util import pad_center
-from librosa.filters import mel as librosa_mel_fn
 
 from loggers import timer
 from ..file_utils import dump_json, load_json
@@ -62,7 +58,7 @@ class MelSTFT(object):
         
         self.mel_basis = None
         if self.use_mel_basis:
-            mel_basis = librosa_mel_fn(
+            mel_basis = librosa.filters.mel(
                 sr      = self.sampling_rate, 
                 n_fft   = self.filter_length, 
                 n_mels  = self.n_mel_channels, 
@@ -218,14 +214,14 @@ class STFT(object):
 
         forward_basis = np.expand_dims(fourier_basis, 1).astype(np.float32)
         inverse_basis = np.expand_dims(
-            np.transpose(pinv(self._scale * fourier_basis)), 1
+            np.transpose(scipy.linalg.pinv(self._scale * fourier_basis)), 1
         ).astype(np.float32)
 
         if window is not None:
             assert(filter_length >= win_length)
             # get window and zero center pad it to filter_length
-            fft_window = get_window(window, win_length, fftbins = periodic)
-            fft_window = pad_center(fft_window, size = filter_length)
+            fft_window = scipy.signal.get_window(window, win_length, fftbins = periodic)
+            fft_window = librosa.util.pad_center(fft_window, size = filter_length)
             fft_window = fft_window
 
             # window the bases

@@ -15,7 +15,6 @@ import inspect
 import multiprocessing.queues
 
 from typing import Any, Dict
-from datetime import datetime
 from functools import partial
 from threading import Thread, RLock, Event
 from dataclasses import dataclass, field
@@ -152,7 +151,7 @@ class Stream(Thread):
         
         
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('[{}] Processing new item'.format(datetime.now()))
+            logger.debug('Processing new item')
         
         _kwargs = {** self.kwargs, ** data.kwargs} if data.kwargs else self.kwargs
         if self.max_workers == 0:

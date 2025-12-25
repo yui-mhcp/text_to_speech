@@ -40,9 +40,9 @@ class SentencePieceTokenizer(Tokenizer):
     def space_replacement(self):
         return self.tokenizer.encode_as_pieces(' !')[0][0]
 
-    def split_text(self, text):
-        return re.split(self._tokens_split_re, text)
-
+    def _split_text(self, text):
+        return [text]
+    
     def _tokenize(self, token):
         return self.tokenizer.encode_as_pieces(token)
 

@@ -84,7 +84,7 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
         items   = super().multi_pop(iterable)
         
         entries = [self._get_entry(data) for data in iterable]
-        indexes = [self._entry_to_idx[entry] for idx in entries]
+        indexes = [self._entry_to_idx[entry] for entry in entries]
         
         for idx in sorted(indexes, reverse = True):
             self._idx_to_entry.pop(idx)

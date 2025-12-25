@@ -201,7 +201,7 @@ def combine_boxes_horizontal(boxes,
     if indices is None: indices = list(range(len(boxes)))
     if len(boxes) <= 1: return boxes, [indices], [boxes]
 
-    h   = boxes[:, 3] - boxes[:, 1]
+    h = boxes[:, 3] - boxes[:, 1]
     if x_threshold is None:
         x_threshold = np.median(h) * h_factor
         if logger.isEnabledFor(logging.DEBUG):
@@ -223,7 +223,7 @@ def combine_boxes_horizontal(boxes,
 
     should_combine_horizontal = np.logical_and(
         diff_border <= x_threshold,
-        overlap_y / max_h >= y_overlap_threshold
+        np.divide(overlap_y, max_h, where = max_h > 0) >= y_overlap_threshold
     )
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug('Horizontal combination :\nX distance :\n{}\n% y overlap :\n{}'.format(

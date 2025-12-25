@@ -848,7 +848,7 @@ class Tacotron2(keras.Model):
         
         return decoder_output, mel_outputs, stop_tokens
 
-    def prepare_for_xla(self, *, inputs, max_length = None, padding_multiple = 64, ** _):
+    def prepare_for_xla(self, *, inputs, max_length = None, padding_multiple = 64 * 3, ** _):
         tokens = inputs[0] if isinstance(inputs, tuple) else inputs
         tokens = pad_to_multiple(
             tokens, padding_multiple, axis = 1, constant_values = self.pad_token

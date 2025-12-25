@@ -1,0 +1,22 @@
+{
+    "Merry Christmas everyone ! I wish you all the best for the new year !": {
+        "text": "Merry Christmas everyone ! I wish you all the best for the new year !",
+        "cleaned": "merry christmas everyone ! i wish you all the best for the new year !",
+        "splitted": [
+            "merry christmas everyone ! i wish you all the best for the new year !"
+        ],
+        "rate": 22050,
+        "time": 4.6788208616780045,
+        "audio": "example_outputs/christmas/audios/audio-0.mp3"
+    },
+    "Joyeux Noel tout le monde ! Je vous souhaite tout le meilleur pour la nouvelle ann\u00e9e !": {
+        "text": "Joyeux Noel tout le monde ! Je vous souhaite tout le meilleur pour la nouvelle ann\u00e9e !",
+        "cleaned": "Joyeux Noel tout le monde ! Je vous souhaite tout le meilleur pour la nouvelle ann\u00e9e !",
+        "splitted": [
+            "Joyeux Noel tout le monde ! Je vous souhaite tout le meilleur pour la nouvelle ann\u00e9e !"
+        ],
+        "rate": 22050,
+        "time": 3.0998639455782313,
+        "audio": "example_outputs/christmas/audios/audio-1.mp3"
+    }
+}

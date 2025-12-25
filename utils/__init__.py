@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
 from loggers import set_level
 
 from .comparison_utils import is_diff, is_equal
@@ -24,6 +26,8 @@ from .keras import *
 from .databases import *
 from .callbacks import *
 from .threading import *
+
+warnings.filterwarnings('ignore', module = 'modelopt')
 
 def setup_environment(log_level = None, ** kwargs):
     if log_level: set_level(log_level)

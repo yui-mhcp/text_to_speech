@@ -17,25 +17,16 @@ logger = logging.getLogger(__name__)
 
 class FunctionCallback(Callback):
     def __init__(self, fn, name = None, include_outputs = True, ** kwargs):
-        if name is None: name = getattr(fn, '__name__', fn.__class__.__name__)
-        
+        super().__init__(name = name or getattr(fn, '__name__', fn.__class__.__name__), ** kwargs)
+
         self.fn = fn
         self.include_outputs    = include_outputs
-        
-        super().__init__(name = name, ** kwargs)
     
     def apply(self, infos, output, ** kwargs):
         kwargs.update(infos)
         if self.include_outputs: kwargs.update(output)
         return self.fn(** kwargs)
 
-class QueueCallback(Callback):
-    def __init__(self, queue, name = 'queue', ** kwargs):
-        super().__init__(name = name, ** kwargs)
-        
-        self.queue  = queue
-    
-    
-    def apply(self, infos, output, ** kwargs):
-        kwargs.update(infos)
-        return self.queue.put(kwargs)
+class QueueCallback(FunctionCallback):
+    def __init__(self, queue, name = 'queue', include_outputs = False, ** kwargs):
+        super().__init__(queue.put, name = name, include_outputs = include_outputs, ** kwargs)

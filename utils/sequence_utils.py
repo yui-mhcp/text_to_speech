@@ -29,28 +29,31 @@ def pad_batch(batch, pad_value = 0, dtype = None, pad_mode = 'after'):
     assert pad_mode in ('before', 'after')
     
     if len(batch) == 0: return batch
-    if not hasattr(batch[0], 'shape'):
+    elif hasattr(batch, 'shape'):
+        if len(batch.shape) == 0: batch = batch[None]
+        return ops.cast(batch, dtype) if dtype else batch
+    
+    if not hasattr(batch[0], 'shape') or np.ndim(batch[0]) == 0:
         if not isinstance(batch[0], list): return np.asarray(batch, dtype = dtype)
         batch = [
-            pad_batch(b, pad_value = pad_value, dtype = dtype, pad_mode = pad_mode)
-            for b in batch
+            pad_batch(b, pad_value = pad_value, dtype = dtype, pad_mode = pad_mode) for b in batch
         ]
+    elif dtype:
+        batch = [ops.cast(b, dtype) for b in batch]
     
     if len(batch) == 1:
-        return ops.expand_dims(ops.cast(batch[0], dtype) if dtype else batch[0], axis = 0)
+        return batch[0][None]
     elif pad_value is None or len(set(tuple(b.shape) for b in batch)) == 1:
         return ops.stack(batch, axis = 0)
     
     batch = [ops.convert_to_numpy(b) for b in batch]
-    if dtype is None:   dtype = ops.dtype_to_str(batch[0].dtype)
-    else:               dtype = ops.dtype_to_str(dtype)
     
     rank = batch[0].ndim
-    assert all(b.ndim == rank for b in batch), 'All ranks must be equal !'
+    assert all(b.ndim == rank for b in batch[1:]), 'All ranks must be equal !'
     
     max_shape = np.max(np.array([b.shape for b in batch], dtype = np.int32), axis = 0).tolist()
     
-    padded_batch = np.full([len(batch)] + max_shape, np.asarray(pad_value, dtype = dtype))
+    padded_batch = np.full([len(batch)] + max_shape, np.asarray(pad_value, dtype = batch[0].dtype))
     for i, b in enumerate(batch):
         if pad_mode == 'after':
             slices = tuple(slice(0, s) for s in b.shape)

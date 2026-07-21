@@ -95,10 +95,15 @@ def _segment_min(data, segment_ids, num_segments = None, sorted = False):
 
 def _segment_mean(data, segment_ids, num_segments = None, sorted = False, weights = None):
     num = segment_sum_op(data, segment_ids, num_segments, sorted)
-    den = core.cast(
-        numpy.bincount(segment_ids, weights = weights, minlength = num_segments), data.dtype
-    )
-    
+    if weights is None:
+        # plain count per segment (unweighted mean)
+        den = numpy.bincount(segment_ids, minlength = num_segments)
+    else:
+        # sum of weights per segment — via `segment_sum` (weighted `bincount` is not
+        # supported by the GPU `DenseBincount` kernel)
+        den = segment_sum_op(weights, segment_ids, num_segments, sorted)
+    den = core.cast(den, data.dtype)
+
     return numpy.einsum('i..., i -> i...', num, numpy.divide_no_nan(1., den))
 
 segment_sum_op  = Ops('segment_sum', numpy_fn = _np_segment_sum)
@@ -117,7 +122,7 @@ segment_mean_op = Ops(
 )
 
 def segment_weighted_mean_op(data, segment_ids, weights, num_segments = None, sorted = None):
-    data = einsum('i..., i -> i...', data, weights)
+    data = numpy.einsum('i..., i -> i...', data, weights)
     return _segment_mean(
         data, segment_ids, num_segments, sorted, weights = weights
     )
@@ -169,7 +174,18 @@ segment_min = _segment_op_wrapper(segment_min_op)
 segment_max = _segment_op_wrapper(segment_max_op)
 segment_mean    = _segment_op_wrapper(segment_mean_op)
 segment_argsort = _segment_op_wrapper(segment_argsort_op)
-segment_weighted_mean   = _segment_op_wrapper(segment_weighted_mean_op)
+
+@timer(debug = True)
+def segment_weighted_mean(data, segment_ids, weights, num_segments = None, sorted = False, axis = 0):
+    # dedicated wrapper : the generic `_segment_op_wrapper` does not thread `weights`.
+    if sorted: sorted = not is_tensorflow_graph()
+    if axis != 0: data = numpy.swapaxes(data, 0, axis)
+
+    data = segment_weighted_mean_op(data, segment_ids, weights, num_segments, sorted)
+
+    if axis != 0: data = numpy.swapaxes(data, 0, axis)
+
+    return data
 
 @timer(debug = True)
 def segment_repeat(data, segment_ids, num_segments, axis = 0):
@@ -181,4 +197,3 @@ def segment_repeat(data, segment_ids, num_segments, axis = 0):
 __all__ = list(
     k for k, v in globals().items() if (isinstance(v, Ops)) or (callable(v) and not k.startswith('_'))
 )
-

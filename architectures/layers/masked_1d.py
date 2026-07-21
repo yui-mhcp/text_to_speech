@@ -111,4 +111,3 @@ class MaskedConv1D(keras.layers.Conv1D):
                 pass
         
         return out
-

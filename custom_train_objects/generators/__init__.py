@@ -9,10 +9,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-
-from utils import import_objects
-
-globals().update(import_objects(
-    __package__.replace('.', os.path.sep), types = type
-))

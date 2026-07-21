@@ -14,7 +14,7 @@ import numpy as np
 
 from sklearn.utils import shuffle as sklearn_shuffle
 
-from utils.keras_utils import TensorSpec
+from utils.keras import TensorSpec
 from .file_cache_generator import FileCacheGenerator
 
 class GE2EGenerator(FileCacheGenerator):

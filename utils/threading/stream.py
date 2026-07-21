@@ -12,11 +12,12 @@
 import queue
 import logging
 import inspect
+import traceback
 import multiprocessing.queues
 
 from typing import Any, Dict
 from functools import partial
-from threading import Thread, RLock, Event
+from threading import Thread, Lock, Event, Semaphore
 from dataclasses import dataclass, field
 from multiprocessing.pool import ThreadPool
 
@@ -48,11 +49,12 @@ class FakeLock:
 
 def _locked_property(name):
     def getter(self):
-        with self.mutex: return getattr(self, '_' + name)
+        with self.mutex: return getattr(self, attr_name)
     
     def setter(self, value):
-        with self.mutex: setattr(self, '_' + name, value)
+        with self.mutex: setattr(self, attr_name, value)
     
+    attr_name = '_' + name
     return property(fget = getter, fset = setter)
 
 class Stream(Thread):
@@ -61,6 +63,8 @@ class Stream(Thread):
                  stream = None,
                  *,
                  
+                 timeout    = None,
+                 
                  callback   = None,
                  start_callback = None,
                  stop_callback  = None,
@@ -68,13 +72,55 @@ class Stream(Thread):
                  
                  dict_as_kwargs = None,
                  
-                 prefetch_size  = 0,
-                 max_workers    = 0,
-                 daemon = True,
                  name   = None,
+                 daemon = True,
+                 max_workers    = 0,
+                 prefetch_size  = 0,
+                 stop_on_error  = True,
                  
                  ** kwargs
                 ):
+        """
+            This class represents a (possibly multi-threaded) consumer
+            
+            The `Stream` object can be used in 2 different ways :
+                1) Iterator-like : the `Stream` object can be used as an iterator, and yields the application of `fn` to each item of `stream`. In this case, the `stream` argument is required and acts as the producer (i.e., item generator).
+                
+                Example :
+                ```python
+                # only yields the result of fn(item)
+                for item in Stream(fn, stream, ...):
+                    ...
+                # yields both input and output, where `out` is roughly equivalent to `fn(inp)`
+                for inp, out in Stream(fn, stream, ...).items():
+                    ...
+                ```
+                
+                2) Function-like  : in this case, the items are manually provided by calling the `Stream` object, returning an `AsyncResult` object or the result directly. In this setup, the `stream` object must be omitted, and the `join` method should be called at the end.
+                
+                Example :
+                ```python
+                stream = Stream(fn)
+                
+                # when `max_workers == 0` : the output is the effective result
+                out = stream(inp)
+                # when `max_workers > 0` : the output is an `AsyncResult` object
+                out = stream(inp).get()
+                # out = await stream(inp).aget() # asyncio-compatible version
+
+                # This is required to ensure that all items have been finalized, then call `on_stop`
+                stream.join()
+                ```
+
+                Error handling : if `fn` raises, `get / aget` re-raise the exception in
+                the caller (`max_workers > 0`), while the sequential mode
+                (`max_workers == 0`) returns the exception object as the result
+            
+            The `max_workers` argument defines whether it `fn` executed in the main thread or not :
+                - `max_workers = 0` : `fn` is called in the current thread
+                - `max_workers = 1` : `fn` is called in the `Stream` thread
+                - `max_workers > 1` : `fn` is called in multiple separate threads (`ThreadPool`)
+        """
         Thread.__init__(self, name = name or get_fn_name(fn), daemon = daemon)
         
         if dict_as_kwargs is None:
@@ -83,10 +129,12 @@ class Stream(Thread):
         self.fn = fn
         self.stream = stream
         self.kwargs = kwargs
+        self.timeout    = timeout
         self.dict_as_kwargs = dict_as_kwargs
         
         self.max_workers    = max_workers
         self.prefetch_size  = prefetch_size
+        self.stop_on_error  = stop_on_error
 
         self._callbacks = {
             'start' : start_callback or [],
@@ -97,18 +145,29 @@ class Stream(Thread):
         for k, v in self._callbacks.items():
             if not isinstance(v, list): self._callbacks[k] = [v]
 
-        self.mutex  = RLock() if max_workers else FakeLock()
+        self.mutex  = Lock() if max_workers else FakeLock()
         self.__started  = False
         self.__finished = False
         self._stopped   = False
+        self._thread_started    = False
         
         self._pool  = None
-        self._empty = False
+        self._sema  = None
+
         self._results_buffer    = None
+        self._stop_generator    = False
         self._generator_finished    = None
     
-    empty   = _locked_property('empty')
     stopped = _locked_property('stopped')
+    stop_generator  = _locked_property('stop_generator')
+    
+    def _safe_fn(self, * args, ** kwargs):
+        try:
+            return self.fn(* args, ** kwargs)
+        except Exception as e:
+            if self.stop_on_error: self.stop()
+            logger.error('An exception occured :\n{}'.format(traceback.format_exc()))
+            return e
     
     def _apply_async(self, * args, return_input = False, ** kwargs):
         """
@@ -125,20 +184,24 @@ class Stream(Thread):
         else:
             args = data = args[0]
             if data is STOP:
-                self.stopped = True
+                self.stop()
                 self.on_item_produced(DataWithResult(), CONTROL)
                 return (args, CONTROL) if return_input else CONTROL
             
             elif isinstance(data, DataWithResult):
                 if data.args is STOP:
-                    self.stopped = True
+                    self.stop()
                     self.on_item_produced(data, CONTROL)
                     return (args, CONTROL) if return_input else CONTROL
                 elif isinstance(data.args, str) and data.args == IS_RUNNING:
                     self.on_item_produced(data, CONTROL)
                     return (args, CONTROL) if return_input else CONTROL
+                elif isinstance(data.args, str) and data.args == KEEP_ALIVE:
+                    if self.max_workers > 1: self._sema.release()
+                    return (args, CONTROL) if return_input else CONTROL
                 
             elif isinstance(data, str) and data == KEEP_ALIVE:
+                if self.max_workers > 1: self._sema.release()
                 return (args, CONTROL) if return_input else CONTROL
             elif isinstance(data, str) and data == IS_RUNNING:
                 self.on_item_produced(DataWithResult(args = (IS_RUNNING, )), CONTROL)
@@ -154,194 +217,283 @@ class Stream(Thread):
             logger.debug('Processing new item')
         
         _kwargs = {** self.kwargs, ** data.kwargs} if data.kwargs else self.kwargs
-        if self.max_workers == 0:
-            result = self.fn(* data.args, ** _kwargs)
+        if self.max_workers <= 1:
+            # if `max_workers == 0`, this is called in the current thread
+            # if `max_workers == 1`, this is called in the `Stream` thread
+            result = self._safe_fn(* data.args, ** _kwargs)
             self.on_item_produced(data, result)
             return (args, result) if return_input else result
-        elif self._pool is not None:
-            self._pool.apply_async(
-                self.fn, data.args, _kwargs, callback = partial(self.on_item_produced, data)
-            )
         else:
-            result = self.fn(* data.args, ** _kwargs)
-            self.on_item_produced(data, result)
+            self._pool.apply_async(
+                self._safe_fn, data.args, _kwargs, callback = partial(self.on_item_produced, data)
+            )
     
     def __iter__(self):
+        """ Yields the result of `self.fn` applied on each element from `self.stream` """
         for _, res in self.items():
             yield res
     
     def __call__(self, * args, ** kwargs):
-        if not self.__started: self.start()
-        
+        # `_thread_started` is set synchronously in `start` (under `self.mutex` here),
+        # while `__started` is only set by `on_start` (i.e., asynchronously in the
+        # `Stream` thread when `max_workers > 0`) : checking the latter could start
+        # the thread twice ("threads can only be started once")
+        if not self._thread_started:
+            with self.mutex:
+                if not self._thread_started: self.start()
+
+        if self.stopped:
+            raise RuntimeError('The `Stream` is stopped !')
+
         if self.max_workers == 0:
             return self._apply_async(* args, ** kwargs)
         else:
             res = AsyncResult()
             self.stream.put(DataWithResult(args = args, kwargs = kwargs, result = res))
             return res
-    
-    def run(self):
-        if self.max_workers > 1: self._pool = ThreadPool(self.max_workers).__enter__()
-        
-        if self.stream is None:
-            assert self._results_buffer is None, 'You must provide the `stream` argument'
-            self.stream = queue.Queue()
 
-        self.on_start()
-        
+    def run(self):
+        if self.max_workers == 0:
+            raise RuntimeError('The `run` method should not be called in sequential mode')
+        elif self.max_workers > 1:
+            self._pool  = ThreadPool(self.max_workers).__enter__()
+            self._sema  = Semaphore(self.max_workers)
+
         try:
-            for item in create_iterable(self.stream):
+            self.on_start()
+            for item in create_iterable(self.stream, timeout = self.timeout):
                 self._apply_async(item)
+                if self.max_workers > 1: self._sema.acquire()
                 if self.stopped: break
+        except StopIteration:
+            pass
         except Exception as e:
+            # only call `terminate` on error, otherwise wait the end of all threads
             if self.max_workers > 1: self._pool.terminate()
-            if not isinstance(e, StopIteration): raise e
+            raise e from None
         finally:
             if self.max_workers > 1:
                 self._pool.close()
                 self._pool.join()
 
             if self._results_buffer is not None:
-                self._empty = True
+                self._results_buffer.put(STOP)
                 self._generator_finished.wait()
             
             self.on_stop()
 
     def start(self):
         if self.max_workers == 0:
+            self._thread_started    = True
             self.on_start()
         else:
+            # the queue must exist *before* the thread starts : `__call__` may `put`
+            # into it as soon as `start` returns
+            if self.stream is None:
+                assert self._results_buffer is None, 'You must provide the `stream` argument'
+                self.stream = queue.Queue()
+
+            self._thread_started    = True
             super().start()
         return self
 
     def stop(self):
-        return self.join(force = True)
+        self.stopped = True
         
     def clear(self):
-        while True:
-            try:
-                self.stream.get_nowait()
-            except queue.Empty:
-                break
+        if not hasattr(self.stream, 'get_nowait'): return
+
+        try:
+            while True:
+                it = self.stream.get_nowait()
+                # function-like mode : a caller may be blocked on `get()` for a
+                # discarded item — wake it up with an explicit error
+                if isinstance(it, DataWithResult) and isinstance(it.result, AsyncResult):
+                    it.result.set_exception(
+                        RuntimeError('The `Stream` was stopped before processing this item')
+                    )
+        except queue.Empty:
+            pass
         
     def items(self):
         """
             Iterates over tuples `(input, output)`, where `output` is equivalent to `self(input)`
             
-            If `self.max_workers == 0`, this function sequentially calls items and yields the result
-            If `self.max_workers > 0`, the stream-thread is started (`self.start()`), and all results are added in a queue, then yielded by this function
-            This means that results are prefetched in a separate thread
+            If `self.max_workers == 0`:
+                The results are sequentially created in the main thread, then yielded with its input
+                
+                It is roughly equivalent to :
+                ```python
+                self.on_start()
+                for item in create_iterable(self.stream):
+                    yield item, self._apply_async(item)
+                self.on_stop()
+                ```
+            
+            If `self.max_workers > 0`:
+                The results are generated in separate thread(s), then added to a buffer, then yielded
+                This implies that, if `max_workers > 1`, the results may be yielded in a different order than the calls order, depending on the result generation time
         """
         if self.max_workers == 0:
             try:
-                self.start()
-                for inp in create_iterable(self.stream):
+                self.on_start()
+                for inp in create_iterable(self.stream, timeout = self.timeout):
                     inp, out = self._apply_async(inp, return_input = True)
+                    # yield *before* checking `stopped` : on error (`stop_on_error`),
+                    # the caller receives the exception instead of a silently
+                    # truncated stream (mirrors the `max_workers > 0` behavior)
+                    if out is not CONTROL:  yield inp, out
                     if self.stopped:        break
-                    elif out is CONTROL:    continue
-                    else:                   yield inp, out
             
             except StopIteration:
                 pass
             finally:
-                self.join()
-            
+                self.on_stop()
         else:
-            self._generator_finished    = Event()
             self._results_buffer = queue.Queue(self.prefetch_size)
+            self._generator_finished    = Event()
+
             self._callbacks['item'].insert(0, self._results_buffer)
             
             self.start()
             
             try:
-                while self._results_buffer.qsize() or not self.empty:
-                    try:
-                        data = self._results_buffer.get(timeout = WARMUP_DELAY)
-                    except queue.Empty:
-                        continue
-
-                    if data.result is CONTROL:
+                stop_generator = False
+                while not stop_generator:
+                    data = self._results_buffer.get()
+                    if data is STOP:
+                        stop_generator = True
+                    elif data.result is CONTROL:
                         continue
                     else:
                         yield data.args[0] if data.args else data.kwargs, data.result
-            
-            except StopIteration:
-                pass
             finally:
                 self._generator_finished.set()
-                self.join()
+                if not stop_generator:
+                    # early exit (`break` / exception in the consumer) : keep draining
+                    # the buffer while the thread runs, otherwise workers blocked on a
+                    # bounded `prefetch_size` buffer would deadlock the `join`
+                    self.stop()
+                    while super().is_alive():
+                        try:
+                            self._results_buffer.get(timeout = WARMUP_DELAY)
+                        except queue.Empty:
+                            pass
+                self.join(force = True)
     
     def join(self, *, wakeup_timeout = 0.25, force = False, ** kwargs):
         if self.max_workers:
             if force:
-                self.stopped = True
+                self.stop()
 
-            if hasattr(self.stream, 'put'):
-                self.stream.put(STOP)
-            
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug('[STATUS {}] join...'.format(self.name))
-            
+
             if kwargs.get('timeout', 1) is None: kwargs.pop('timeout')
             try:
                 while super().is_alive():
+                    # the `STOP` token is only put when the queue looks empty, so that
+                    # pending items are processed first (and priority queues never have
+                    # to order `STOP` against real items). Re-attempted at every wakeup:
+                    # a single upfront `put` could be missed when items are still pending
+                    if hasattr(self.stream, 'put') and self.stream.qsize() == 0:
+                        self.stream.put(STOP)
+
                     super().join(timeout = kwargs.get('timeout', wakeup_timeout))
                     if 'timeout' in kwargs: break
             except KeyboardInterrupt:
+                # simply mark the stream as stopped : `run` will call `on_stop` itself
+                # (calling it here too raised "called multiple times" in the thread)
                 logger.info('Thread stopped while being joined !')
-                self.on_stop()
+                self.stop()
+
+            self.clear()
         elif not self.__finished:
-            self.on_stop()
+            with self.mutex:
+                if self.__started and not self.__finished: self.on_stop()
         
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('[STATUS {}] Joined !'.format(self.name))
 
     def on_start(self):
         """ Function called when starting the thread """
+        if self.__started:
+            raise RuntimeError('The `on_start` method is called multiple times')
+        
         self.__started = True
         if logger.isEnabledFor(logging.DEBUG): logger.debug('[STATUS {}] Start'.format(self.name))
         _run_callbacks(self._callbacks['start'])
 
     def on_stop(self):
         """ Function called when stopping the thread """
-        self._stopped   = True
+        if not self.__started:
+            raise RuntimeError('The stream was not started')
+        elif self.__finished:
+            # multiple termination paths (`run` finally, `join`, ...) may reach this
+            # point : only the first one runs the callbacks
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('[STATUS {}] `on_stop` skipped (already stopped)'.format(self.name))
+            return
+
         self.__finished = True
-        if self._pool is not None: self._pool.terminate()
         if logger.isEnabledFor(logging.DEBUG): logger.debug('[STATUS {}] Stop'.format(self.name))
         _run_callbacks(self._callbacks['stop'])
 
     def on_item_produced(self, item, result):
         """ Function called when a new item is generated """
+        if self.max_workers > 1: self._sema.release()
+
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('[ITEM PRODUCED {}]'.format(self.name))
+
+        if isinstance(item.result, AsyncResult):
+            # function-like mode : `__call__` stored the caller's `AsyncResult` in
+            # `item.result`. Resolve it now, before `_run_callbacks` overwrites the
+            # field with the raw result. Exceptions caught by `_safe_fn` are re-raised
+            # in the caller (`get / aget`) instead of being returned as values
+            promise = item.result
+            if isinstance(result, Exception):
+                promise.set_exception(result)
+            else:
+                promise(result)
 
         _run_callbacks(self._callbacks['item'], item, result)
         if result is CONTROL:
             _run_callbacks(self._callbacks['control'], item, result)
 
-def _run_callbacks(callbacks, data = None, res = None):
+_NO_RESULT  = object()
+
+def _run_callbacks(callbacks, data = None, res = _NO_RESULT):
+    """ Runs `callbacks`, either with no argument (`res` omitted, e.g., start / stop
+        callbacks), or with `res` (item callbacks) — a legitimate `None` result is
+        therefore forwarded as `callback(None)`, and not confused with "no argument"
+    """
     assert data is None or isinstance(data, DataWithResult), str(data)
-    
-    if data is not None: data.result = res
+
+    if data is not None and res is not _NO_RESULT: data.result = res
 
     if not callbacks: return
     elif not isinstance(callbacks, list): callbacks = [callbacks]
 
     _remove = []
     for i, callback in enumerate(callbacks):
-        try:
-            if getattr(callback, 'stopped', False): _remove.append(i)
-            elif callable(callback):
-                if res is not CONTROL: callback(res) if res is not None else callback()
-            elif hasattr(callback, 'put'):  callback.put(data if data is not None else res)
-            else:   raise ValueError('Unsupported callback : {}'.format(callback))
-        except Exception as e:
-            if not isinstance(e, StopIteration):
-                logger.error('An exception occured while calling callback {} : {}'.format(
-                    callback, e
-                ))
+        if getattr(callback, 'stopped', False):
             _remove.append(i)
+        elif hasattr(callback, 'put'):
+            if data is not None or res is not _NO_RESULT:
+                callback.put(data if data is not None else res)
+        elif not callable(callback):
+            logger.error('Unsupported callback : {}'.format(callback))
+            _remove.append(i)
+        elif res is not CONTROL:
+            try:
+                callback() if res is _NO_RESULT else callback(res)
+            except Exception as e:
+                if not isinstance(e, StopIteration):
+                    logger.error('An exception occured while calling callback {} : {}'.format(
+                        callback, e
+                    ))
+                _remove.append(i)
     
     for i in reversed(_remove): callbacks.pop(i)
     return callbacks
-

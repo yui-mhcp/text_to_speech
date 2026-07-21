@@ -96,7 +96,7 @@ class SinScheduler(CustomScheduler):
         self.period     = K.convert_to_tensor(period, 'float32')
         self.with_decay = with_decay
         
-        self.range = maxval - minval
+        self.range = self.maxval - self.minval
         self.decay_factor = K.convert_to_tensor(1. / (np.pi * period), 'float32')
         
     def __call__(self, step):

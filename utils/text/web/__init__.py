@@ -9,18 +9,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import importlib
-
+from utils.generic_utils import import_submodules
 from .search_engine import *
 
 _engines = {}
 _default_engine = 'google'
 
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-    
+for module in import_submodules(__package__):
     _engines.update({
         k : v for k, v in vars(module).items() if isinstance(v, type) and issubclass(v, SearchEngine)
     })
@@ -61,4 +56,3 @@ def search_on_web(query, *, n = 5, engine = None, ** kwargs):
             tuple(_engines.keys()), engine
         ))
     return _engines[engine](** kwargs).search(query, n = n, ** kwargs)
-

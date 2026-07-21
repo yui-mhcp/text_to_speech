@@ -99,7 +99,7 @@ class Ops:
                         break
             
             if self._keras_fn is None:
-                raise NotImplementedError('`{}.{}` is not available for backend {}'.format(
+                raise NotImplementedError('`{}{}.{}` is not available for backend {}'.format(
                     module, '' if not self.submodule else '.' + self.submodule, name, get_backend()
                 ))
             

@@ -110,5 +110,3 @@ class EagerExecution:
     
     def __exit__(self, * args):
         set_eager_execution(False)
-
-

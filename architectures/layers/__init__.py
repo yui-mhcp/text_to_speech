@@ -9,19 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import enum
 import keras
-import importlib
 
+from utils.generic_utils import import_submodules
 from ..hparams import HParams
 from .custom_activations import get_activation
 from .custom_rnn_dropout_cell import CustomRNNDropoutCell
 
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-    
+for module in import_submodules(__package__):
     globals().update({
         k : v for k, v in vars(module).items()
         if (not k.startswith('_')) and (

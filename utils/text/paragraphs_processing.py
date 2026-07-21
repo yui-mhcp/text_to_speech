@@ -17,11 +17,11 @@ from copy import deepcopy
 from functools import cache
 
 from .cleaners import remove_urls, remove_files
-from .text_processing import format_text, split_text
+from .text_processing import format_text, split_text, split_sentences
 
 logger  = logging.getLogger(__name__)
 
-_multimodal_types = ('audio', 'image', 'video')
+_multimodal_types = {'audio', 'image', 'video'}
 
 def chunks_from_paragraphs(paragraphs,
                            max_length   = None,
@@ -78,13 +78,13 @@ def chunks_from_paragraphs(paragraphs,
             The final paragraph only contains 1 sentence without overlap because the last sentence exceeds `max_overlap_len` (150 > 50)
     """
     paragraphs = deepcopy(paragraphs)
-    for i, para in enumerate(paragraphs):
+    for para in paragraphs:
         if 'text' not in para:
             text = paragraph_to_text(para)
             if text:
                 para['text'] = text
-            else:
-                assert para.get('type', None) in _multimodal_types, str(para)
+            elif para.get('type', '') not in _multimodal_types:
+                raise RuntimeError('A paragraph should have a "type" entry, got {}'.format(para))
     
     # here, all paragraphs must either have a "text" entry, either have "type" in "image/audio/video"
     
@@ -159,23 +159,22 @@ def group_paragraphs(paragraphs, key):
         groups.setdefault(group, []).append(para)
     return groups
 
-def merge_paragraphs(paragraphs):
+def merge_paragraphs(paragraphs, skip = ()):
     """
         Merge a `list` of paragraphs into a single paragraph
-        
+
         Arguments :
             - paragraphs    : the list of paragraphs to merge
+            - skip          : keys that should not be merged / popped from the individual paragraphs
         Return :
             - merged    : a `dict` with a `content` entry that is the list of individual paragraphs
     """
-    if len(paragraphs) <= 1: return paragraphs
-    
     common  = set(paragraphs[0].keys())
     content = paragraphs
     for para in content:
         if 'type' not in para: para['type'] = 'text'
         common = common.intersection(set(para.keys()))
-    common = common.difference({'type', 'text', 'image', 'audio', 'video'})
+    common = common.difference({'type', 'text'}).difference(_multimodal_types).difference(skip)
     
     merged = {'content' : content}
     for k in common:
@@ -186,13 +185,13 @@ def merge_paragraphs(paragraphs):
     
     return merged
 
-def paragraph_to_text(paragraph, format = None, separator = '\n\n'):
+def paragraph_to_text(paragraph, format = None, separator = '\n\n', ** kwargs):
     """ Return a string representing the content of the paragraph """
     if isinstance(paragraph, str): paragraph = {'text' : paragraph}
     else: assert isinstance(paragraph, dict), str(paragraph)
-    
+
     if format:
-        return format_text(format, ** kwargs)
+        return format_text(format, ** paragraph, ** kwargs)
     elif 'text' in paragraph:
         return paragraph['text']
     elif 'content' in paragraph:

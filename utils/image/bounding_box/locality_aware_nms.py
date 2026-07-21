@@ -124,5 +124,3 @@ def _merge_boxes(boxes, box_slice, mask, merge_method):
         return ops.divide_no_nan(
             sum_coords, ops.cast(1 + ops.count_nonzero(mask, axis = 1), sum_coords.dtype)
         )
-        
-

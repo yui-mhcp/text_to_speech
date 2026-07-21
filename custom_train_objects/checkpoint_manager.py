@@ -185,7 +185,7 @@ class CheckpointManager:
                 checkpoint  = self.directory
         elif isinstance(checkpoint, int):
             self._state['loaded'] = checkpoint
-            checkpoint = [self.get_filename(k, self[checkpoint]) for k in self._models]
+            checkpoint = self.get_filename(self[checkpoint])
         elif checkpoint == 'best':
             self._state['loaded'] = 'best'
             checkpoint = self.best_checkpoint
@@ -204,7 +204,7 @@ class CheckpointManager:
                 )
                 
                 name_based_partial_transfer_learning(
-                    model, load_saved_model_variables(filename), source = 'saved_model'
+                    self.model, load_saved_model_variables(filename), source = 'saved_model'
                 )
             except Exception as e:
                 warnings.warn('Unable to restore weights from tensorflow checkpoint : {}\nMake sure to manually restore weights, as the model is currently randomly initialized !'.format(e))
@@ -231,7 +231,7 @@ class CheckpointManager:
 
     def clear(self):
         for i in reversed(range(len(self))):
-            if i != self.loaded_index: self.delete(i)
+            if i != self.loaded: self.delete(i)
     
 @cache
 def standardize_checkpoint_format(ckpt_format):

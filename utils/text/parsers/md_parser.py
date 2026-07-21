@@ -10,78 +10,84 @@
 # limitations under the License.
 
 import re
+import warnings
 
-from .txt_parser import TxtParser
+from .parser import register_parser
+from .txt_parser import read_txt
 
 _audio_ext  = ('wav', 'mp3', 'flac', 'opus', 'ogg')
 _image_ext  = ('gif', 'png', 'jpeg', 'jpg')
 _video_ext  = ('mp4', 'mov', 'ovg', 'avi')
 
 _hlinks_re  = r'\[(.*?)\]\((.*?)\)'
-         
-class MarkdownParser(TxtParser):
-    __extension__ = 'md'
+_image_re   = re.compile(r'!\[(.*?)\]\((.*?)\)')
 
-    def get_text(self, *, remove_hyperlink = True, ** kwargs):
-        text = super().get_text(** kwargs)
-        return re.sub(_hlinks_re, r'\1', text) if remove_hyperlink else False
-    
-    def get_paragraphs(self, ** kwargs):
-        """ Extract a list of paragraphs """
-        if hasattr(self, 'paragraphs'): return self.paragraphs
-        
-        with open(self.filename, 'r', encoding = 'utf-8') as f:
-            lines = [l.strip() for l in f]
+@register_parser('md', kind = 'text')
+def read_md(filename, *, remove_hyperlink = True, ** kwargs):
+    """ Return the raw markdown text, optionally stripping hyperlink targets """
+    text = read_txt(filename, ** kwargs)
+    return re.sub(_hlinks_re, r'\1', text) if remove_hyperlink else text
 
-        self.paragraphs = []
-        text, code_type, section = '', None, []
-        for line in lines:
-            if not line:
-                text = self._maybe_add_paragraph(text, section, code_type)
-                continue
-            if line.startswith('```'):
-                text = self._maybe_add_paragraph(text, section, code_type)
-                if code_type: # end of code block
-                    code_type = None
-                else:
-                    code_type = line[3:].strip() or 'text'
-                continue
-            elif code_type:
-                pass
-            elif line.startswith('!['): # skip images
-                text = self._maybe_add_paragraph(text, section, code_type)
-                text = self._maybe_add_paragraph(None, section, data = line[2:].split(']')[0])
-                continue
-            elif line.startswith('#'):
-                text = self._maybe_add_paragraph(text, section, code_type)
+@register_parser('md')
+def parse_md(filename, ** kwargs):
+    """ Extract a list of paragraphs (text / code / image / audio / video) from a markdown file """
+    with open(filename, 'r', encoding = 'utf-8') as f:
+        lines = [l.strip() for l in f]
 
-                prefix, _, title = line.partition(' ')
-                section = section[: len(prefix) - 1] + [title]
-
-            if text: text += '\n'
-            text += line
-
-        self._maybe_add_paragraph(text, section, code_type)
-
-        return self.paragraphs
-
-    def _maybe_add_paragraph(self, text, section, code_type = None, data = None):
-        paragraph = {}
-        if text:
-            paragraph = {'type' : 'text', 'text' : text.strip()}
-            if section:     paragraph['section'] = section
-            if code_type:   paragraph.update({'type' : 'code', 'language' : code_type})
-        elif data:
-            if data.endswith(_image_ext):
-                paragraph = {'type' : 'image', 'image' : data, 'section' : section}
-            if data.endswith(_audio_ext):
-                paragraph = {'type' : 'audio', 'audio' : data, 'section' : section}
-            if data.endswith(_video_ext):
-                paragraph = {'type' : 'video', 'video' : data, 'section' : section}
-            else:
-                warnings.warn('Unknown file type : {}'.format(data))
-        
-        if paragraph:
-            self.paragraphs.append(paragraph)
-        
+    paragraphs = []
+    def add(text, section, code_type = None, data = None):
+        para = _make_paragraph(text, section, code_type, data)
+        if para: paragraphs.append(para)
         return ''
+
+    text, code_type, section = '', None, []
+    for line in lines:
+        if not line:
+            text = add(text, section, code_type)
+            continue
+        if line.startswith('```'):
+            text = add(text, section, code_type)
+            if code_type: # end of code block
+                code_type = None
+            else:
+                code_type = line[3:].strip() or 'text'
+            continue
+        elif code_type:
+            pass
+        elif line.startswith('!['): # image / media
+            text = add(text, section, code_type)
+            match = _image_re.match(line)
+            data  = match.group(2) if match else line[2:].split(']')[0]
+            add(None, section, data = data)
+            continue
+        elif line.startswith('#'):
+            text = add(text, section, code_type)
+
+            prefix, _, title = line.partition(' ')
+            section = section[: len(prefix) - 1] + [title]
+
+        if text: text += '\n'
+        text += line
+
+    add(text, section, code_type)
+
+    return paragraphs
+
+def _make_paragraph(text, section, code_type = None, data = None):
+    if text:
+        paragraph = {'type' : 'text', 'text' : text.strip()}
+        if section:     paragraph['section'] = section
+        if code_type:   paragraph.update({'type' : 'code', 'language' : code_type})
+        return paragraph
+    elif data:
+        if data.endswith(_image_ext):
+            return {'type' : 'image', 'image' : data, 'section' : section}
+        elif data.endswith(_audio_ext):
+            return {'type' : 'audio', 'audio' : data, 'section' : section}
+        elif data.endswith(_video_ext):
+            return {'type' : 'video', 'video' : data, 'section' : section}
+        elif data.endswith(('svg', 'md', 'txt')):
+            pass
+        else:
+            warnings.warn('Unknown file type : {}'.format(data))
+    return None

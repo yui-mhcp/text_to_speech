@@ -210,5 +210,3 @@ def _get_video_size(path, kwargs):
         return (int(infos['height']), int(infos['width']))
     else:
         raise ValueError('You must specify the frame shape')
-    
-        

@@ -18,5 +18,3 @@ class HistoryCallback(keras.callbacks.Callback):
         self.set_config = self.history.set_config
         for name in vars(self.history.__class__).keys():
             if name.startswith('on_'): setattr(self, name, getattr(self.history, name))
-        
-

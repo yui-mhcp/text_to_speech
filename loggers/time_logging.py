@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import json
 import time
 import logging
 import threading
@@ -21,6 +23,8 @@ logger = logging.getLogger(__name__)
 TIME_LEVEL      = 15
 TIME_DEBUG_LEVEL    = 13
 TIME_LOGGER_NAME    = None
+
+_DISABLE_TIMERS = os.environ.get('LOGGERS_DISABLE_TIMERS', 'false').lower() in ('1', 'true')
 
 _str_indent     = '  '
 
@@ -49,12 +53,14 @@ class RootTimer:
                 des += '\n' + _timer_to_str(timer, ** kwargs)
             return des
         
-        if self.is_running(): return "timer {} not stopped yet".format(self.name)
-        
-        with self.mutex:
-            _timers, _threads = self._timers, self._thread_names
-            self._timers, self._runnings, self._thread_names = collections.OrderedDict(), {}, {}
-        
+        if self.is_running():
+            running = [
+                timer['name'] for runnings in tuple(self._runnings.values()) for timer in runnings
+            ]
+            return 'Timers are still running : {}'.format(running)
+
+        _timers, _threads = self.reset()
+
         des = 'Timers :'
         if len(_timers) == 1:
             des += thread_to_str(list(_timers.values())[0])
@@ -85,7 +91,14 @@ class RootTimer:
         return self._timers[thread_id], self._runnings[thread_id]
     
     def is_running(self):
-        return any(len(runnings) > 0 for runnings in self._runnings.values())
+        return any(len(runnings) > 0 for runnings in tuple(self._runnings.values()))
+
+    def reset(self):
+        """ Clears all timers, and returns the removed `(timers, thread_names)` """
+        with self.mutex:
+            _timers, _threads = self._timers, self._thread_names
+            self._timers, self._runnings, self._thread_names = collections.OrderedDict(), {}, {}
+        return _timers, _threads
 
     def start_timer(self, name, level):
         """
@@ -114,24 +127,29 @@ class RootTimer:
         else: new_timer = current[name]
 
         runnings.append(new_timer)
-        new_timer['start'] = time.time()
+        new_timer['start'] = time.perf_counter()
         return new_timer
-    
+
     def stop_timer(self, name):
-        now = time.time()
-        
+        now = time.perf_counter()
+
         timers, runnings = self.get_thread_timers()
         if not runnings:
-            raise RuntimeError('No timer is running when stopping `{}` for thread `{}`'.format(
+            # tolerated (no raise) : a concurrent `log_time` / `reset` from another thread
+            # may have flushed this timer between its `start` and its `stop`
+            logger.debug('No timer is running when stopping `{}` for thread `{}`'.format(
                 name, self._thread_names[_get_thread_id()]
             ))
+            return None
         
-        timer = runnings.pop()
-        timer['runs'].append(now - timer['start'])
+        timer = runnings[-1]
         if timer['name'] != name:
             raise RuntimeError('The currently running timer `{}` is not the stopped one `{}`. Make sure to stop them in the correct order'.format(
                 timer['name'], name
             ))
+
+        runnings.pop()
+        timer['runs'].append(now - timer['start'])
 
         return timer
     
@@ -145,8 +163,7 @@ class Timer:
     @property
     def timers(self):
         if not self._timer: return None
-        times = {self.name : sum(self._timer['runs'])}
-        return self.get_times(times, self._timer['children'])
+        return self.get_times({}, {self.name : self._timer})
     
     def __enter__(self):
         self._timer = start_timer(self.name, self.level)
@@ -161,7 +178,7 @@ class Timer:
     
     def save(self, filename, overwrite = False):
         if os.path.exists(filename) and not overwrite:
-            print('This file already exists ! To overwrite, pass `overwrite = True`')
+            logger.warning('The file `{}` already exists ! To overwrite it, pass `overwrite = True`'.format(filename))
             return
         
         infos = json.dumps(self.timers)
@@ -213,20 +230,28 @@ def timer(name = None, *, debug = False, log_if_root = True, fn = None):
         ```
         
         Note : all timers are thread-safe by design ! And will display the times for each thread separately.
+
+        Note : when decorating a generator function, the timer only measures the *creation*
+        of the generator, not its consumption. This is a useful property to measure stream
+        initialization times (e.g., TRT-LLM streams) : wrap the iteration itself in an
+        explicit `with Timer(...)` block to also track the consumption time.
+
+        Note : if the `LOGGERS_DISABLE_TIMERS` env variable is set to true, the decorator
+        returns `fn` unmodified (zero overhead, e.g. for production serving).
     """
     def wrapper(fn):
+        if _DISABLE_TIMERS: return fn
+
         @wraps(fn)
         def fn_with_timer(* args, ** kwargs):
             if not start_timer(timer_name, level = level): return fn(* args, ** kwargs)
             try:
                 return fn(* args, ** kwargs)
             finally:
-                stop_timer(timer_name)
-
-                if log_if_root and not is_timer_running():
+                # `stop_timer` returns None if a concurrent reset flushed this timer
+                if stop_timer(timer_name) and log_if_root and not is_timer_running():
                     log_time(level)
-        
-        
+
         timer_name = name if name else (fn.name if hasattr(fn, 'name') else fn.__name__)
         return fn_with_timer
     
@@ -287,11 +312,12 @@ is_timer_running    = _root_timer.is_running
 
 logging.Logger.start_timer  = start_timer
 logging.Logger.stop_timer   = stop_timer
-logging.Logger.log_time     = log_time
+# `staticmethod` is required : a plain function would be re-bound at attribute access,
+# passing the `Logger` instance as the `level` argument
+logging.Logger.log_time     = staticmethod(log_time)
 logging.Logger.timer        = Timer
 
-logging.start_timer  = time_logger.start_timer
-logging.stop_timer   = time_logger.stop_timer
-logging.log_time     = time_logger.log_time
-logging.timer        = time_logger.timer
-
+logging.start_timer  = start_timer
+logging.stop_timer   = stop_timer
+logging.log_time     = log_time
+logging.timer        = Timer

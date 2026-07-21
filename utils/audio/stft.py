@@ -108,8 +108,16 @@ class MelSTFT(object):
             kwargs = {}
 
         if len(ops.shape(audio)) == 1: audio = ops.expand_dims(audio, axis = 0)
-        if ops.shape(audio)[1] < self.win_length:
-            audio = ops.pad(audio, [[0,0], [0, self.win_length - ops.shape(audio)[1]]])
+        
+        audio = ops.cond(
+            ops.shape(audio)[1] >= self.win_length,
+            lambda: audio,
+            lambda: ops.pad(
+                audio,
+                [[0,0], [0, self.win_length - ops.shape(audio)[1]]],
+                constant_values = ops.convert_to_tensor(0, audio.dtype)
+            )
+        )
         
         if self.pre_emph > 0.:
             audio = ops.concatenate([

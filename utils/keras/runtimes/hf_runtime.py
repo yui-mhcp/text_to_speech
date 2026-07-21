@@ -18,6 +18,12 @@ from .runtime import Runtime
 
 class HFRuntime(Runtime):
     @property
+    def base_dtype(self):
+        """ Precision the `transformers` model was loaded with (torch dtype -> str name). """
+        dtype = getattr(self.engine, 'dtype', None)
+        return str(dtype).rsplit('.', 1)[-1] if dtype is not None else 'float32'
+
+    @property
     def embedding_dim(self):
         return self.engine.config.hidden_size
     
@@ -48,8 +54,7 @@ class HFRuntime(Runtime):
         return out
     
     @staticmethod
-    def load_engine(path, *, torch_dtype = 'float16', ** _):
+    def load_engine(path, *, dtype = 'float16', ** _):
         from transformers import AutoModel
         
-        return AutoModel.from_pretrained(path, device_map = 'cuda', torch_dtype = torch_dtype)
-
+        return AutoModel.from_pretrained(path, device_map = 'cuda', dtype = dtype)

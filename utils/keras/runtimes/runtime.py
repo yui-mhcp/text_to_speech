@@ -18,7 +18,38 @@ logger = logging.getLogger(__name__)
 
 class Runtime(metaclass = ABCMeta):
     _engines = {}
-    
+
+    # Whether the runtime supports training (weights update). Inference-only runtimes
+    # (TRT, ONNX, ...) keep it `False`; only `KerasRuntime` overrides it to `True`.
+    # Named `supports_training` (not `trainable`) to avoid any confusion with
+    # `keras.Model.trainable`, which means "are the weights frozen".
+    supports_training   = False
+
+    # Generation capabilities, so that models test *features* rather than runtime names
+    # (`self.runtime == 'trt_llm'`). Only generation runtimes (`TensorRTLLMRuntime`)
+    # override them to `True` :
+    #   - `supports_streaming`  : `__call__(streaming = True)` returns a stream-like object
+    #     (iterable + `abort()` / `is_aborted()`) yielding intermediate outputs
+    #   - `supports_guided_decoding`    : the `allowed_tokens` kwarg restricts generation
+    #     to the given token ids
+    #   - `supports_stop_condition`     : the `stop_condition` kwarg (callable / regex on the
+    #     decoded text) stops the generation once matched
+    supports_streaming  = False
+    supports_guided_decoding    = False
+    supports_stop_condition     = False
+
+    @property
+    def base_dtype(self):
+        """ Native compute *float* precision of the runtime (`float32` / `float16` / `bfloat16`).
+
+            Used to build the float input / output signatures (`BaseModel.base_dtype`, modality
+            mixins' `<modality>_dtype`) so they reflect the real engine precision and avoid useless
+            host casts (e.g. a `float16` TensorRT engine gets `float16` mel inputs).
+
+            Overridden per runtime ; the default is kept as `float32` (and, on purpose, avoids
+            importing keras to keep inference-only runtimes keras-free). """
+        return 'float32'
+
     def __init__(self, path, *, engine = None, reload = False, ** kwargs):
         if engine is None:
             if path not in self._engines or reload:
@@ -30,6 +61,17 @@ class Runtime(metaclass = ABCMeta):
     
     def __repr__(self):
         return '<{} path={}>'.format(self.__class__.__name__, self.path)
+
+    @property
+    def compiled_call(self):
+        """ Graph/XLA-compiled forward pass. Inference-only runtimes are already "compiled" and
+            simply return themselves ; `KerasRuntime` overrides this to compile the keras model. """
+        return self
+
+    @property
+    def compiled_infer(self):
+        """ Graph/XLA-compiled generation (`infer`) pass ; see `compiled_call`. """
+        return self
     
     @abstractmethod
     def __call__(self, * args, ** kwargs):

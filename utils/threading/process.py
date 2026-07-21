@@ -21,8 +21,6 @@ from threading import Thread, RLock
 from .async_result import AsyncResult
 from .stream import STOP, KEEP_ALIVE, IS_RUNNING, DataWithResult, _locked_property, _run_callbacks
 
-RESULTS_HANDLER_WAKEUP_TIME = 1.
-
 logger = logging.getLogger(__name__)
 
 _processes  = {}
@@ -55,11 +53,13 @@ class MetaProcess(type):
             if isinstance(fn, str):     name = fn
             elif hasattr(fn, 'name'):   name = fn.name
             elif hasattr(fn, '__name__'):   name = fn.__name__
-            else:   fn = fn.__class__.__name__
-        
+            else:   name = fn.__class__.__name__
+
         with _global_mutex:
             if name not in _processes or _processes[name].stopped:
-                if add_stream and 'stream' not in kwargs:
+                # `stream` in `kwargs` means the target `fn` already receives its own
+                # stream (generator-like worker) : no `input_stream` is created then
+                if add_stream and 'stream' not in kwargs and 'input_stream' not in kwargs:
                     kwargs['input_stream'] = 'queue'
                 
                 _processes[name] = super().__call__(fn, * args, name = name, ** kwargs)
@@ -70,11 +70,11 @@ class Process(metaclass = MetaProcess):
     def __init__(self,
                  fn,
                  args   = (),
-                 kwargs = {},
-                 
+                 kwargs = None,
+
                  *,
-                 
-                 callbacks  = [],
+
+                 callbacks  = None,
                  input_stream   = None,
                  skip_outputs   = False,
                  only_process_last  = False,
@@ -92,11 +92,18 @@ class Process(metaclass = MetaProcess):
         self.name   = name
         self.args   = args
         self.kwargs = kwargs or kw
-        
+
+        # copy : `_run_callbacks` mutates the list in-place (removes failing callbacks)
+        if callbacks is None:                   callbacks = []
+        elif not isinstance(callbacks, list):   callbacks = [callbacks]
+        else:                                   callbacks = list(callbacks)
         self.callbacks  = callbacks
         
         self.restart    = restart
 
+        # `max_priority` is implemented parent-side (negation at `put` time) : custom
+        # attributes on a `multiprocessing.Queue` would not survive pickling to the child
+        self._negate_priority   = isinstance(input_stream, str) and input_stream.lower() == 'max_priority'
         self.input_stream   = _get_buffer(input_stream) if input_stream is not None else None
         self.output_stream  = _get_buffer('queue')
         self.skip_outputs   = skip_outputs
@@ -130,12 +137,25 @@ class Process(metaclass = MetaProcess):
         with self.mutex:
             if self._stopped:
                 raise RuntimeError('Cannot add new data to a stopped process')
-            
+
             index = self._get_index(data)
-            if (self.keep_results and index in self._results) and (not isinstance(data, dict) or not data.get('overwrite', False)):
+            _is_control = (data is STOP) or (
+                isinstance(data, str) and data in (IS_RUNNING, KEEP_ALIVE)
+            )
+            if (isinstance(data, str) and data == KEEP_ALIVE) or (self.skip_outputs and not _is_control):
+                # `KEEP_ALIVE` is never acknowledged by the worker and, with
+                # `skip_outputs`, regular outputs never come back either : the
+                # `AsyncResult` is resolved right away rather than registered
+                # (registering it would leak memory and hang any `get()`)
+                self._index += 1
+                result(None)
+            elif (self.keep_results and index in self._results) and (not isinstance(data, dict) or not data.get('overwrite', False)):
                 result(self._results[index])
                 return result
             elif index in self._waiting_results and self.buffer_type == 'Queue':
+                # NB : the deduplication is restricted to FIFO buffers on purpose — on a
+                # priority queue, re-submitting the same index with a higher priority
+                # must re-enqueue the item so it can jump ahead
                 self._waiting_results[index].append(result)
                 return result
             else:
@@ -143,7 +163,14 @@ class Process(metaclass = MetaProcess):
                 self._waiting_results.setdefault(index, []).append(result)
         
         if self.only_process_last: self.clear()
-        
+
+        if _is_control:
+            # keep the same semantic as raw tokens (cf `PriorityQueue._build_item`) :
+            # the liveness ping jumps ahead, `STOP` / `KEEP_ALIVE` drain pending items first
+            priority = float('-inf') if data == IS_RUNNING else float('inf')
+        elif self._negate_priority:
+            priority = -priority
+
         if isinstance(data, dict):
             _args, _kwargs = (), data
         elif (data is STOP) or (isinstance(data, str) and data in (IS_RUNNING, KEEP_ALIVE)):
@@ -227,7 +254,7 @@ class Process(metaclass = MetaProcess):
                 kwargs['control_callback'] = self.output_stream
 
             self._process   = multiprocessing.Process(
-                target = self.fn, kwargs = kwargs, name = self.name
+                target = self.fn, args = self.args, kwargs = kwargs, name = self.name
             )
             self._process.start()
             if self._finalizer is None:         self._finalizer = self.start_finalizer()
@@ -235,34 +262,52 @@ class Process(metaclass = MetaProcess):
         return self
     
     def stop(self):
-        if not self._stopped:
-            self.stopped = True
+        with self.mutex:
+            if self._stopped: return
+            self._stopped = True
+            # the `STOP` token is put while holding the mutex, so that no item can be
+            # enqueued *after* it (`_apply_async` would register a result that the
+            # worker will never produce)
             if self.input_stream is not None:
                 self.input_stream.put(STOP)
-            else:
-                self.terminate()
-    
+
+        # called outside the mutex : `terminate` takes `_global_mutex` first, and the
+        # lock ordering must stay `_global_mutex` -> `self.mutex` (cf `MetaProcess`)
+        if self.input_stream is None:
+            self.terminate()
+
     def clear(self):
+        if self.input_stream is None: return
+
         try:
             while True:
                 it = self.input_stream.get_nowait()
-                for res in self._waiting_results.pop(it.index): res(None)
+                if not isinstance(it, DataWithResult): continue    # control token
+                with self.mutex:
+                    for res in self._waiting_results.pop(it.index, []): res(None)
         except queue.Empty:
             pass
 
-    def is_running(self):
-        self._apply_async(IS_RUNNING).get()
-        return True
+    def is_running(self, timeout = 5):
+        """ Round-trip check : returns `False` (instead of hanging or raising) when the worker is stopped, dead, or unresponsive within `timeout` """
+        if self.stopped or not self.is_alive():
+            return False
+
+        try:
+            self._apply_async(IS_RUNNING).get(timeout = timeout)
+            return True
+        except Exception:
+            return False
     
     def keep_alive(self):
-        self.input_stream.put(KEEP_ALIVE)
+        if self.input_stream is not None: self.input_stream.put(KEEP_ALIVE)
     
     def is_alive(self):
         with self.mutex:
             return self.process is not None and self.process.is_alive()
 
     def join(self, ** kwargs):
-        self._finalizer.join(** kwargs)
+        if self._finalizer is not None: self._finalizer.join(** kwargs)
 
     def terminate(self):
         with _global_mutex:
@@ -272,13 +317,21 @@ class Process(metaclass = MetaProcess):
         with self.mutex:
             if self.process is None: return
             self._stopped   = True
-            
+
             self.process.terminate()
             self.process.join()
             self.output_stream.put(STOP)
 
             self._exitcode = self.process.exitcode
-        
+
+            # wake up any caller still blocked on a pending `get()` : the worker will
+            # never produce these results
+            if self._waiting_results:
+                error = RuntimeError('The process `{}` has been terminated'.format(self.name))
+                for waiting in self._waiting_results.values():
+                    for res in waiting: res.set_exception(error)
+                self._waiting_results   = {}
+
         logger.info('Process `{}` is closed (status {}) !'.format(
             self.name, self.exitcode
         ))
@@ -287,7 +340,10 @@ class Process(metaclass = MetaProcess):
 
     @run_in_thread(daemon = True)
     def start_results_handler(self):
-        while not self.stopped:
+        # loops until the `STOP` token (always put by `terminate`) rather than checking
+        # `self.stopped` : results already produced by the worker when `stop` is called
+        # must still be dispatched to their waiting `AsyncResult`
+        while True:
             data = self.output_stream.get()
             if data is STOP: return
 
@@ -299,9 +355,14 @@ class Process(metaclass = MetaProcess):
 
                 with self.mutex:
                     for res in self._waiting_results.pop(data.index, []):
-                        res(data.result)
+                        if isinstance(data.result, Exception):
+                            res.set_exception(data.result)
+                        else:
+                            res(data.result)
 
-                    if self.keep_results: self._results[data.index] = data.result
+                    # errors are not cached : a retry on the same index must re-run `fn`
+                    if self.keep_results and not isinstance(data.result, Exception):
+                        self._results[data.index] = data.result
                 result = data.result
             else:
                 if logger.isEnabledFor(logging.DEBUG):
@@ -312,6 +373,14 @@ class Process(metaclass = MetaProcess):
     
     @run_in_thread(daemon = True)
     def start_finalizer(self):
+        """
+            Waits for the sub-process end, then finalizes (`terminate`) or restarts it
+
+            `restart` only revives workers that exited *cleanly* (exitcode 0, e.g., an
+            idle-timeout on their input stream) : a crashed worker (exitcode != 0) is
+            always finalized, to avoid crash-loops. A fresh `Process` is transparently
+            re-created by `MetaProcess` on the next request anyway
+        """
         finalize, run = False, 0
         while not finalize:
             self.process.join()

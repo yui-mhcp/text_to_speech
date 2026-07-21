@@ -90,5 +90,3 @@ class CustomRNNDropoutCell:
             
             return inputs * self._dropout_mask[name][:, step]
         return inputs * self._dropout_mask[:, step]
-        
-        

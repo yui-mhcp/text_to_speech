@@ -52,15 +52,25 @@ class HTTPScreenMirror:
     def release(self):
         pass
     
+    @classmethod
+    def build(cls, stream):
+        for _ in range(5):
+            instance = cls(stream)
+            ret, frame  = instance.read()
+            if ret: return instance, frame
+        
+        raise RuntimeError('Unable to connect to {} !'.format(stream))
+
     @staticmethod
     def get_prefix(url):
         try:
             res = requests.get(url)
-        except requests.ConnectionError:
+        except requests.ConnectionError as e:
             logger.error('Unable to connect to the given url : {}'.format(url))
-            return None
+            raise e
         except Exception as e:
             raise e
         
-        return res.content.decode().split('\n')[-9].split("'")[1]
-        
+        lines = res.content.decode().split('\n')
+        lines = [l for l in lines if 'Date.now' in l]
+        return lines[0].split("'")[1]

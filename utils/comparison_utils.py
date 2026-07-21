@@ -40,9 +40,21 @@ def _compare(target, value, ** kwargs):
     else:
         _compare_primitive(target, value, ** kwargs)
     
+def _is_real_scalar(x):
+    """ Whether `x` is a floating-point scalar — including a 0-d `np.ndarray`
+        (e.g. a tensor reduced to a scalar then converted via `np.asarray`).
+    """
+    if isinstance(x, (float, np.floating)): return True
+    return isinstance(x, np.ndarray) and x.ndim == 0 and np.issubdtype(x.dtype, np.floating)
+
 def _compare_primitive(target, value, max_err = 0., ** kwargs):
-    if isinstance(value, (float, np.floating)):
-        assert abs(target - value) <= max_err, 'Values differ : {}'.format(abs(value - target))
+    # float comparison must be tolerant whichever side is the float : the reference
+    # is often a python/np float while the value is a (0-d) array coming from a tensor.
+    if _is_real_scalar(target) or _is_real_scalar(value):
+        assert abs(float(target) - float(value)) <= max_err, \
+            'Values differ : {} (target {} / value {})'.format(
+                abs(float(value) - float(target)), target, value
+            )
     else:
         assert target == value, "Target ({}) != value ({})".format(target, value)
 
@@ -116,8 +128,8 @@ def _compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = F
     if target.size == 0: return
     
     if target.dtype in (bool, object):
-        assert np.all(target == value), "Vallue differ for target with dtype {} ({} / {} diff, {:.23f} %)".format(
-            target.dtype, np.sum(target != value), np.prod(target.shape), np.mean(target != value)
+        assert np.all(target == value), "Value differ for target with dtype {} ({} / {} diff, {:.3f}%)".format(
+            target.dtype, np.sum(target != value), np.prod(target.shape), 100 * np.mean(target != value)
         )
     else:
         if normalize:
@@ -131,7 +143,7 @@ def _compare_array(target, value, max_err = 1e-6, squeeze = False, normalize = F
         err = np.where(valids, 0., np.abs(target - value))
         
         assert valid, "Values differ ({} / {} diff, {:.3f}%) : max {} - mean {} - min {}".format(
-            np.sum(~valids), np.prod(err.shape), np.mean(~valids), np.max(err), np.mean(err), np.min(err)
+            np.sum(~valids), np.prod(err.shape), 100 * np.mean(~valids), np.max(err), np.mean(err), np.min(err)
         )
 
 def _compare_dataframe(target, value, ignore_index = True, ** kwargs):

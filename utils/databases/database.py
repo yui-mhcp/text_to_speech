@@ -22,9 +22,10 @@ class DatabaseLoader(ABCMeta):
     _instances = {}
     
     def __call__(cls, path, * args, reload = False, _nested = False, ** kwargs):
-        if _nested:
+        # in-memory databases (`path is None`) are neither cached nor restored from a config
+        if _nested or path is None:
             return super().__call__(path, * args, ** kwargs)
-        
+
         if reload or path not in cls._instances:
             config = Database.load_config(path)
             if config:
@@ -32,8 +33,8 @@ class DatabaseLoader(ABCMeta):
                 if cls_name != cls.__name__:
                     raise ValueError("Database stored at {} does not match the class !\n  Expected : {}\n  Got : {}".format(path, cls_name, cls.__name__))
 
-                config.pop('path')
-                
+                config.pop('path', None)
+
                 args = ()
                 kwargs.update(config)
             
@@ -71,7 +72,6 @@ class Database(metaclass = DatabaseLoader):
         
         self.path   = path
         self.primary_key    = primary_key
-        
         self._is_single_key = isinstance(primary_key, str)
     
     def _get_entry(self, data):
@@ -178,7 +178,7 @@ class Database(metaclass = DatabaseLoader):
         if (
             (isinstance(key, tuple) and len(key) == 2)
             and isinstance(key[1], str)
-            and (isinstance(self.primary_key, str) or isinstance(data[0], (tuple, dict)))):
+            and (isinstance(self.primary_key, str) or isinstance(key[0], (tuple, dict)))):
             key, column = key
             value = {column : value}
         
@@ -290,16 +290,16 @@ class Database(metaclass = DatabaseLoader):
         pass
 
     def get_config(self):
-        return {
-            'class_name'    : self.__class__.__name__,
-            'path'          : self.path,
-            'primary_key'   : self.primary_key
-        }
+        return {'class_name' : self.__class__.__name__, 'primary_key' : self.primary_key}
     
     def save_config(self):
         dump_json(self.config_file, self.get_config(), indent = 4)
     
     def save(self, ** kwargs):
+        if self.path is None:
+            raise ValueError(
+                'Cannot save an in-memory database : provide a `path` at creation time'
+            )
         self.save_data(** kwargs)
         self.save_config(** kwargs)
     
@@ -326,4 +326,3 @@ def _match_filters(filters, value, /):
         elif filt != value.get(k, None):
             return False
     return True
-            

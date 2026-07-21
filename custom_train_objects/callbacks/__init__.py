@@ -9,23 +9,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import keras
-import importlib
 
-for module in [keras.callbacks] + os.listdir(__package__.replace('.', os.path.sep)):
-    if isinstance(module, str):
-        if module.startswith(('.', '_')) or '_old' in module: continue
-        module = importlib.import_module(__package__ + '.' + module[:-3])
-    
-    globals().update({
+from utils.generic_utils import import_submodules
+
+_callbacks = {}
+for module in [keras.callbacks] + import_submodules(__package__):
+    _callbacks.update({
         k : v for k, v in vars(module).items()
         if isinstance(v, type) and issubclass(v, keras.callbacks.Callback)
     })
+globals().update(_callbacks)
 
 _callbacks = {
-    k.lower() : v for k, v in globals().items()
-    if isinstance(v, type) and issubclass(v, keras.callbacks.Callback)
+    k.lower() : v for k, v in _callbacks.items()
 }
 
 

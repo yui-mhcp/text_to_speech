@@ -71,34 +71,23 @@ class DatabaseWrapper(Database):
     def __enter__(self):
         self._db.__enter__()
         return self
-    
-    def __setitem__(self, key, value):
-        """
-            Add a new entry (`data`) with the given `value`, or update its current value
-            
-        Example usage :
-        ````python
-        db = JSONFile('test.json', 'filename')
-        
-        data = {'filename' : 'test1.jpg', 'label' : 'cat'}
-        
-        db['test1.jpg'] = data  # equivalent to `db[data] = data`, insert the data
-        db['test1.jpg', 'label'] = 'dog'    # update the entry
-        ```
-        
-        **IMPORTANT** if `data` is already in the database, it will update its value (`self.update`), and will not trigger the `insert` method
-        """
-        self._db[key] = value
-    
+
     def __getitem__(self, key):
         return self._db[key]
-        
-    def __delitem__(self, key):
-        """ Remove an entry from the database """
-        del self._db[key]
-    
+
+    # NB : `__setitem__` / `__delitem__` are intentionally *not* overridden ; the base
+    # `Database` implementations route through `self.insert_or_update` / `self.pop`, so
+    # subclasses (ordered / vector wrappers) keep their auxiliary structures in sync.
+
     def insert_or_update(self, data, ** kwargs):
-        return self._db.insert_or_update(data, ** kwargs)
+        # route through `self.insert` / `self.update` (not `self._db.*`) so overrides
+        # defined by subclasses are honored (order index, vectors, ...). Dispatch on
+        # membership rather than catching `ValueError` : a subclass `insert` may have
+        # preconditions (e.g. `VectorDatabase` requires a vector and would raise
+        # `KeyError`), so it must not be called on the update path.
+        if data in self:
+            return self.update(data, ** kwargs)
+        return self.insert(data, ** kwargs)
     
     def multi_get(self, iterable, /, ** kwargs):
         return self._db.multi_get(iterable, ** kwargs)
@@ -120,4 +109,3 @@ class DatabaseWrapper(Database):
             ** super().get_config(),
             'database'  : self._db.get_config()
         }
-    

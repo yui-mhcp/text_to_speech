@@ -21,7 +21,7 @@ class CTCLoss(keras.losses.Loss):
     
     def call(self, y_true, y_pred):
         true_length = K.count_nonzero(y_true == self.pad_value, axis = 1)
-        pred_length = K.full(K.shape(target_length), K.shape(y_pred)[1], dtype = 'int32')
+        pred_length = K.full(K.shape(true_length), K.shape(y_pred)[1], dtype = 'int32')
         
         return K.ctc_loss(
             y_true, y_pred, true_length, pred_length, mask_value = self.pad_value

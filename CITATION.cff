@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this project in your work, please cite it as below."
+title: "text_to_speech: a modular Text-To-Speech toolkit (Tacotron-2 / WaveGlow / SV2TTS)"
+abstract: >-
+  Modular Text-To-Speech toolkit built on the yui-mhcp `BaseModel` interface,
+  featuring Tacotron-2 synthesis, WaveGlow vocoding and SV2TTS zero-shot voice
+  cloning — part of the yui-mhcp projects.
+authors:
+  - name: "yui"
+    email: "yui-mhcp@tutanota.com"
+type: software
+version: 1.0.0
+date-released: 2026-07-21
+license: AGPL-3.0-or-later
+url: "https://github.com/yui-mhcp"
+repository-code: "https://github.com/yui-mhcp/text_to_speech"
+keywords:
+  - deep-learning
+  - keras
+  - tts
+  - text-to-speech
+  - tacotron2
+  - waveglow
+  - voice-cloning
+  - tensorrt

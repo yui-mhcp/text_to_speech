@@ -49,4 +49,3 @@ class AudioRecorder(AudioStream):
     
     def stop(self):
         self.terminate()
-

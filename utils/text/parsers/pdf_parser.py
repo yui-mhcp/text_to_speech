@@ -14,160 +14,160 @@ import logging
 import numpy as np
 
 from loggers import Timer, timer
-from .parser import Parser
+from .parser import register_parser
 
 logger = logging.getLogger(__name__)
 
-class PdfParser(Parser):
-    __extension__ = 'pdf'
-    
-    def __new__(cls, * args, method = 'pypdfium2', ** kwargs):
-        if method == 'pypdfium2':
-            return Pypdfium2Parser(* args, ** kwargs)
-        else:
-            raise NotImplementedError('The pdf parser {} does not exist !'.format(method))
+@register_parser('pdf', kind = 'text')
+def read_pdf_text(filename, *, method = 'pypdfium2', pages = None, sep = '\n\n', ** kwargs):
+    """ Return the raw text of `filename` (fast path, no layout analysis) """
+    if method != 'pypdfium2':
+        raise NotImplementedError('The pdf parser {} does not exist !'.format(method))
 
-class Pypdfium2Parser(Parser):
-    def get_text(self, *, pages = None, ** kwargs):
-        import pypdfium2
-        import pypdfium2.raw as pypdfium_c
+    import pypdfium2
 
-        with Timer('pdf processing'):
-            pdf = pypdfium2.PdfDocument(self.filename)
+    with Timer('pdf processing'):
+        pdf = pypdfium2.PdfDocument(filename)
 
-        if pages is None:               pages = range(len(pdf))
-        elif isinstance(pages, int):    pages = [pages]
+    if pages is None:               pages = range(len(pdf))
+    elif isinstance(pages, int):    pages = [pages]
 
-        paragraphs = []
-        for page_index in pages:
-            with Timer('page processing'):
-                page = pdf.get_page(page_index)
-                
-                paragraphs.append({
-                    'page' : page_index, 'text' : page.get_textpage().get_text_bounded()
-                })
-        
-        return paragraphs
+    texts = []
+    for page_index in pages:
+        with Timer('page processing'):
+            page = pdf.get_page(page_index)
+            texts.append(page.get_textpage().get_text_bounded())
 
-    def get_paragraphs(self,
-                       *,
-                       
-                       pages    = None,
-                       raw_content  = None,
-                       image_folder = None,
-                       header_threshold = 0.1,
-                       ** kwargs
-                      ):
-        """
-            Extract texts and images from `filename` with `pdfium2` library
+    return sep.join(texts)
 
-            Arguments :
-                - filename  : the `.pdf` document filename
-                - pagenos   : list of page numbers to parse
-                - image_folder  : where to store the images (with format `image_{i}.jpg`)
-            Return :
-                - document  : `dict` of pages `{page_index : list_of_paragraphs}`
+@register_parser('pdf')
+def parse_pdf(filename, *, method = 'pypdfium2', ** kwargs):
+    """ Extract a list of paragraphs (and images) from a `.pdf` document """
+    if method != 'pypdfium2':
+        raise NotImplementedError('The pdf parser {} does not exist !'.format(method))
+    return _parse_pdf_pypdfium2(filename, ** kwargs)
 
-                A `paragraph` is a `dict` containing the following keys :
-                    Text paragraphs :
-                    - text  : the paragraph text
-                    Image paragraphs :
-                    - image : the image path
-                    - height    : the image height
-                    - width     : the image width
-        """
-        import pypdfium2
-        import pypdfium2.raw as pypdfium_c
+def _parse_pdf_pypdfium2(filename,
+                         *,
 
-        with Timer('pdf processing'):
-            pdf = pypdfium2.PdfDocument(self.filename if raw_content is None else raw_content)
+                         pages  = None,
+                         raw_content    = None,
+                         image_folder   = None,
+                         header_threshold   = 0.1,
+                         ** kwargs
+                        ):
+    """
+        Extract texts and images from `filename` with `pdfium2` library
 
-        if pages is None:               pages = range(len(pdf))
-        elif isinstance(pages, int):    pages = [pages]
+        Arguments :
+            - filename  : the `.pdf` document filename
+            - pages     : list of page numbers to parse
+            - image_folder  : where to store the images (with format `image_{i}.jpg`)
+        Return :
+            - paragraphs    : a `list` of paragraphs (text and image)
 
-        filters = (pypdfium_c.FPDF_PAGEOBJ_TEXT, ) if not image_folder else ()
+            A `paragraph` is a `dict` containing the following keys :
+                Text paragraphs :
+                - text  : the paragraph text
+                Image paragraphs :
+                - image : the image path
+                - height    : the image height
+                - width     : the image width
+    """
+    import pypdfium2
+    import pypdfium2.raw as pypdfium_c
 
-        _pages = {}
-        for page_index in pages:
-            with Timer('page processing'):
-                page    = pdf.get_page(page_index)
-                text    = page.get_textpage()
-                page_h  = page.get_height()
-                page_w  = page.get_width()
-                
-                img_num = 0
-                page_infos = {'paragraphs' : [], 'height' : page_h, 'width' : page_w}
-                for obj in page.get_objects(filters):
-                    with Timer('object extraction'):
-                        box = obj.get_bounds()
-                        relative_box = [
-                            box[0] / page_w,            # left
-                            (page_h - box[3]) / page_h, # top
-                            box[2] / page_w,            # right
-                            (page_h - box[1]) / page_h  # bottom
-                        ]
-                        
-                        if obj.type == pypdfium_c.FPDF_PAGEOBJ_TEXT:
-                            txt = text.get_text_bounded(* box).strip()
-                            if (not txt) or (len(txt) == 1 and ord(txt) <= 10):
-                                continue
-                            
-                            page_infos['paragraphs'].append({
-                                'text' : txt,
-                                'box'  : relative_box,
-                                'font_size' : obj.get_font_size()
-                            })
-                        elif obj.type == pypdfium_c.FPDF_PAGEOBJ_IMAGE and image_folder:
-                            if img_num == 0 and not os.path.exists(image_folder):
-                                os.makedirs(image_folder)
+    with Timer('pdf processing'):
+        pdf = pypdfium2.PdfDocument(filename if raw_content is None else raw_content)
 
-                            image_path = os.path.join(
-                                image_folder, 'image_{}_{}.png'.format(page_index, img_num)
-                            )
-                            obj.extract(image_path[:-4])
-                            
-                            page_infos['paragraphs'].append({
-                                'type'  : 'image',
-                                'image' : image_path,
-                                'height': box[3] - box[1],
-                                'width' : box[2] - box[0],
-                                'box'   : relative_box
-                            })
-                            img_num += 1
-                
-                _pages[page_index] = page_infos
-        
-        paragraphs = []
-        for index, page in _pages.items():
-            content = combine_blocks(page['paragraphs'], ** kwargs)
-            
-            font_size = sorted(p['font_size'] for p in content if 'font_size' in p)
-            font_size = font_size[len(font_size) // 2]
-            for i, para in enumerate(content):
-                if i and 'font_size' in para and not para.get('is_footnote', False):
-                    if (
-                        (font_size - para['font_size'] > 1.5)
-                        and (i == len(content) - 1 or para['box'][1] > content[i + 1]['box'][1])
-                    ):
-                        para['is_footnote'] = True
-                
-                if 'text' in para and para['box'][1] <= header_threshold and '\n' not in para['text']:
-                    para['is_header'] = True
-                
-                para.update({
-                    'page' : index, 'page_h' : page['height'], 'page_w' : page['width']
-                })
-            
-            if content[-1].get('text', '').isdigit():
-                content[-1]['is_page_number'] = True
-            
-            content = sorted(
-                content, key = lambda p: _get_paragraph_order_weight(p)
-            )
-            
-            paragraphs.extend(content)
-        
-        return paragraphs
+    if pages is None:               pages = range(len(pdf))
+    elif isinstance(pages, int):    pages = [pages]
+
+    filters = (pypdfium_c.FPDF_PAGEOBJ_TEXT, ) if not image_folder else ()
+
+    _pages = {}
+    for page_index in pages:
+        with Timer('page processing'):
+            page    = pdf.get_page(page_index)
+            text    = page.get_textpage()
+            page_h  = page.get_height()
+            page_w  = page.get_width()
+
+            img_num = 0
+            page_infos = {'paragraphs' : [], 'height' : page_h, 'width' : page_w}
+            for obj in page.get_objects(filters):
+                with Timer('object extraction'):
+                    box = obj.get_bounds()
+                    relative_box = [
+                        box[0] / page_w,            # left
+                        (page_h - box[3]) / page_h, # top
+                        box[2] / page_w,            # right
+                        (page_h - box[1]) / page_h  # bottom
+                    ]
+
+                    if obj.type == pypdfium_c.FPDF_PAGEOBJ_TEXT:
+                        txt = text.get_text_bounded(* box).strip()
+                        if (not txt) or (len(txt) == 1 and ord(txt) <= 10):
+                            continue
+
+                        page_infos['paragraphs'].append({
+                            'text' : txt,
+                            'box'  : relative_box,
+                            'font_size' : obj.get_font_size()
+                        })
+                    elif obj.type == pypdfium_c.FPDF_PAGEOBJ_IMAGE and image_folder:
+                        if img_num == 0 and not os.path.exists(image_folder):
+                            os.makedirs(image_folder)
+
+                        image_path = os.path.join(
+                            image_folder, 'image_{}_{}.png'.format(page_index, img_num)
+                        )
+                        obj.extract(image_path[:-4])
+
+                        page_infos['paragraphs'].append({
+                            'type'  : 'image',
+                            'image' : image_path,
+                            'height': box[3] - box[1],
+                            'width' : box[2] - box[0],
+                            'box'   : relative_box
+                        })
+                        img_num += 1
+
+            _pages[page_index] = page_infos
+
+    paragraphs = []
+    for index, page in _pages.items():
+        content = combine_blocks(page['paragraphs'], ** kwargs)
+        if not content: # empty / image-less page : nothing to lay out
+            continue
+
+        font_sizes = sorted(p['font_size'] for p in content if 'font_size' in p)
+        font_size  = font_sizes[len(font_sizes) // 2] if font_sizes else None
+        for i, para in enumerate(content):
+            if font_size is not None and i and 'font_size' in para and not para.get('is_footnote', False):
+                if (
+                    (font_size - para['font_size'] > 1.5)
+                    and (i == len(content) - 1 or para['box'][1] > content[i + 1]['box'][1])
+                ):
+                    para['is_footnote'] = True
+
+            if 'text' in para and para['box'][1] <= header_threshold and '\n' not in para['text']:
+                para['is_header'] = True
+
+            para.update({
+                'page' : index, 'page_h' : page['height'], 'page_w' : page['width']
+            })
+
+        if content[-1].get('text', '').isdigit():
+            content[-1]['is_page_number'] = True
+
+        content = sorted(
+            content, key = lambda p: _get_paragraph_order_weight(p)
+        )
+
+        paragraphs.extend(content)
+
+    return paragraphs
 
 @timer
 def combine_blocks(blocks, ** kwargs):

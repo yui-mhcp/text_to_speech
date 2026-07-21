@@ -9,21 +9,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import json
 import keras
 import inspect
-import importlib
 
 from .hparams import HParams
 from .current_blocks import _keras_layers, set_cudnn_lstm
 from .simple_models import classifier, perceptron, simple_cnn
+from utils.generic_utils import import_submodules
 
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    elif '_arch' not in module and module != 'transformers': continue
-    module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-    
+for module in import_submodules(__package__, filter_fn = lambda name: '_arch' in name or name == 'transformers'):
     globals().update({
         k : v for k, v in vars(module).items()
         if (k[0].isupper()) and (
@@ -107,4 +102,3 @@ def deserialize_keras2_model(config, safe_mode = True, replace_lambda_by_l2 = Tr
     json_config = json.dumps(config)
     with keras.utils.CustomObjectScope(_objects):
         return keras.models.model_from_json(json_config)
-

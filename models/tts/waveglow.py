@@ -16,14 +16,14 @@ import numpy as np
 from loggers import Timer, timer
 from utils import pad_to_multiple
 from utils.keras import TensorSpec, ops
-from ..interfaces.base_audio_model import BaseAudioModel
+from ..core import BaseModel, AudioModelMixin
 
 logger = logging.getLogger(__name__)
 
-class WaveGlow(BaseAudioModel):
+class WaveGlow(AudioModelMixin, BaseModel):
     _default_loss   = 'mse'
-    
-    input_signature = BaseAudioModel.audio_signature
+
+    input_signature = AudioModelMixin.audio_signature
     
     def __init__(self, *, mel_fn = 'TacotronSTFT', pad_mel_value = -11., ** kwargs):
         kwargs['audio_format'] = 'mel'
@@ -77,7 +77,7 @@ class WaveGlow(BaseAudioModel):
         if len(mel.shape) == 2:     mel = ops.expand_dims(mel, axis = 0)
 
         seq_len     = mel.shape[1]
-        audio_len   = seq_len * 256
+        audio_len   = seq_len * self.mel_fn.hop_length
         if win_len is None:
             return self.compiled_infer(mel, ** kwargs)[:, : audio_len]
 
@@ -93,7 +93,7 @@ class WaveGlow(BaseAudioModel):
         
         if seq_len <= win_len:
             if force_pad is None: force_pad = self.runtime == 'keras'
-            if not force_pad: return self.compiled_infer(mel)
+            if not force_pad: return self.compiled_infer(mel, ** kwargs)[:, : audio_len]
             
             win_len = max(win_len, seq_len)
             if logger.isEnabledFor(logging.DEBUG):
@@ -109,15 +109,14 @@ class WaveGlow(BaseAudioModel):
             logger.info('Batch size is higher than 1 ({}), performing direct inference !'.format(
                 mel.shape
             ))
-            return self.compiled_infer(mel, ** kwargs)
+            return self.compiled_infer(mel, ** kwargs)[:, : audio_len]
 
-        win_len, hop_len = win_len, hop_len
         if isinstance(hop_len, float):  hop_len = int(win_len * hop_len)
         if hop_len < 0:                 hop_len = win_len + hop_len
 
         starts  = _get_steps(seq_len, win_len, hop_len)
         parts   = [mel[:, start : start + win_len] for start in starts]
-        overlaps    = ((starts[:-1] + win_len) - starts[1:]) * 256
+        overlaps    = ((starts[:-1] + win_len) - starts[1:]) * self.mel_fn.hop_length
         
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Starts : {} - mel shapes : {}'.format(
@@ -133,13 +132,16 @@ class WaveGlow(BaseAudioModel):
             ]
             audio_parts = [ops.convert_to_numpy(a) for a in audio_parts]
 
-        audio = []
-        for i, part in enumerate(audio_parts):
-            start = 0 if i == 0 else overlaps[i - 1] // 2
-            end   = None if i == len(audio_parts) - 1 else -overlaps[i] // 2
-            audio.append(part[start : end])
+        # linear cross-fade over each junction's overlap (avoids clicks at window boundaries)
+        audio = np.array(audio_parts[0])
+        for i, part in enumerate(audio_parts[1:]):
+            overlap = int(overlaps[i])
+            if overlap > 0:
+                fade = np.linspace(0., 1., overlap, dtype = audio.dtype)
+                audio[- overlap :] = audio[- overlap :] * (1. - fade) + part[: overlap] * fade
+            audio = np.concatenate([audio, part[overlap :]], axis = -1)
 
-        return ops.concatenate(audio, axis = -1)
+        return audio
     
     __call__ = infer
     

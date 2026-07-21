@@ -18,7 +18,7 @@ from threading import Lock
 
 from loggers import Timer
 from .callback import Callback
-from ..threading import Stream, FakeLock
+from ..threading import Stream
 from ..file_utils import dump_data, dump_json
 from ..generic_utils import to_json
 from ..keras import ops
@@ -26,6 +26,8 @@ from ..keras import ops
 _index_file_format_re = re.compile(r'\{i?(:\d{2}d)?\}')
 
 class FileSaver(Callback):
+    saves_to_disk   = True
+
     def __init__(self,
                  key,
                  file_format,
@@ -60,26 +62,25 @@ class FileSaver(Callback):
         self.save_in_parallel   = int(save_in_parallel)
     
     def _get_index(self, output):
-        if not self.use_index: return -1
-        
-        if self.index_key in output:
+        if not self.use_index:
+            return -1
+        elif self.index_key in output:
             return output[self.index_key]
-        
-        with self.mutex:
-            if self.index == -1:
-                self.index = len(glob.glob(_index_file_format_re.sub('*', self.file_format)))
+        else:
+            with self.mutex:
+                if self.index == -1:
+                    self.index = len(glob.glob(_index_file_format_re.sub('*', self.file_format)))
 
-            idx = self.index
-            self.index += 1
-        return idx
+                idx = self.index
+                self.index += 1
+            return idx
     
     def _format_filename(self, infos, output):
         idx     = self._get_index(output)
+        
         kwargs  = {}
         if '{basename}' in self.file_format and 'basename' not in output:
-            kwargs['basename'] = '.'.join(
-                os.path.basename(infos['filename']).split('.')[:-1]
-            )
+            kwargs['basename'] = os.path.basename(infos['filename']).rpartition('.')[0]
         
         return self.file_format.format(idx, i = idx, ** output, ** kwargs)
 
@@ -87,7 +88,7 @@ class FileSaver(Callback):
         des = '<{}'.format(self.__class__.__name__)
         if self.key:        des += ' key={}'.format(self.key)
         if self.data_key:   des += ' data_key={}'.format(self.data_key)
-        return des + '>'
+        return des + ' file={}>'.format(self.file_format)
     
     def build(self):
         super().build()
@@ -95,8 +96,11 @@ class FileSaver(Callback):
         directory = os.path.dirname(self.file_format)
         if not os.path.exists(directory): os.makedirs(directory)
         
+        # A real lock is always required : `_get_index` serializes the shared index
+        # counter, and `JSONSaver` serializes concurrent writes to `self.data` (both
+        # can run from multiple `infer` threads for inflight-batching runtimes).
+        self.mutex  = Lock()
         self.saver  = Stream(self.save, max_workers = self.save_in_parallel)
-        self.mutex  = Lock() if self.save_in_parallel > 1 and self.use_index else FakeLock()
         
     def apply(self, infos, output, ** _):
         if isinstance(output.get(self.key, None), str):
@@ -109,11 +113,11 @@ class FileSaver(Callback):
             k : output[k] for k in self.additional_keys
         })
 
-    def join(self):
-        if self.built: self.saver.join()
-    
     def save(self, filename, data, ** kwargs):
         with Timer(self.name): self.save_fn(filename, data, ** kwargs)
+
+    def join(self):
+        if self.built: self.saver.join()
 
 class AudioSaver(FileSaver):
     def __init__(self, key = 'audio', file_format = 'audio-{}.mp3', ** kwargs):
@@ -137,12 +141,17 @@ class SpectrogramSaver(FileSaver):
         super().__init__(key, file_format, ** kwargs)
 
     def save(self, filename, data):
-        if isinstance(data, list):
-            data = [ops.convert_to_numpy(d) for d in data]
-            data = np.concatenate(data, axis = 0)
-        return super().save(filename, data)
+        with Timer(self.name):
+            if isinstance(data, list):
+                data = [ops.convert_to_numpy(d) for d in data]
+                data = np.concatenate(data, axis = 0)
+            else:
+                data = ops.convert_to_numpy(data)
+            np.save(filename, data)
     
 class JSONSaver(FileSaver):
+    provides_entry  = True
+
     def __init__(self,
                  data,
                  filename,
@@ -159,15 +168,13 @@ class JSONSaver(FileSaver):
         super().__init__(None, filename, name = name, ** kwargs)
         
         self.data   = data
+        self.updated    = False
         self.force_keys = force_keys
         self.primary_key    = primary_key
-        
-        self.save_in_parallel = min(1, self.save_in_parallel)
-    
-    def __repr__(self):
-        return '<{} file={}>'.format(self.__class__.__name__, self.file_format)
 
-    def apply(self, infos, output):
+        self.save_in_parallel = min(1, self.save_in_parallel)
+
+    def apply(self, infos, output, ** _):
         if self.primary_key not in infos: return None
         
         key = infos[self.primary_key]
@@ -175,6 +182,7 @@ class JSONSaver(FileSaver):
 
         infos = to_json(infos)
         with self.mutex:
+            if infos == self.data.get(key, {}): return key
             self.data[key]  = infos
             self.updated    = True
         
@@ -183,11 +191,8 @@ class JSONSaver(FileSaver):
     
     def save(self):
         with Timer(self.name):
-            data = self.data
-            if self.save_in_parallel:
-                with self.mutex:
-                    if not self.updated: return
-                    self.updated = False
-                    data = data.copy()
+            with self.mutex:
+                if not self.updated: return
+                self.updated = False
+                data = self.data.copy()
             dump_json(self.file_format, data, indent = 4)
-    

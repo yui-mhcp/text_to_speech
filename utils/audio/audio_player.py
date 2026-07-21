@@ -71,4 +71,3 @@ class AudioPlayer(AudioStream):
             self.buffer.put(None)
         
         return event
-

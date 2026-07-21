@@ -9,17 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import importlib
-
+from utils.generic_utils import import_submodules
 from .database import Database
 
 _databases = {}
 
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-    
+for module in import_submodules(__package__):
     _databases.update({
         k : v for k, v in vars(module).items() if isinstance(v, type) and issubclass(v, Database)
     })
@@ -36,7 +31,7 @@ def init_database(_database = None, /, path = None, ** kwargs):
         assert 'class_name' in _database, 'Invalid database (missing `class_name`) : {}'.format(_database)
         
         cls = _database.pop('class_name')
-        _database, path, kwargs = cls, _database.pop('path'), {** kwargs, ** _database}
+        _database, path, kwargs = cls, _database.pop('path', path), {** kwargs, ** _database}
     
     if isinstance(_database, str):
         if _database not in _databases:
@@ -46,8 +41,7 @@ def init_database(_database = None, /, path = None, ** kwargs):
         _database = _databases[_database]
     
     assert issubclass(_database, Database), 'Invalid database : {}'.format(_database)
-    assert isinstance(path, str), '`path` should be a string, got {}'.format(path)
+    # `path is None` creates an in-memory database (not saved, not cached)
+    assert path is None or isinstance(path, str), '`path` should be a string, got {}'.format(path)
     
     return _database(path, ** kwargs)
-
-        

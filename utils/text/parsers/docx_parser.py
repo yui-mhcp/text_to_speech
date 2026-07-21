@@ -9,14 +9,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .parser import Parser
+from .parser import register_parser
 
-class DocxParser(Parser):
-    __extension__ = 'docx'
-    
-    def get_paragraphs(self, ** kwargs):
-        """ Extract a list of paragraphs """
-        from docx import Document
-        
-        return [{'text' : p.text} for p in Document(self.filename).paragraphs]
+@register_parser('docx')
+def parse_docx(filename, ** kwargs):
+    """ Extract a list of paragraphs from a `.docx` document """
+    from docx import Document
 
+    return [{'text' : p.text} for p in Document(filename).paragraphs]

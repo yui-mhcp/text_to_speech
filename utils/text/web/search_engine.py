@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from threading import Thread
 
 from loggers import Timer, timer
-from ..parsers import parse_html
+from ..parsers.html_parser import parse_html
 from ...generic_utils import time_to_string
 
 logger = logging.getLogger(__name__)

@@ -17,11 +17,15 @@ from ..generic_utils import to_json
 from ..file_utils import dump_json, load_json
 
 class JSONDatabase(Database):
-    """ Stores all the data in a single `.json` file. The `primary_key` has to be a string. """
+    """
+        Stores all the data in a single `data.json` file (inside the database directory `path`).
+        Supports both single (`str`) and composite (`tuple`) primary keys : with a composite key,
+        entries are stored under an internal uuid and the `entry -> id` mapping is persisted.
+    """
     def __init__(self, path, primary_key):
         super().__init__(path, primary_key)
-        
-        data  = load_json(self.data_file, default = {})
+
+        data  = load_json(self.data_file, default = {}) if path else {}
         if data and ('data' not in data or 'entries' not in data):
             data = {'data' : data, 'entries' : {}}
         
@@ -44,7 +48,7 @@ class JSONDatabase(Database):
 
     @property
     def data_file(self):
-        return os.path.join(self.path, 'data.json')
+        return os.path.join(self.path, 'data.json') if self.path else None
     
     def __len__(self):
         """ Return the number of data in the database """
@@ -125,10 +129,6 @@ class JSONDatabase(Database):
             return [entry[idx] for entry in self._entry_to_id.keys()]
         else:
             return [value.get(column, None) for value in self._data.values()]
-    
-    def items(self):
-        for key, value in self._data.items():
-            yield key, value
     
     def save_data(self, ** kwargs):
         """ Save the database to `self.path` """

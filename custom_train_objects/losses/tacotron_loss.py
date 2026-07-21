@@ -177,4 +177,3 @@ class TacotronLoss(LossWithMultipleOutputs):
             'mel_loss'  : self.mel_loss if not callable(self.mel_loss) else keras.losses.serialize(self.mel_loss)
         })
         return config
-

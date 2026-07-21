@@ -9,11 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .txt_parser import TxtParser
-         
-class JavaParser(TxtParser):
-    __extension__ = 'java'
+from .parser import register_parser
+from .txt_parser import read_txt
 
-    def get_paragraphs(self, ** kwargs):
-        """ Extract a list of paragraphs """
-        return [{'text' : self.get_text(** kwargs), 'type' : 'code', 'language' : 'java'}]
+@register_parser('java')
+def parse_java(filename, ** kwargs):
+    """ Extract the whole file as a single code paragraph """
+    return [{'text' : read_txt(filename, ** kwargs), 'type' : 'code', 'language' : 'java'}]

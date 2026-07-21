@@ -12,6 +12,7 @@
 from .video import *
 from .image_io import *
 from .bounding_box import *
+from .masking import *
 from .image_normalization import get_image_normalization_fn
 from .image_processing import resize_image, pad_image, get_output_size
 

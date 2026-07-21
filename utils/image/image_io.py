@@ -61,15 +61,17 @@ def get_image_size(image):
     elif isinstance(image, str):
         with PIL.Image.open(image) as img:
             return img.size[::-1]
+    elif isinstance(image, dict):
+        if 'height' in image and 'width' in image:
+            return image['height'], image['width']
+        else:
+            return get_image_size(image['image' if 'image' in image else 'filename'])
     else:
         raise ValueError("Unknown image type : {}\n{}".format(type(image), image))
     
 @timer
 def load_image(filename,
                *,
-               
-               size = None,
-               multiples    = None,
                
                dtype    = None,
                channels = 3,
@@ -87,12 +89,11 @@ def load_image(filename,
             
             - dtype     : the expected output dtype
             - channels  : required kwarg for `tf.image.decode_image`
-            - mode      : 'rgb', 'gray' or None, convert the image to the appropriate output type
-                If gray, the last dimension will be 1 and if 'rgb' will be 3. If 'None' the last dimension will be either 1 or 3 depending on the original image format
             - to_tensor : converts the output image to `Tensor`
             
             - boxes     : [x, y, w, h] position to extract
-            - kwargs    : forwarded to `utils.image.bounding_box.crop_box` if `bbox` is provided
+            
+            - kwargs    : forwarded to `image_processing.resize_image` if `bbox` is provided
         Return :
             - image : 3-D `Tensor` if `to_tensor == True`, `np.ndarray | Tensor` otherwise
         
@@ -105,24 +106,28 @@ def load_image(filename,
 
     # Convert filename to a Tensor (if necessary)
     # Note : inferring the output type then use `tf.cast` is faster than `tf.convert_to_tensor` and allows some type checking
+    _is_tensor = False
     if ops.is_string(filename):
         if ops.is_tensorflow_backend() or ops.is_tensorflow_graph():
             import tensorflow as tf
-
+            
+            _is_tensor = True
+            
             image = tf.io.read_file(filename)
             image = tf.image.decode_image(image, channels = channels, expand_animations = False)
         else:
             image = np.array(PIL.Image.open(filename))
-            if to_tensor: image = ops.convert_to_tensor(image)
     else:
         image = filename
-        if to_tensor: image = ops.convert_to_tensor(image)
         if len(image.shape) == 2: image = image[:, :, None]
 
     if boxes is not None:
         from .bounding_box import crop_box
         _, image = crop_box(image, boxes, ** kwargs)
 
+    if not _is_tensor and to_tensor:
+        image = ops.convert_to_tensor(image)
+    
     if dtype is not None:
         image = ops.convert_data_dtype(image, dtype = dtype)
     
@@ -131,10 +136,7 @@ def load_image(filename,
     elif channels == 3 and image.shape[2] == 1:
         image = ops.grayscale_to_rgb(image)
     
-    if size is not None or multiples is not None:
-        image = resize_image(image, size, multiples = multiples, ** kwargs)
-
-    return image
+    return resize_image(image, ** kwargs)
 
 def convert_to_uint8(image, ** kwargs):
     """ Converts `image` to `np.uint8` format (useful for subsequent `cv2` calls) """
@@ -279,7 +281,7 @@ def stream_camera(cam_id    = 0,
 
         if output_fps == -1:
             warnings.warn('When specifying an `output_file`, it is recommanded to specify `output_fps` as the `fps` can differ from the effective camera fps')
-            output_fps  = cap.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
+            output_fps  = camera.get(cv2.CAP_PROP_FPS) if fps == -1 else fps
     
     # set the display fps
     if show and play_audio and isinstance(cam_id, str):

@@ -21,7 +21,7 @@ import regex as re
 from functools import cached_property, cache
 
 from loggers import Timer, timer
-from .. import load_json, dump_json, pad_batch, get_enum_item, is_dataframe, convert_to_str, timestamp_to_str
+from .. import load_json, dump_json, pad_batch, get_enum_item, is_dataframe, convert_to_str, timestamp_to_str, download_file
 from ..keras import TensorSpec, ops, execute_eagerly
 from .ctc_decoder import ctc_decode
 from .cleaners import get_cleaners_fn, clean_text, strip
@@ -149,7 +149,7 @@ class Tokenizer:
         self._special_tokens    = list(self.tokens.values())
         self._tokens_split_re   = re.compile(
             '({})'.format('|'.join([re.escape(tok) for tok in self._special_tokens]))
-        )
+        ) if self._special_tokens else None
         self._bpe_cache     = {}
         self._symbol_to_id  = {}
         self._id_to_symbol  = {}
@@ -365,8 +365,11 @@ class Tokenizer:
         return strip(text, lstrip = self.lstrip, rstrip = self.rstrip)
     
     @timer(log_if_root = False)
-    def split_text(self, text, tokenize = False):
+    def split_text(self, text):
         """ Splits `text` into a list of tokens """
+        if not self._tokens_split_re:
+            return self._split_text(text)
+        
         parts = re.split(self._tokens_split_re, text)
 
         splitted = []
@@ -616,10 +619,13 @@ class Tokenizer:
             ) for t in tokens]
         
         if remove_tokens: skip_padding = True
-        
-        if remove_tokens:   _skip = self.token_indexes
-        elif skip_padding:  _skip = [self.blank_token_idx]
-        else:               _skip = []
+
+        # `token_indexes` is keyed by token *string* -> we need its id *values* to
+        # skip special tokens (comparing the int ids iterated below). `remove_tokens`
+        # also implies skipping the padding (`skip_padding` forced above).
+        _skip = set()
+        if skip_padding:    _skip.add(self.blank_token_idx)
+        if remove_tokens:   _skip.update(self.token_indexes.values())
         
         symbols = []
         for i, token in enumerate(tokens):
@@ -912,4 +918,3 @@ def pretty_print_template(template):
 
         str_template += ' ' * p_indent * 4 + '{' + part + '\n'
     return str_template
-

@@ -13,17 +13,13 @@ import os
 import glob
 import keras
 import inspect
-import importlib
 
 from ..hparams import HParams
 from .transformer_arch import Transformer, TransformerBlock
 from utils import load_json, dump_json, partial
+from utils.generic_utils import import_submodules
 
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    elif '_arch' not in module: continue
-    module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-    
+for module in import_submodules(__package__, filter_fn = lambda name: '_arch' in name):
     globals().update({
         k : v for k, v in vars(module).items()
         if isinstance(v, HParams) or (isinstance(v, type) and issubclass(v, keras.Model))

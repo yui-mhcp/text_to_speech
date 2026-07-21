@@ -32,7 +32,14 @@ class ONNXRuntime(Runtime):
             inp.name : inp.type[:-1].split('(')[1]
             for inp in self.engine.get_inputs()
         }
-    
+
+    @property
+    def base_dtype(self):
+        """ Precision of the session, taken from its first floating-point input. """
+        for name in self.argnames:
+            if 'float' in self.dtypes[name]: return self.dtypes[name]
+        return 'float32'
+
     @timer(name = 'ONNX runtime inference')
     def __call__(self, * args, recompile = False, ** kwargs):
         kwargs.update({name : arg for name, arg in zip(self.argnames, args)})

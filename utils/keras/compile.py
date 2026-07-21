@@ -32,10 +32,12 @@ class TensorSpec:
     static  : bool  = False
     
     def __hash__(self):
-        return hash((self.shape, self.dtype))
-    
+        return hash((self.shape, self.dtype, self.name, self.static))
+
     def __eq__(self, o):
-        return self.name == o.name and self.dtype == o.dtype
+        if not isinstance(o, TensorSpec): return NotImplemented
+        return (self.shape, self.dtype, self.name, self.static) == \
+               (o.shape, o.dtype, o.name, o.static)
 
 class ExecutionMode(enum.IntEnum):
     EAGER   = 0

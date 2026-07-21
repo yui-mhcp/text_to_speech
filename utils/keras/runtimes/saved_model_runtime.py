@@ -56,6 +56,15 @@ class SavedModelRuntime(Runtime):
         self.xla_compiled   = {}
     
     @property
+    def base_dtype(self):
+        """ Precision taken from the first floating-point input spec of the default endpoint. """
+        for signature in self.signatures.values():
+            for spec in signature.values():
+                dtype = getattr(spec.dtype, 'name', spec.dtype)
+                if 'float' in dtype: return dtype
+        return 'float32'
+
+    @property
     def argnames(self):
         return self.engine.signatures[list(self.signatures.keys())[0]]._arg_keywords
     

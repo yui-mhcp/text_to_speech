@@ -127,4 +127,3 @@ def set_video_audio(video_filename, audio_filename, blocking = True, ** kwargs):
         cmd.run()
     else:
         cmd.run_async()
-    

@@ -1,4 +1,4 @@
-# Contributing to YUI-MHCP
+# :yum: Contributing to YUI-MHCP
 
 Thank you for your interest in contributing to this project! Before submitting your contributions, please take a moment to read through this document.
 
@@ -19,7 +19,7 @@ This project uses a Contributor License Agreement (CLA) that allows:
 
 This is especially important if your contribution concerns generic code shared between multiple repositories of the project. This requires me to have the rights to adapt your contribution to be fully compatible with the other repositories.
 
-**Important**: By submitting any contribution to this project, you agree to the terms outlined in the [CLA](https://cla-assistant.io/yui-mhcp/data_processing). This ensures I can continue to develop this project in any direction, including commercial applications, while maintaining the project's open-source nature through the AGPL v3.0 license.
+**Important**: By submitting any contribution to this project, you agree to the terms outlined in the [CLA](https://cla-assistant.io/yui-mhcp/text_to_speech). This ensures I can continue to develop this project in any direction, including commercial applications, while maintaining the project's open-source nature through the AGPL v3.0 license.
 
 ## Code of Conduct
 
@@ -56,7 +56,7 @@ Please follow as much as possible the following guidelines when developping new 
 
 1. Fork the repository and create your branch from `main`
 2. Ensure your code follows the style guidelines
-3. Include appropriate tests for your changes
+3. Include appropriate tests for your changes, and make sure the `pytest` suite passes (see the *Testing* section of the [README](README.md))
 4. Update documentation as necessary
 5. Submit your pull request with a clear description of the changes
 

@@ -190,4 +190,3 @@ def filter_texts(encoded_texts,
     
     if return_indices: return encoded_texts, lengths, np.where(valid_mask)[0]
     return encoded_texts, lengths
-

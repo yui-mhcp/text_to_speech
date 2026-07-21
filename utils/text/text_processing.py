@@ -98,8 +98,8 @@ def split_text(text,
     splitted    = split_sentences(text, eos_pattern, strip = False)
     tokens      = [tokenizer(sent) for sent in splitted]
     
-    result_text, result_tokens = [splitted[0]], [tokens[0]]
-    for split, tok in zip(splitted[1:], tokens[1:]):
+    result_text, result_tokens = [], []
+    for split, tok in zip(splitted, tokens):
         # adds the sentence if it is shorter than `max_sent_length`
         if len(tok) <= max_sent_length:
             result_text.append(split)

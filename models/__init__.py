@@ -12,10 +12,10 @@
 import os
 import sys
 import logging
-import importlib
 
-from .utils import *
-from .interfaces.base_model import BaseModel
+from utils.generic_utils import import_submodules
+from .core.utils import *
+from .core import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,5 @@ def _import_model_classes(target_class):
     
     if target_class and target_class in _globals: return
     
-    for module in os.listdir(__package__.replace('.', os.path.sep)):
-        if module.startswith(('.', '_')) or '_old' in module: continue
-        module = importlib.import_module(__package__ + '.' + module.replace('.py', ''))
-
+    for module in import_submodules(__package__):
         _import_classes(module, _globals)

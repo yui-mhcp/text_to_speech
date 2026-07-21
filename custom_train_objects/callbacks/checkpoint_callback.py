@@ -28,4 +28,3 @@ class CheckpointCallback(ModelCheckpoint):
         super()._save_model(epoch, batch, logs)
         
         self.checkpoint_manager.set_best_checkpoint_infos(epoch = epoch, logs = logs)
-        

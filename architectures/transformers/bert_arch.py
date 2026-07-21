@@ -211,4 +211,3 @@ def transformers_bert(name, task = 'base'):
         raise ValueError("Unknown task !\n  Accepted : {}\n  Got : {}".format(
             tuple(_transformers_pretrained_task.keys()), task
         ))
-

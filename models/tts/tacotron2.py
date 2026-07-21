@@ -17,28 +17,31 @@ import numpy as np
 from loggers import Timer, timer
 from utils.text import split_sentences, split_text
 from utils import Stream, time_to_string, load_json
-from utils.callbacks import AudioSaver, AudioPlayer, FunctionCallback, QueueCallback, JSONSaver, SpectrogramSaver, apply_callbacks
+from utils.callbacks import AudioSaver, AudioDisplayer, FunctionCallback, QueueCallback, JSONSaver, SpectrogramSaver
 from utils.keras import TensorSpec, ops
-from ..interfaces.base_text_model import BaseTextModel
-from ..interfaces.base_audio_model import BaseAudioModel
+from ..core import BaseModel, TextModelMixin, AudioModelMixin
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_MEL_LENGTH  = 1024
 DEFAULT_MAX_TEXT_LENGTH = 150
 
-class Tacotron2(BaseTextModel, BaseAudioModel):
+# inference kwargs forwarded to the vocoder (see `WaveGlow.infer`) : anything else (e.g.,
+# `padding_multiple`, attention kwargs) is synthesizer-specific and must not leak to it
+_VOCODER_FORWARDED_KWARGS   = ('win_len', 'hop_len', 'batch', 'use_slice', 'max_win_len', 'force_pad')
+
+class Tacotron2(TextModelMixin, AudioModelMixin, BaseModel):
     """
-        Tacotron2 is a model introduced in this paper [https://arxiv.org/abs/1712.05884]. 
-        It takes as input a text and produces a mel-spectrogram of the corresponding audio. 
-        
-        This class inherits from `BaseTextModel` and `BaseAudioModel` as it combines both types of data (text and audio). It means that it handles all the features available in those 2 interfaces.
+        Tacotron2 is a model introduced in this paper [https://arxiv.org/abs/1712.05884].
+        It takes as input a text and produces a mel-spectrogram of the corresponding audio.
+
+        This class combines both types of data (text and audio) through `TextModelMixin` and `AudioModelMixin` (on top of `BaseModel`). It means that it handles all the features available in those 2 interfaces.
     """
-    
+
     _default_loss   = 'TacotronLoss'
-    
-    infer_signature = BaseTextModel.text_signature
-    prepare_input   = BaseTextModel.encode_text
+
+    infer_signature = TextModelMixin.text_signature
+    prepare_input   = TextModelMixin.encode_text
     
     def __init__(self,
                  lang,
@@ -84,19 +87,16 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     
     @property
     def output_signature(self):
-        return (
-            self.audio_signature, TensorSpec(shape = (None, None), dtype = 'float32')
-        )
-        
+        return (self.audio_signature, TensorSpec(shape = (None, None), dtype = 'float32'))
+    
     @property
     def training_hparams(self):
         return {
             ** super().training_hparams,
-            ** self.training_hparams_audio,
             'max_input_length'  : None,
             'max_output_length' : None
         }
-    
+
     def __str__(self):
         return super().__str__() + self._str_text() + self._str_audio()
     
@@ -128,8 +128,9 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
         if isinstance(text, dict): text = get_text_from_paragraph(text)
         
         if predicted and not overwrite and text in predicted:
-            if callbacks: apply_callbacks(callbacks, predicted[text], {}, save = False)
-            return predicted[text]
+            return self._finalize_cached_prediction(
+                text, callbacks = callbacks, predicted = predicted
+            )
         
         with Timer('processing'):
             if isinstance(max_text_length, str):
@@ -143,15 +144,29 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             
             splitted    = [self.clean_text(sent.strip(), ** kwargs) for sent in splitted]
             splitted    = [s for s in splitted if any(c.isalnum() for c in s)]
-            cleaned     = '\n\n'.join(splitted) if len(splitted) > 1 else splitted[0]
 
             encoded     = [self.encode_text(text, cleaned = True) for text in splitted]
 
             splitted    = [splitted[i] for i in range(len(splitted)) if len(encoded[i]) > 0]
             encoded     = [enc for enc in encoded if len(enc) > 0]
 
+            cleaned     = '\n\n'.join(splitted) if len(splitted) != 1 else splitted[0]
+
+        if not encoded:
+            return self._finalize_predictions(
+                self._build_empty_output(text, vocoder = vocoder, silence_time = silence_time),
+                callbacks = callbacks, predicted = predicted,
+                return_output = return_output, save = False
+            )
+
+        vocoder_kwargs  = {}
+        if vocoder is not None:
+            vocoder_kwargs  = {k : kwargs[k] for k in _VOCODER_FORWARDED_KWARGS if k in kwargs}
+            vocoder_kwargs.update(vocoder_config)
+
         synth_gen_time, vocoder_gen_time = 0., 0.
 
+        kept = []
         mels, attention_weights, audios = [], [], []
         for i, inp in enumerate(encoded):
             start_synth_infer_time = time.time()
@@ -164,15 +179,17 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
                     outputs = self.compiled_infer(
                         inputs, max_length = max_length, ** kwargs
                     )
-                ratio = outputs.lengths[0] / length
+                output_length = ops.convert_to_numpy(outputs.lengths[0])
+                
+                ratio = output_length / length
                 if ratio > min_fpt_ratio and ratio < max_fpt_ratio:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug('Inference succeeded with a ratio of {:.2f}'.format(ratio))
                     success = True
                     break
 
-                logger.info('Inference failed (lengths : {}, frape/token ratio : {:.2f}) !'.format(
-                    outputs.lengths, ratio
+                logger.info('Inference failed (lengths : {}, frame/token ratio : {:.2f}) !'.format(
+                    output_length, ratio
                 ))
 
             synth_gen_time   += time.time() - start_synth_infer_time
@@ -180,70 +197,93 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             if not success:
                 logger.warning('Inference failed too much time ! Result is probably not perfect\n  Text : {}'.format(splitted[i]))
 
-            if outputs.lengths[0] <= 5:
+            if output_length <= 5:
                 continue
-            
-            mels.append(outputs.mel[0, : outputs.lengths[0]])
-            attention_weights.append(outputs.attention_weights[0, : outputs.lengths[0]])
+
+            kept.append(splitted[i])
+            mels.append(outputs.mel[0, : output_length])
+            if callbacks or return_output:
+                attention_weights.append(outputs.attention_weights[0, : output_length])
 
             if vocoder is not None:
                 start_vocoder_time = time.time()
 
-                audio = vocoder(mels[-1], ** {** kwargs, ** vocoder_config})
+                audio = vocoder(mels[-1], ** vocoder_kwargs)
                 if len(audio.shape) == 2: audio = audio[0]
                 audios.append(ops.convert_to_numpy(audio))
 
                 vocoder_gen_time += time.time() - start_vocoder_time
 
+        if not mels:
+            return self._finalize_predictions(
+                self._build_empty_output(
+                    text, cleaned = cleaned, vocoder = vocoder, silence_time = silence_time
+                ),
+                callbacks = callbacks, predicted = predicted,
+                return_output = return_output, save = False
+            )
+
+        # keep `splitted` aligned with `mel` / `attention` (segments may be skipped above)
+        splitted = kept
+
         audio_infos = {}
         if vocoder is not None:
-            if len(audios) > 0:
-                audios = audios[0] if len(audios) == 1 else np.concatenate(audios, axis = 0)
-                audio_infos = {
-                    'audio' : audios,
-                    'rate'  : self.rate,
-                    'time'  : len(audios) / self.rate
-                }
+            audios = audios[0] if len(audios) == 1 else np.concatenate(audios, axis = 0)
+            audio_infos = {
+                'audio' : audios,
+                'rate'  : self.rate,
+                'time'  : len(audios) / self.rate
+            }
 
-                logger.info('{} generated in {} ({} generated / sec) : {} synthesizer + {} vocoder'.format(
-                    time_to_string(audio_infos['time']),
-                    time_to_string(synth_gen_time + vocoder_gen_time),
-                    time_to_string(audio_infos['time'] / (synth_gen_time + vocoder_gen_time)),
-                    time_to_string(synth_gen_time),
-                    time_to_string(vocoder_gen_time)
-                ))
-            else:
-                audio_infos = {
-                    'audio' : np.zeros((int(silence_time * self.rate), ), dtype = 'float32'),
-                    'rate'  : self.rate,
-                    'time'  : silence_time
-                }
+            logger.info('{} generated in {} ({} generated / sec) : {} synthesizer + {} vocoder'.format(
+                time_to_string(audio_infos['time']),
+                time_to_string(synth_gen_time + vocoder_gen_time),
+                time_to_string(audio_infos['time'] / (synth_gen_time + vocoder_gen_time)),
+                time_to_string(synth_gen_time),
+                time_to_string(vocoder_gen_time)
+            ))
 
         output = {
             'text'  : text,
             'cleaned'   : cleaned,
             'splitted'  : splitted,
-            
+
             'mel'   : mels,
             'attention' : attention_weights,
             ** audio_infos
         }
-        
-        entry = None
-        if callbacks:
-            if text not in predicted:
-                predicted[text] = {
-                    k : v for k, v in output.items() if k not in ('mel', 'attention', 'audio')
-                }
+        return self._finalize_predictions(
+            output, callbacks = callbacks, predicted = predicted, return_output = return_output
+        )
 
-            entry = apply_callbacks(callbacks, predicted[text], output, save = True)
-        
-        if return_output:
-            return output
-        elif vocoder is None or 'audio' in predicted.get(text, {}):
-            return predicted.get(text, {})
-        else:
-            return {k : v for k, v in output.items() if k not in ('mel', 'attention')}
+    def _build_empty_output(self, text, *, cleaned = '', vocoder = None, silence_time = 0.15):
+        """
+            `infer` output for degenerate inputs (no synthesizable segment) : same format as the
+            regular one, with empty `splitted` / `mel` / `attention`, and a short silence as
+            `audio` when a `vocoder` is provided. Callers finalize it with `save = False` (the
+            file-saver callbacks do not support empty data, and caching such entries is useless)
+        """
+        output = {
+            'text'  : text,
+            'cleaned'   : cleaned,
+            'splitted'  : [],
+
+            'mel'   : [],
+            'attention' : []
+        }
+        if vocoder is not None:
+            output.update({
+                'audio' : np.zeros((int(silence_time * self.rate), ), dtype = 'float32'),
+                'rate'  : self.rate,
+                'time'  : silence_time
+            })
+        return output
+
+    def filter_prediction_output(self, output):
+        return {k : v for k, v in output.items() if k not in ('mel', 'attention', 'audio')}
+
+    def filter_returned_output(self, output):
+        return {k : v for k, v in output.items() if k not in ('mel', 'attention')}
 
     def prepare_output(self, data):
         mel = self.get_audio(data)
@@ -344,7 +384,7 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
             ))
         
         if display or play:
-            callbacks.append(AudioPlayer(display = display, play = play))
+            callbacks.append(AudioDisplayer(display = display, play = play))
 
         if post_processing is not None:
             if not isinstance(post_processing, list): post_processing = [post_processing]
@@ -359,12 +399,6 @@ class Tacotron2(BaseTextModel, BaseAudioModel):
     def precompile_for_stream(self, ** kwargs):
         self.infer('hello world !', max_trial = 1, ** kwargs)
 
-    @timer
-    def predict(self, inputs, ** kwargs):
-        if isinstance(inputs, (str, dict)): inputs = [inputs]
-        
-        return super().predict(inputs, ** kwargs)
-    
     def stream(self, stream, *, vocoder, ** kwargs):
         self.precompile_for_stream(** kwargs)
         

@@ -10,19 +10,16 @@
 # limitations under the License.
 
 import os
-import importlib
 
 from utils import Stream, setup_environment
+from utils.generic_utils import import_submodules
 
 from .waveglow import WaveGlow
-from ..interfaces import BaseModel
-from ..utils import get_model_dir, get_model_config, is_model_name
+from ..core import BaseModel
+from ..core.utils import get_model_config
 
 _models = {}
-for module in os.listdir(__package__.replace('.', os.path.sep)):
-    if module.startswith(('.', '_')) or '_old' in module: continue
-    module = importlib.import_module(__package__ + '.' + module[:-3])
-    
+for module in import_submodules(__package__):
     _models.update({
         k : v for k, v in vars(module).items() if isinstance(v, type) and issubclass(v, BaseModel)
     })
@@ -63,13 +60,20 @@ def get_models(model = None, lang = None, vocoder = None):
 
 def tts(text, *, model = None, lang = None, vocoder = None, add_model_name = False, ** kwargs):
     """
-        Perform TTS and return result of Tacotron2.predict(...)
-        Return : list of tuple (sentence, infos) whe infos is a dict
-            `infos` contains :
-            - splitted  : the splitted original phrase
-            - mels      : mel spectrogram files for each splitted part
-            - audios    : audio files for each part
-            - audio     : raw audio (if directory is None) or filename of the full audio
+        Performs TTS on `text` (single `str` / `dict`, or a list of them) with the model resolved
+        by `get_models` (explicit `model`, or the default one for `lang`)
+
+        Return : the result of `model.predict(...)` — for each input, a `dict` :
+            - text      : the raw input text
+            - cleaned   : the cleaned text
+            - splitted  : the synthesized text segments (aligned with `mel` / `attention`)
+            - mel       : mel-spectrogram (list, one per segment)
+            - attention : attention weights (list, one per segment)
+            - audio / rate / time   : the full raw audio (only when a `vocoder` is used)
+        When saving is enabled and `return_output` is False, the lightweight `map.json` entry is
+        returned instead (heavy keys replaced by the saved filenames)
+
+        For a single `str` / `dict` input, the single result is returned directly (not a list)
     """
     model, vocoder = get_models(model = model, lang = lang, vocoder = vocoder)
     
@@ -80,6 +84,18 @@ def tts(text, *, model = None, lang = None, vocoder = None, add_model_name = Fal
     return res[0] if isinstance(text, (str, dict)) else res
 
 def stream(stream, *, preload = None, model = None, lang = None, vocoder = None, ** kwargs):
+    """
+        Runs TTS on a stream of items (see `utils.threading.Stream`), in one of 3 modes :
+            1) `model` / `lang` is provided : the resolved synthesizer handles the whole stream
+               (`model.stream(...)`), items are texts
+            2) `preload` : the given model names (or all `_pretrained` if True) are pre-compiled,
+               then mode 3) applies
+            3) Fallback : each item is forwarded to `tts(...)`, and **must** be a `dict` providing
+               `model` or `lang` (e.g., a `Queue` of dicts, unpacked as kwargs via
+               `Stream(dict_as_kwargs = True)`). This enables switching the model dynamically on a
+               per-item basis, which stays cheap since all `BaseModel` instances are cached
+               singletons (see `get_pretrained`)
+    """
     setup_environment(** kwargs)
     
     if model or lang:

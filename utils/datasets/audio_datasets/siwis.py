@@ -36,4 +36,3 @@ def load_data(directory, *, lang = 'fr', parts = [1, 2, 3, 5], ** kwargs):
             dataset.append({'text' : text, 'filename' : wav_filename})
     
     return base_dir, dataset
-

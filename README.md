@@ -1,38 +1,65 @@
 # :yum: Text To Speech (TTS)
 
+![Python](https://img.shields.io/badge/python-3.12-blue.svg)
+![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.0-orange.svg)
+
+This repository provides a modular Text-To-Speech (TTS) toolkit built on the yui-mhcp `BaseModel` interface, featuring the `Tacotron-2` synthesizer, the `WaveGlow` vocoder, and the `SV2TTS` extension for zero-shot voice cloning.
+
 Check the [CHANGELOG](https://github.com/yui-mhcp/yui-mhcp/blob/main/CHANGELOG.md) file to have a global overview of the latest modifications! :yum:
 
 ## Project structure
 
 ```bash
 ├── architectures            : utilities for model architectures
-│   ├── layers               : custom layer implementations
-│   ├── transformers         : transformer architecture implementations
-│   ├── tacotron2_arch.py       : Tacotron-2 synthesizer architecture (+ multi-speaker variant)
-│   └── waveglow_arch.py        : WaveGlow vocoder architecture
-├── custom_train_objects
-│   ├── losses
-│   │   └── tacotron_loss.py    : custom Tacotron2 loss
-├── example_outputs         : some pre-computed audios (cf the `text_to_speech` notebook)
-├── loggers
-├── models
-│   ├── tts
-│   │   ├── sv2tts_tacotron2.py : SV2TTS main class
-│   │   ├── tacotron2.py        : Tacotron2 main class
-│   │   └── waveglow.py         : WaveGlow main class (both pytorch and tensorflow)
-│   └── weights_converter.py    : utilities to convert weights between different models
-├── pretrained_models
-├── tests                    : unit and integration tests for model validation
-├── utils                    : utility functions for data processing and visualization
-├── LICENCE                  : project license file
-├── README.md                : this file
-├── requirements.txt         : required packages
-└── text_to_speech.ipynb     : notebook demonstrating model creation + TTS features
+│   ├── layers                   : custom layer implementations (attention, embeddings, invertible conv, ...)
+│   ├── transformers             : transformer architecture implementations (bart, bert, gpt2, mistral, t5, whisper, ...)
+│   ├── current_blocks.py        : defines common blocks (e.g., Conv + BN + ReLU)
+│   ├── generation_utils.py      : utilities for text and sequence generation
+│   ├── hparams.py               : hyperparameter management
+│   ├── simple_models.py         : classical models such as CNN / RNN / MLP and siamese
+│   ├── tacotron2_arch.py        : Tacotron-2 synthesizer architecture (+ multi-speaker variant)
+│   └── waveglow_arch.py         : WaveGlow vocoder architecture
+├── custom_train_objects    : custom objects used in training / testing
+│   ├── callbacks                : callbacks loading and implementations
+│   ├── generators               : custom data generators
+│   │   ├── file_cache_generator.py : cache-based generator to speed up audio processing
+│   │   └── ge2e_generator.py       : GE2E generator for speaker-encoder training
+│   ├── losses                   : loss functions
+│   │   ├── ctc_loss.py             : CTC loss
+│   │   ├── loss_with_multiple_outputs.py : utility class allowing losses to output additional metrics
+│   │   ├── tacotron_loss.py        : custom Tacotron-2 loss
+│   │   └── text_loss.py            : text (token-level) loss
+│   ├── metrics                  : metrics loading and implementations
+│   ├── optimizers               : optimizer loading + custom learning-rate schedulers
+│   ├── checkpoint_manager.py    : handle model checkpoint management
+│   └── history.py               : main History class to track training statistics / config
+├── loggers                 : custom utilities for the `logging` module*
+├── models                  : main directory for model classes
+│   ├── core                     : the `BaseModel` foundation (mixins + saving / migration utils)*
+│   ├── tts                      : Text-To-Speech models
+│   │   ├── sv2tts_tacotron2.py     : SV2TTS multi-speaker synthesizer
+│   │   ├── tacotron2.py            : Tacotron-2 synthesizer
+│   │   └── waveglow.py             : WaveGlow vocoder (both pytorch and tensorflow)
+│   └── weights_converter.py     : utilities to convert weights between different models
+├── pretrained_models       : pretrained checkpoints (unzip the downloaded models here)
+├── tests                   : `pytest` suite mirroring the `utils` / `loggers` / model tree*
+├── utils                   : shared data-processing / keras utilities*
+├── example_outputs             : some pre-computed audios (cf the `text_to_speech` notebook)
+├── text_to_speech.ipynb        : notebook demonstrating model creation + TTS features
+├── CHANGELOG.md                : project-specific changelog
+├── CITATION.cff                : citation metadata
+├── CONTRIBUTING.md             : contribution guidelines
+├── INSTALLATION.md             : shared GPU environment installation guide
+├── LICENCE                     : project license file
+├── pyproject.toml              : project metadata, dependencies and tooling config
+├── __version__.py              : single-sourced version string
+└── README.md                   : this file
 ```
 
-Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more information about the unextended modules / structure / main classes. 
+\* The `loggers`, `utils`, `models/core` and most of the `tests` tree are the shared foundation maintained in [the data_processing](https://github.com/yui-mhcp/data_processing) and [base_dl_project](https://github.com/yui-mhcp/base_dl_project) repositories — check them for more information about the unextended modules / structure / main classes.
 
-\* Check the [encoders](https://github.com/yui-mhcp/encoders) project for more information about the `models/encoder` module
+\* Check the [encoders](https://github.com/yui-mhcp/encoders) project for more information about the speaker encoder used by the `SV2TTS` models.
 
 ## Available features
 
@@ -43,7 +70,7 @@ Check [the main project](https://github.com/yui-mhcp/base_dl_project) for more i
 | Text-To-Speech    | `tts`             | perform TTS on text you want with the model you want  |
 | stream            | `stream`          | perform TTS on text you enter |
 
-The `text_to_speech` notebook provides a concrete demonstration of the `tts` function
+The `text_to_speech` notebook provides a concrete demonstration of the `tts` function.
 
 ## Available models
 
@@ -75,12 +102,64 @@ Models must be unzipped in the `pretrained_models/` directory!
 
 ## Installation and usage
 
-1. Clone this repository: `git clone https://github.com/yui-mhcp/text_to_speech.git`
-2. Go to the root of this repository: `cd text_to_speech`
-3. Install requirements: `pip install -r requirements.txt`
-4. Open the `text_to_speech` notebook and follow the instructions!
+See [the installation guide](INSTALLATION.md) for a step-by-step setup of the shared GPU environment (NVIDIA driver, CUDA, `mamba` and the deep-learning backends) :smile:
 
-You may have to install `ffmpeg` for audio loading/saving.
+Here is a summary of the installation procedure, once your python environment is ready :
+1. Clone this repository : `git clone https://github.com/yui-mhcp/text_to_speech.git`
+2. Go to the root of this repository : `cd text_to_speech`
+3. Install the package with a backend : `pip install -e .[tf]` (or `pip install -e .[torch]`)
+4. Open the `text_to_speech` notebook and follow the instructions !
+
+Unlike the pure-`numpy` `data_processing` socle, this project runs real models, so it needs a **keras backend**. The **audio** and **text** stacks are core to TTS and are already bundled in the base install — you only pick the backend matching your setup :
+
+```bash
+pip install -e .[tf]         # keras + tensorflow
+pip install -e .[torch]      # keras + torch
+pip install -e .[keras]      # alias of [tf]
+
+# optional helpers :
+pip install -e .[datasets]   # utils/datasets (tensorflow-datasets, pandas) — to (re)train
+pip install -e .[dev]        # test tooling (pytest & plugins)
+
+# extras can be combined :
+pip install -e .[tf,datasets]
+```
+
+The backend is selected at runtime through the `KERAS_BACKEND` environment variable (e.g., `os.environ['KERAS_BACKEND'] = 'tensorflow'`), as shown at the top of the example notebook. You may also have to install `ffmpeg` for audio loading/saving.
+
+### Quickstart
+
+```python
+import os
+os.environ['KERAS_BACKEND'] = 'tensorflow'
+
+from models.tts import tts
+
+# Perform TTS with the default English model (Tacotron-2 + WaveGlow) ...
+text = "Hello world ! I hope you will enjoy this funny API for Text-To-Speech !"
+_ = tts(text, lang = 'en', directory = 'example_outputs/en', display = True)
+
+# ... or with the default French model (SV2TTS voice cloning)
+_ = tts("Bonjour tout le monde !", lang = 'fr', directory = 'example_outputs/fr', display = True)
+```
+
+See the `text_to_speech.ipynb` notebook for the full walkthrough (model creation, single / multi-speaker synthesis, long-text and streaming inference). :smile:
+
+### Testing
+
+The tests use [`pytest`](https://docs.pytest.org/) and live in the `tests/` directory, mirroring the `utils` / `loggers` and model tree.
+
+```bash
+pip install -e .[dev]        # pytest, pytest-cov, pytest-xdist, pytest-timeout
+
+pytest                       # run the whole suite
+pytest -n auto               # run in parallel (pytest-xdist)
+pytest -m "not slow"         # skip the slow / heavy tests
+pytest --cov                 # run with coverage report
+pytest tests/models          # run a single subpackage
+```
+
+Tests are annotated with markers (declared in `pyproject.toml`) so the suite adapts to your environment : the `tensorflow`, `torch`, `keras`, `cv2` and `gpu` markers are **auto-skipped** when the corresponding dependency (or hardware) is missing, meaning you can run the tests for the backend you installed without pulling every dependency.
 
 ## TO-DO list:
 
@@ -93,7 +172,7 @@ You may have to install `ffmpeg` for audio loading/saving.
 - [x] Add support for long text inference
 - [x] Add support for streaming inference
 - [ ] Update the pretrained models links + add the `WaveGlow` model
-- [ ] Update the `models/encoder` module
+- [ ] Update the speaker encoder module
 - [ ] Update the `Google Colab` demo
 - [ ] Update the training notebooks
 - [ ] Train new `SV2TTS` models based on the optimized pre-processing codes
@@ -173,7 +252,7 @@ Contacts:
 - **Mail**: `yui-mhcp@tutanota.com`
 - **[Discord](https://discord.com)**: yui0732
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENCE](LICENCE) file for details.
 
 This license allows you to use, modify, and distribute the code, as long as you include the original copyright and license notice in any copy of the software/source. Additionally, if you modify the code and distribute it, or run it on a server as a service, you must make your modified version available under the same license.
 
@@ -184,7 +263,7 @@ For more information about the AGPL-3.0 license, please visit [the official webs
 If you find this project useful in your work, please add this citation to give it more visibility! :yum:
 
 ```
-@misc{yui-mhcp
+@misc{yui-mhcp,
     author  = {yui},
     title   = {A Deep Learning projects centralization},
     year    = {2021},

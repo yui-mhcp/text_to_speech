@@ -216,9 +216,9 @@ class History:
         
         interrupted = False
         if self.__current_epoch_history:
-            logger.info("Training interrupted at epoch {} !".format(self.epoch))
+            logger.info("Training interrupted at epoch {} !".format(self.epochs))
             self.on_epoch_end(self.epochs)
-            interrupdated   = True
+            interrupted = True
         
         t_end   = time.time()
         self.__current_training_logs.update({

@@ -75,4 +75,3 @@ class ConcatEmbedding(keras.layers.Layer):
     
     def get_config(self):
         return {** super().get_config(), 'concat_mode' : self.concat_mode}
-    

@@ -33,4 +33,3 @@ def ctc_decode(sequence : TensorSpec(shape = (None, None, None), dtype = 'float3
     elif method == 'beam_search':
         tokens = ops.transpose(tokens, [1, 0, 2])
         return tokens, scores / ops.cast(lengths, scores.dtype)[:, None]
-

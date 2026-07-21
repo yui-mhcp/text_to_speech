@@ -12,5 +12,6 @@
 from .async_result import AsyncResult
 from .priority_queue import PriorityQueue, MultiprocessingPriorityQueue, PriorityItem
 from .process import Process, run_in_thread
+from .inflight_batcher import InflightBatcher
 from .stream import STOP, KEEP_ALIVE, IS_RUNNING, CONTROL, DataWithResult, FakeLock, Stream
 from .stream_request_manager import *

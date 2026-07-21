@@ -69,4 +69,3 @@ def compute_ioa(boxes1, boxes2 = None, *, as_matrix = None, ** kwargs):
     inter_w, inter_h = ops.maximum(_zero, xmax - xmin), ops.maximum(_zero, ymax - ymin)
 
     return ops.divide_no_nan(inter_w * inter_h, areas_1)
-

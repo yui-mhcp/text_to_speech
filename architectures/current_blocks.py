@@ -371,4 +371,3 @@ def _build_conv_bn(layer):
 globals().update({
     '{}BN'.format(k) : _build_conv_bn(v) for k, v in _conv_layers.items()
 })
-

@@ -23,8 +23,9 @@ class JSONDir(Database):
     """
     def __init__(self, path, primary_key, group_key = None):
         super().__init__(path, primary_key)
-        
-        self._id_to_entry = load_json(self.map_file, default = {})
+
+        # in-memory database (`path is None`) : nothing to load from disk
+        self._id_to_entry = load_json(self.map_file, default = {}) if path else {}
         self._entry_to_id = {
             v if isinstance(v, str) else tuple(v) : k for k, v in self._id_to_entry.items()
         }
@@ -37,6 +38,7 @@ class JSONDir(Database):
         return self._get_data_file('map')
     
     def _get_data_file(self, data_id):
+        if not self.path: return None
         assert '..' not in data_id and '/' not in data_id
 
         return os.path.join(self.path, '{}.json'.format(data_id))
@@ -79,8 +81,9 @@ class JSONDir(Database):
         self._entry_to_id[entry]    = data_id
         self._id_to_entry[data_id]  = entry
         self._cache[data_id] = value
-        
+
         self._updated.add(data_id)
+        return entry
 
     def update(self, data):
         """
@@ -106,7 +109,7 @@ class JSONDir(Database):
         self._load(data_id)
         
         data_file = self._get_data_file(data_id)
-        if os.path.exists(data_file): os.remove(data_file)
+        if data_file and os.path.exists(data_file): os.remove(data_file)
         
         self._id_to_entry.pop(data_id)
         self._entry_to_id.pop(entry)
@@ -116,7 +119,7 @@ class JSONDir(Database):
     def get_column(self, column):
         """ Return the values stored in `column` for each data in the database """
         if isinstance(self.primary_key, str) and column == self.primary_key:
-            return list(self._data.keys())
+            return list(self._entry_to_id.keys())
         elif not isinstance(self.primary_key, str) and column in self.primary_key:
             idx = list(self.primary_key).index(column)
             return [entry[idx] for entry in self._id_to_entry.values()]
@@ -136,4 +139,3 @@ class JSONDir(Database):
                 os.remove(filename)
         
         self._updated = set()
-    

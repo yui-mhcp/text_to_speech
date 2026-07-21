@@ -9,15 +9,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .parser import Parser
+from .parser import register_parser
 
-class TxtParser(Parser):
-    __extension__ = 'txt'
-    
-    def get_text(self, *, encoding = 'utf-8', ** kwargs):
-        with open(self.filename, 'r', encoding = encoding) as f:
-            return f.read()
+@register_parser('txt', kind = 'text')
+def read_txt(filename, *, encoding = 'utf-8', ** kwargs):
+    """ Return the raw content of `filename` """
+    with open(filename, 'r', encoding = encoding) as f:
+        return f.read()
 
-    def get_paragraphs(self, *, sep = '\n\n', ** kwargs):
-        """ Extract a list of paragraphs """
-        return [{'text' : para} for para in self.get_text(** kwargs).split(sep)]
+@register_parser('txt')
+def parse_txt(filename, *, sep = '\n\n', ** kwargs):
+    """ Extract a list of paragraphs by splitting the raw text on `sep` """
+    return [{'text' : para} for para in read_txt(filename, ** kwargs).split(sep)]

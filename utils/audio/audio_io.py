@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 MAX_DISPLAY_TIME = 600
 
-_video_ext  = ('mp4', 'mov', 'ovg', 'avi')
+_video_ext  = ('mp4', 'mov', 'ovg', 'avi', 'webm')
 _pydub_ext  = ('m4a', 'ogg')
 _librosa_ext    = ('mp3', 'flac', 'opus')
 _audiofile_ext  = ()
@@ -301,9 +301,8 @@ def read_ffmpeg(filename, rate = None):
     try:
         import ffmpeg
     except ImportError:
-        logger.error("You must install ffmpeg : `pip install ffmpeg-python`")
-        return None
-    
+        raise ImportError("You must install ffmpeg : `pip install ffmpeg-python`")
+
     try:
         kw = {} if not rate else {'ar' : rate}
         out, _ = (
@@ -324,8 +323,7 @@ def read_moviepy(filename, ** kwargs):
     try:
         from moviepy.editor import VideoFileClip
     except ImportError:
-        logger.error("You must install moviepy : `pip install moviepy`")
-        return None
+        raise ImportError("You must install moviepy : `pip install moviepy`")
 
     with VideoFileClip(filename) as video:
         audio = video.audio

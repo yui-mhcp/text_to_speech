@@ -12,105 +12,82 @@
 import numpy as np
 
 from loggers import timer
-from ..keras import TensorSpec, ops, graph_compile, execute_eagerly
+from ..keras import TensorSpec, ops, graph_compile
 
 @timer
-@graph_compile(support_xla = False)
-def resize_image(image  : TensorSpec(),
-                 size   = None,
-                 *,
-                 
-                 round  : bool  = False,
-                 multiples  : TensorSpec(dtype = 'int32')   = None,
-                 max_shape  = None,
-                 
-                 antialias  = False,
-                 interpolation  = 'bilinear',
-                 preserve_aspect_ratio  = False,
-                 
-                 pad_value  = 0.,
-                 pad_mode   = 'after',
-                 
-                 method = None
-                ):
+def resize_image(image, size = None, *, method = None, ** kwargs):
     """
         Resizes `image` to the given shape while possibly preserving aspect ratio + padding
         
         Arguments :
             - image : 3-D or 4-D Tensor, the image(s) to resize
-            - target_shape  : tuple (h, w), the fixed expected output shape
-            - target_min_shape  : tuple (h, w), the minimum dimension for the output shape
-            - target_max_shape  : tuple (h, w), the maximal dimension for the output shape
-            - target_multiple_shape : the output shape should be a multiple of this argument
             
             - method / antialias / preserve_aspect_ratio : kwargs for `K.image.resize`
             - kwargs    : propagated to `get_resized_shape` and to `pad_image` (if `preserve_aspect_ratio == True`)
         Return :
             - resized   : the resized image(s) with same rank as `image` and `float` dtype
     """
-    if size is None and multiples is None and max_shape is None: return image
-    if method is not None: interpolation = method
-    
-    img_size    = ops.shape(image)[-3 : -1]
-    output_size = get_output_size(
-        image,
-        size    = size,
-        round   = round,
-        max_shape   = max_shape,
-        multiples   = multiples,
-        preserve_aspect_ratio   = preserve_aspect_ratio
-    )
-    
+    output_size = get_output_size(image, size, ** kwargs)
+    if output_size is None: return image
+
+    img_size  = ops.shape(image)[-3 : -1]
     _is_graph = ops.is_tensorflow_graph()
     if _is_graph or img_size[0] != output_size[0] or img_size[1] != output_size[1]:
-        image   = ops.convert_to_tensor(image)
-
-        intermediate_size = output_size
-        if preserve_aspect_ratio:
-            img_size    = ops.convert_to_numpy(img_size, 'float32')
-            ratio       = ops.min(ops.divide(ops.cast(output_size, 'float32'), img_size))
-            intermediate_size = ops.cast(img_size * ratio, 'int32')
-
-        image = ops.cast(ops.image_resize(
-            image, intermediate_size, antialias = antialias, interpolation = interpolation
-        ), image.dtype)
-
-        if preserve_aspect_ratio:
-            image = pad_image(image, output_size, pad_value = pad_value, pad_mode = pad_mode)
-            if isinstance(size, tuple) and _is_graph:
-                shape   = size + (image.shape[-1], )
-                if len(image.shape) == 4: shape = (image.shape[0], ) + shape
-                image = ops.ensure_shape(image, shape)
+        if method is not None: kwargs['interpolation'] = method
+        image = _resize_image(image, output_size, ** kwargs)
+        
+        if _is_graph and isinstance(output_size, tuple):
+            shape   = output_size + (image.shape[-1], )
+            if len(image.shape) == 4: shape = (image.shape[0], ) + shape
+            image = ops.ensure_shape(image, shape)
 
     return image
 
-def pad_image(image, size, pad_mode = 'after', pad_value = 0):
+@graph_compile(support_xla = False)
+def _resize_image(image : TensorSpec(),
+                  size  : TensorSpec(dtype = 'int32'),
+                  *,
+                  
+                  antialias : bool  = False,
+                  interpolation : str   = 'bilinear',
+                  preserve_aspect_ratio : bool  = False,
+                  
+                  pad_value = 0.,
+                  pad_mode  = 'after'
+                 ):
+    intermediate_size = size
+    if preserve_aspect_ratio:
+        img_size    = ops.convert_to_numpy(ops.shape(image)[-3 : -1], 'float32')
+        ratio       = ops.min(ops.divide(ops.cast(size, 'float32'), img_size))
+        intermediate_size = ops.cast(img_size * ratio, 'int32')
+
+    image = ops.cast(ops.image_resize(
+        image, intermediate_size, antialias = antialias, interpolation = interpolation
+    ), image.dtype)
+
+    if preserve_aspect_ratio:
+        image = pad_image(image, size, pad_value = pad_value, pad_mode = pad_mode)
+
+    return image
+
+def pad_image(image, size, *, pad_mode = 'after', pad_value = 0):
     """
         Pads `image` to the expected shape
         
         Arguments :
             - image : 3D or 4D `Tensor`, the image(s) to pad
-            - target_shape  : fixed expected output shape
-            - target_min_shape  : tuple (h, w), the minimum dimension for the output shape
-            - target_multiple_shape : the output shape should be a multiple of this argument
-            
+            - size  : the target size
             - pad_mode  : where to add padding (one of `after`, `before`, `even`)
             - pad_value : the value to add
             
             - kwargs    : propagated to `get_resized_shape`
         Return :
-            - resized   : the resized image(s) with same rank / dtype as `image`
-                if `target_shape` is provided:
-                    `shape(resized)[-3 : -1] == target_shape`
-                if `target_multiple_shape` is provided:
-                    `shape(resized)[-3 : -1] % target_multiple_shape == [0, 0]`
-        
-        **WARNING** if both are provided, it is possible that the 1st assertion will be False
-        **WARNING** If any of `target_shape` or `shape(image)` is 0, the function directly returns the image without resizing !
+            - padded_image  : the padded image(s) with same dtype as `image`
     """
     
-    pad_h = ops.maximum(0, size[0] - ops.shape(image)[-3])
-    pad_w = ops.maximum(0, size[1] - ops.shape(image)[-2])
+    shape = ops.shape(image)
+    pad_h = ops.maximum(0, size[0] - shape[-3])
+    pad_w = ops.maximum(0, size[1] - shape[-2])
     if pad_h > 0 or pad_w > 0:
         # torch backend does not support np.int padding
         if ops.executing_eagerly(): pad_h, pad_w = int(pad_h), int(pad_w)
@@ -148,7 +125,8 @@ def get_output_size(image,
                     round   = False,
                     multiples   = None,
                     max_shape   = None,
-                    preserve_aspect_ratio = False
+                    preserve_aspect_ratio = False,
+                    ** _
                    ):
     """
         Computes the expected output shape after possible transformation
@@ -165,7 +143,9 @@ def get_output_size(image,
         Return :
             - output_shape  : the expected new shape for the image
     """
-    if isinstance(size, tuple):
+    if size is None and multiples is None and max_shape is None:
+        return None
+    elif isinstance(size, tuple):
         assert len(size) == 2, 'Invalid size : {}'.format(size)
         if size[0] and size[1]:     return size
         elif size[0] or size[1]:    size = (size[0] or -1, size[1] or -1)
@@ -177,20 +157,20 @@ def get_output_size(image,
     else:
         out_size = size = ops.convert_to_numpy(size, 'int32')
 
-    if ops.any(out_size == -1):
-        if not preserve_aspect_ratio:
-            out_size    = ops.where(out_size != -1, out_size, img_size)
-        else:
-            ratio   = ops.max(out_size / img_size)
-            out_size    = ops.cast(ops.cast(img_size, ratio.dtype) * ratio, 'int32')
+        if ops.any(out_size == -1):
+            if not preserve_aspect_ratio:
+                out_size    = ops.where(out_size != -1, out_size, img_size)
+            else:
+                ratio   = ops.max(out_size / img_size)
+                out_size    = ops.cast(ops.cast(img_size, ratio.dtype) * ratio, 'int32')
     
     if multiples is not None:
         if round:
             multiples   = ops.convert_to_numpy(multiples, dtype = 'float32')
-            new_values = ops.cast(
+            new_values  = ops.cast(
                 ops.round(ops.cast(out_size, 'float32') / multiples) * multiples, 'int32'
             )
-            multiples = ops.cast(multiples, 'int32')
+            multiples   = ops.cast(multiples, 'int32')
         else:
             multiples   = ops.convert_to_numpy(multiples, dtype = 'int32')
             new_values = (out_size // multiples + 1) * multiples
@@ -203,7 +183,7 @@ def get_output_size(image,
             ratio   = ops.max(
                 ops.where(out_size > max_shape, out_size / ops.minimum(out_size, max_shape), 1)
             )
-            out_size    = ops.cast(ops.cast(out_size, ratio.dtype) / ratio, out_size.dtype)
+            out_size = ops.cast(ops.cast(out_size, ratio.dtype) / ratio, 'int32')
         else:
             out_size = ops.minimum(out_size, max_shape)
     

@@ -390,4 +390,3 @@ def trim_silence_simple(audio, *, threshold = 0.1, mode = 'start_end', ** kwargs
         if 'start' in mode: audio = audio[indexes[0] : ]
             
     return audio
-

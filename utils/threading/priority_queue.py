@@ -17,6 +17,8 @@ from typing import Any
 from threading import Lock
 from dataclasses import dataclass, field
 
+from .stream import STOP, KEEP_ALIVE, IS_RUNNING
+
 @dataclass(order = True)
 class PriorityItem:
     priority    : Any
@@ -39,7 +41,14 @@ class PriorityQueue(queue.PriorityQueue):
         if isinstance(item, PriorityItem) or all(hasattr(item, attr) for attr in ('priority', 'index', 'data')):
             return item
         if priority is None:
-            if isinstance(item, tuple) and len(item) == 2:
+            # control tokens are put "raw" (e.g., `Process.stop / keep_alive`) : the
+            # liveness ping jumps ahead of everything, while `STOP` / `KEEP_ALIVE` get
+            # the lowest priority so pending items are drained first
+            if item is STOP or (isinstance(item, str) and item == KEEP_ALIVE):
+                priority = float('inf')
+            elif isinstance(item, str) and item == IS_RUNNING:
+                priority = float('-inf')
+            elif isinstance(item, tuple) and len(item) == 2:
                 priority = item[0]
             elif isinstance(item, dict) and 'priority' in item:
                 priority = item['priority']
@@ -59,9 +68,11 @@ class PriorityQueue(queue.PriorityQueue):
         item = super().get(block = block, timeout = timeout)
         return item if return_full_item else item.data
 
-    def get_nowait(self, block = True, timeout = None, return_full_item = False):
-        item = super().get_nowait(block = block, timeout = timeout)
-        return item if return_full_item else item.data
+    def get_nowait(self, return_full_item = False):
+        # NB : `queue.Queue.get_nowait` delegates to `self.get(block = False)`, which is
+        # our override (it already unwraps to `.data`). Calling `super().get_nowait()`
+        # would therefore double-unwrap. Route through our own `get` instead.
+        return self.get(block = False, return_full_item = return_full_item)
 
 
 class _MultiprocessingPriorityQueue(multiprocessing.queues.Queue):

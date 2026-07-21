@@ -343,4 +343,3 @@ def load_whisper(pretrained_name = 'medium', pretrained = None, ** kwargs):
         }
     
     return state_dict
-

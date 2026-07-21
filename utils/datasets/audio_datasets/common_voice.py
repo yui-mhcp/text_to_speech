@@ -72,4 +72,3 @@ def load_data(directory,
     dataset.reset_index(drop = True, inplace = True)
     
     return dataset
-

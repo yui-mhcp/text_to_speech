@@ -15,8 +15,10 @@ import numpy as np
 
 from tqdm import tqdm
 
+from keras import tree
+
 from utils import load_data, dump_data, is_dataframe
-from utils.keras_utils import ops, tree
+from utils.keras import ops
 
 class FileCacheGenerator(keras.utils.PyDataset):
     def __init__(self,
@@ -182,4 +184,3 @@ class FileCacheGenerator(keras.utils.PyDataset):
     def save_cache(self, filename):
         if self.cache:
             dump_data(filename = filename, data = self.cache, mode = 'a')
-    

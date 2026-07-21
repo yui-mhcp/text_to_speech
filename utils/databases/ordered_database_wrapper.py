@@ -74,11 +74,12 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
 
     def multi_insert(self, iterable, /, ** kwargs):
         entries = super().multi_insert(iterable, ** kwargs)
-        
+
         self._idx_to_entry.extend(entries)
         self._entry_to_idx.update({
             entry : len(self._entry_to_idx) + i for i, entry in enumerate(entries)
         })
+        return entries
 
     def multi_pop(self, iterable, /):
         items   = super().multi_pop(iterable)
@@ -97,4 +98,3 @@ class OrderedDatabaseWrapper(DatabaseWrapper):
             ** super().get_config(),
             'entries'   : self._idx_to_entry
         }
-    

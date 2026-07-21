@@ -55,14 +55,42 @@ _aliases    = {
 expand_dims = Ops('expand_dims', tensorflow_fn = 'expand_dims')
 concat  = concatenate   = Ops('concatenate', nested_arg = 0)
 
-divide_no_nan   = Ops('divide_no_nan', numpy_fn = lambda x, y: np.divide(x, y, where = y != 0))
+def _np_weak_operand(x):
+    """ Keep python scalars unconverted, such that `np.result_type` treats them as *weak* (NEP 50)
+
+        The exact type check is required : `np.float64` (resp. `np.complex128`) subclasses the
+        python `float` (resp. `complex`), while numpy scalars must keep their *strong* dtype.
+        Everything else is converted, as `np.result_type` does not accept e.g. python `list`.
+    """
+    return x if type(x) in (bool, int, float, complex) else np.asarray(x)
+
+def _np_divide_no_nan(x, y):
+    """ ``x / y`` with the ``y == 0`` positions forced to ``0`` (like `tf.math.divide_no_nan`).
+
+        The zero-initialized `out` is required : `np.divide(..., where = y != 0)` leaves the
+        masked entries **uninitialized** otherwise. Float / complex dtypes are preserved, while
+        integer / bool are promoted to ``float32`` (like `keras.ops.divide_no_nan`).
+    """
+    dtype   = np.result_type(_np_weak_operand(x), _np_weak_operand(y))
+    if dtype.kind in 'biu': dtype = np.dtype('float32')
+    # the cast is performed before the division, otherwise a weak scalar `x` would force the
+    # computation in `float64` before being downcasted to `out.dtype`
+    x, y    = np.asarray(x, dtype = dtype), np.asarray(y, dtype = dtype)
+    out     = np.zeros(np.broadcast_shapes(x.shape, y.shape), dtype = dtype)
+    return np.divide(x, y, out = out, where = y != 0)
+
+divide_no_nan   = Ops('divide_no_nan', numpy_fn = _np_divide_no_nan)
 
 # required to be defined in `isin`
 any = reduce_any    = Ops('any')
 
 def _np_normalize(x, axis = -1, order = 2):
-    x_norm = np.linalg.norm(x, ord = order, axis = axis, keepdims = True)
-    return np.divide(x, x_norm, where = x_norm != 0.)
+    x       = np.asarray(x)
+    x_norm  = np.linalg.norm(x, ord = order, axis = axis, keepdims = True)
+    # `out` must be zero-initialized : `np.divide(..., where=...)` leaves the masked
+    # (zero-norm) entries uninitialized otherwise (same fix as `_np_divide_no_nan`).
+    out     = np.zeros(x.shape, dtype = x_norm.dtype)
+    return np.divide(x, x_norm, out = out, where = x_norm != 0.)
 
 def _tf_normalize(x, axis = -1, order = 2):
     import tensorflow as tf
@@ -209,4 +237,3 @@ isin  = Ops('isin', keras_fn = _keras_isin)
 __all__ = list(
     k for k, v in globals().items() if (isinstance(v, Ops)) or (callable(v) and not k.startswith('_'))
 )
-

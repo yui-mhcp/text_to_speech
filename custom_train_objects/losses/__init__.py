@@ -9,32 +9,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import keras
 import inspect
-import importlib
 
 from keras.src.losses import LossFunctionWrapper
 
+from utils.generic_utils import import_submodules
 from .loss_with_multiple_outputs import LossWithMultipleOutputs
 
-for module in [keras.losses] + os.listdir(__package__.replace('.', os.path.sep)):
-    if isinstance(module, str):
-        if module.startswith(('.', '_')) or '_old' in module: continue
-        module = importlib.import_module(__package__ + '.' + module[:-3])
-    
-    globals().update({
+_losses = {}
+for module in [keras.losses] + import_submodules(__package__):
+    _losses.update({
         k : v for k, v in vars(module).items()
         if (not k.startswith('_')) and (
             (isinstance(v, type) and issubclass(v, keras.losses.Loss))
             or (callable(v) and 'y_true' in inspect.signature(v).parameters)
         )
     })
+globals().update(_losses)
 
-_losses = {
-    k.lower() : v for k, v in globals().items()
-    if (isinstance(v, type) and issubclass(v, keras.losses.Loss)) or (callable(v))
-}
+_losses = {k.lower() : v for k, v in _losses.items()}
 
 def get_loss(loss, * args, ** kwargs):
     if loss == 'crossentropy' or isinstance(loss, keras.losses.Loss):

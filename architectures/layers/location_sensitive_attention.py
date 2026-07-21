@@ -187,4 +187,3 @@ class LocationSensitiveAttention(keras.layers.Layer):
     
     def get_config(self):
         return (self.hparams + super().get_config()).get_config()
-        

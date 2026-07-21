@@ -20,6 +20,12 @@ import pickle
 import logging
 import numpy as np
 
+try:
+    import msgspec
+    _use_msgspec = True
+except:
+    _use_msgspec = False
+
 from tqdm import tqdm
 from functools import partial, wraps
 
@@ -91,8 +97,8 @@ def format_path_index(path):
     return path.format(idx, i = idx)
 
 def sort_files(filenames):
-    if isinstance(filenames, str):               filenames = expand_path(filename)
-    if not isinstance(filenames, (list, tuple)): filename = [filename]
+    if isinstance(filenames, str):               filenames = expand_path(filenames)
+    if not isinstance(filenames, (list, tuple)): filenames = [filenames]
     return sorted(filenames, key = lambda f: (len(f), f))
 
 def hash_file(filename, block_size = 2 ** 20):
@@ -117,8 +123,8 @@ def remove_path_prefix(path, prefix):
 
     if isinstance(path, str):
         path, prefix = path_to_unix(path), path_to_unix(prefix)
-        if not prefix.endswith('/'): path += '/'
-        return path[len(prefix):] if path.startswith(prefix) else path
+        if not prefix.endswith('/'): prefix += '/'
+        return path.removeprefix(prefix)
     elif isinstance(path, (list, tuple)):
         return [remove_path_prefix(p, prefix) for p in path]
     elif isinstance(path, dict):
@@ -127,6 +133,7 @@ def remove_path_prefix(path, prefix):
         for col in path.columns:
             if 'filename' in col:
                 path[col] = path[col].apply(lambda f: remove_path_prefix(f, prefix))
+        return path
     else:
         raise ValueError('Unsupported `path` type : {}'.format(path))
 
@@ -209,13 +216,23 @@ def load_json(filename, default = {}, ** kwargs):
     if not os.path.exists(filename): return default
     with open(filename, 'r', encoding = 'utf-8') as file:
         result = file.read()
-    return json.loads(result)
+    return json.loads(result) if not _use_msgspec else msgspec.json.decode(result)
 
 @load_data.dispatch
-def load_jsonl(filename, ** kwargs):
+def load_jsonl(filename, default = None, ** kwargs):
+    """ Load a JSON-lines file, skipping any corrupt line (e.g. a partial trailing append). """
+    load_fn = msgspec.json.decode if _use_msgspec else json.loads
+
+    events = []
     with open(filename, 'r', encoding = 'utf-8') as file:
-        lines = [l for l in file]
-    return [json.loads(l) for l in lines]
+        for line in file:
+            line = line.strip()
+            if not line: continue
+            try:
+                events.append(load_fn(line))
+            except ValueError:  # json.JSONDecodeError & msgspec.DecodeError both subclass ValueError
+                logger.warning('Skipping corrupt jsonl line from {}: `{}`'.format(filename, line))
+    return events
 
 @load_data.dispatch
 def load_yaml(filename, default = {}, ** kwargs):
@@ -229,7 +246,7 @@ def load_yaml(filename, default = {}, ** kwargs):
 @load_data.dispatch
 def load_npz(filename, ** kwargs):
     with np.load(filename) as file:
-        data = {k : file[k] for k in file.files()}
+        data = {k : file[k] for k in file.files}
     return data
 
 @load_data.dispatch
@@ -269,7 +286,7 @@ def load_h5(filename, *, entries = None, ** kwargs):
 
     with h5py.File(filename, 'r') as file:
         if entries:
-            return {e : get_data(file.get(e)) for e in entries if e in file}
+            return {e : _get_h5_data(file.get(e)) for e in entries if e in file}
         else:
             return load_group(file)
 
@@ -330,13 +347,33 @@ def dump_data(filename, data, overwrite = True, ** kwargs):
     return filename
 
 @dump_data.dispatch
-def dump_json(filename, data, *, safe = False, ** kwargs):
+def dump_json(filename, data, *, safe = False, ensure_ascii = False, ** kwargs):
     """ Safely save data to a json file """
-    if not safe: data = to_json(data)
-    
-    data = json.dumps(data, ** kwargs)
-    with open(filename, 'w', encoding = 'utf-8') as file:
-        file.write(data)
+    if _use_msgspec:
+        data = msgspec.json.encode(data, enc_hook = to_json)
+        with open(filename, 'wb') as f:
+            f.write(data)
+    else:
+        if not safe: data = to_json(data)
+
+        data = json.dumps(data, ensure_ascii = ensure_ascii, ** kwargs)
+        with open(filename, 'w', encoding = 'utf-8') as file:
+            file.write(data)
+
+@dump_data.dispatch
+def dump_jsonl(filename, data, *, mode = 'w', ensure_ascii = False, ** kwargs):
+    """
+        Dump `data` (an iterable of records) as JSON lines (one compact object per line).
+        `mode = 'w'` (re)writes the file, `mode = 'a'` appends to it (append-only log).
+    """
+    if _use_msgspec:
+        with open(filename, mode + 'b') as file:
+            for record in data:
+                file.write(msgspec.json.encode(record, enc_hook = to_json) + b'\n')
+    else:
+        with open(filename, mode, encoding = 'utf-8') as file:
+            for record in data:
+                file.write(json.dumps(to_json(record), ensure_ascii = ensure_ascii, ** kwargs) + '\n')
 
 @dump_data.dispatch
 def dump_pkl(filename, data, ** kwargs):
@@ -361,7 +398,7 @@ def dump_h5(filename, data, mode = 'w', overwrite = False, ** kwargs):
     def _create_datasets(group, data):
         for k, v in data.items():
             if v is None: continue
-            if '/' in k: k.replace('/', '\\')
+            if '/' in k: k = k.replace('/', '\\')
             
             if isinstance(v, dict):
                 _create_datasets(group.create_group(k), v)

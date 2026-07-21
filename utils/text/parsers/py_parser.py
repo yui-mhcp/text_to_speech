@@ -11,16 +11,15 @@
 
 import re
 
-from .txt_parser import TxtParser
+from .parser import register_parser
+from .txt_parser import read_txt
 
 _python_re  = r'\n\s*\n(?=def|\#|class|\@)'
-         
-class PyParser(TxtParser):
-    __extension__ = 'py'
 
-    def get_paragraphs(self, ** kwargs):
-        """ Extract a list of paragraphs """
-        return [
-            {'text' : part, 'type' : 'code', 'language' : 'python'}
-            for part in re.split(_python_re, self.get_text(** kwargs))
-        ]
+@register_parser('py')
+def parse_py(filename, ** kwargs):
+    """ Extract a list of code paragraphs, splitting on top-level definitions """
+    return [
+        {'text' : part, 'type' : 'code', 'language' : 'python'}
+        for part in re.split(_python_re, read_txt(filename, ** kwargs))
+    ]

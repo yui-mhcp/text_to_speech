@@ -14,23 +14,22 @@ import inspect
 
 from .lr_schedulers import *
 
-globals().update({
+_optimizers = {
     k : v for k, v in vars(keras.optimizers).items()
     if not k.startswith('_') and isinstance(v, type) and issubclass(v, keras.optimizers.Optimizer)
-})
-globals().update({
+}
+_lr_schedulers = {
     k : v for k, v in vars(keras.optimizers.schedules).items()
     if isinstance(v, type) and issubclass(v, keras.optimizers.schedules.LearningRateSchedule)
-})
-
-_optimizers = {
-    k.lower() : v for k, v in globals().items()
-    if isinstance(v, type) and issubclass(v, keras.optimizers.Optimizer)
 }
-_lr_schedulers  = {
-    k.lower() : v for k, v in globals().items()
+_lr_schedulers.update({
+    k : v for k, v in globals().items()
     if isinstance(v, type) and issubclass(v, keras.optimizers.schedules.LearningRateSchedule)
-}
+})
+globals().update({** _optimizers, ** _lr_schedulers})
+
+_optimizers     = {k.lower() : v for k, v in _optimizers.items()}
+_lr_schedulers  = {k.lower() : v for k, v in _lr_schedulers.items()}
 
 def get_optimizer(optimizer, ** kwargs):
     if isinstance(optimizer, keras.optimizers.Optimizer):

@@ -333,4 +333,3 @@ def transformers_t5(name = 'google/flan-t5-large', task = 'generation'):
         raise ValueError("Unknown task !\n  Accepted : {}\n  Got : {}".format(
             tuple(_transformers_pretrained_task.keys()), task
         ))
-

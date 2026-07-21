@@ -36,14 +36,14 @@ _time_extended  = {
 }
 
 _units  = {
-    'l'     : {'fr' : 'litre',  'en'    : 'litre'},
-    
+    'l'     : {'fr' : 'litre',  'en'    : 'liter'},
+
     'g'     : {'fr' : 'gramme', 'en'    : 'gram'},
-    't'     : {'fr' : 'tonne',  'en'    : 'tonne'},
-    
+    't'     : {'fr' : 'tonne',  'en'    : 'ton'},
+
     'm'     : {'fr' : 'mètre',  'en'    : 'meter'},
     'mi'    : {'fr' : 'mile',   'en'    : 'mile'},
-    'o'     : {'fr' : 'octet',  'en'    : 'bytes'},
+    'o'     : {'fr' : 'octet',  'en'    : 'octet'},
     'b'     : {'fr' : 'bit',    'en'    : 'bit'},
     
     'V'     : {'fr' : 'volt',   'en'    : 'volt'},
@@ -53,7 +53,7 @@ _units  = {
     
     'J'     : {'fr' : 'joule',  'en'    : 'joul'},
     'N'     : {'fr' : 'newton', 'en'    : 'newton'},
-    'b'     : {'fr' : 'bar',    'en'    : 'bar'}
+    'bar'   : {'fr' : 'bar',    'en'    : 'bar'}
 
 }
 _unit_prefix    = {
@@ -69,7 +69,7 @@ _unit_prefix    = {
 _units_sep = {'fr' : 'par',    'en'    : 'per'}
 
 _units_re   = re.compile(
-    r'(\d+)\s*({})?({})(?:\/({}))\b'.format(
+    r'(\d+)\s*({})?({})(?:\/({}))?\b'.format(
         '|'.join(_unit_prefix.keys()), '|'.join(_units.keys()), '|'.join(_time_extended)
     )
 )
@@ -140,7 +140,7 @@ def _expand_units(m, lang = _lang):
     prefix = _unit_prefix[prefix][lang] if prefix else ''
 
     text = n + ' ' + prefix + _units[unit][lang]
-    if n != 'une' and n > '1': text += 's'
+    if n != 'une' and int(n) > 1: text += 's'
     
     if per_time:    text += ' ' + _units_sep[lang] + ' ' + _time_extended[per_time][lang]
     return text
@@ -225,7 +225,7 @@ def _extend_with_zeros(text, lang = _lang):
     to_text = num2words(text, lang = lang)
     if n == 0: return to_text
     elif n < 4: return '{} {}'.format(' '.join([num2words('0', lang = lang)] * n), to_text)
-    return '{} {} {}'.format(
+    return '{} {} {} {}'.format(
         num2words(str(n), lang = lang),
         _math_symbols['*'].get(lang, ''),
         num2words('0', lang = lang),

@@ -43,7 +43,7 @@ def draw_boxes(image,
     image   = ops.convert_to_numpy(image)
     image_h, image_w = image.shape[:2]
     
-    color = [_normalize_color(c, dtype = image.dtype).tolist() for c in color]
+    color = [normalize_color(c, dtype = image.dtype).tolist() for c in color]
     
     label_color = {}
     for i, (x1, y1, x2, y2) in enumerate(boxes['boxes'].tolist()):
@@ -107,6 +107,29 @@ def draw_boxes(image,
     
     return image
 
+def box_as_mask(image, boxes, shape = 'rectangle', ** kwargs):
+    """
+        Builds a boolean mask by drawing the (filled) `boxes` on a black canvas
+
+        Arguments :
+            - image  : the reference image (only its shape / dtype are used) or a filename
+            - boxes  : the boxes to draw (any format supported by `convert_box_format`)
+            - shape  : the box shape, one of {'rectangle', 'circle', 'ellipse'}
+            - kwargs : forwarded to `draw_boxes` (must provide `source`)
+        Return :
+            - mask   : a boolean `np.ndarray` with shape `(H, W, 1)`, `True` inside the boxes
+
+        Note : a box is considered "inside" as soon as any color channel is non-zero,
+               which makes the result independent of the (arbitrary) drawing color.
+    """
+    if isinstance(image, str): image = load_image(image)
+    image = ops.convert_to_numpy(image)
+
+    drawn = draw_boxes(
+        np.zeros(image.shape, dtype = image.dtype), boxes, shape = shape, thickness = -1, ** kwargs
+    )
+    return np.any(drawn != 0, axis = -1, keepdims = True)
+
 def show_boxes(image, boxes, *, source = None, dezoom_factor = 1., labels = None, ** kwargs):
     """
         Displays a (list of) `boxes` with `utils.plot_multiple`
@@ -151,11 +174,23 @@ def show_boxes(image, boxes, *, source = None, dezoom_factor = 1., labels = None
     plot_multiple(** plot_data, plot_type = 'imshow', ** kwargs)
 
 
-def _normalize_color(color, dtype = None):
+def normalize_color(color, image = None, dtype = None):
+    """
+        Returns `color` as a RGB `np.ndarray` cast to `dtype` (or `image`'s dtype)
+
+        The (possibly inferred) `dtype` selects the value range : an integer dtype
+        keeps `uint8` values in `[0, 255]`, while a float dtype rescales to `[0, 1]`.
+    """
+    if dtype is None and image is not None:
+        dtype = getattr(image, 'dtype', None)
+
     color = _color_to_rgb(color)
     if dtype is None or dtype == color.dtype:       return color
-    elif 'float' in getattr(dtype, 'name', dtype):  return (color / 255.).astype(dtype)
+    elif 'float' in getattr(dtype, 'name', dtype):  return (color / 255.).astype(getattr(dtype, 'name', dtype))
     else:   raise ValueError('Unsupported `dtype` : {}'.format(dtype))
+
+# backward-compatible private alias
+_normalize_color = normalize_color
 
 def _color_to_rgb(color):
     """

@@ -742,7 +742,7 @@ class Tacotron2Decoder(keras.Model):
         else:
             stop_tokens = stop_tokens[:, :, 0]
         
-        mask = K.arange(K.shape(outputs)[1])[None] <= last_state.lengths
+        mask = K.arange(K.shape(outputs)[1])[None] <= last_state.lengths[:, None]
         
         self.prenet.reset_dropout_mask()
         
@@ -856,8 +856,10 @@ class Tacotron2(keras.Model):
         inputs = tokens if not isinstance(inputs, tuple) else (tokens, ) + inputs[1:]
         
         if max_length is not None:
+            if isinstance(max_length, list): max_length = max(max_length)
+            
             if ops.is_int(max_length):
-                max_length += max_length % padding_multiple
+                max_length += -max_length % padding_multiple
             else:
                 max_length = K.cast(max_length * tokens.shape[1], 'int32')
         
@@ -939,4 +941,3 @@ def pytorch_tacotron(to_gpu = True, eval_mode = True):
     if to_gpu: tacotron2 = tacotron2.to('cuda')
     
     return tacotron2
-        

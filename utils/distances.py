@@ -169,6 +169,7 @@ def knn(query   : TensorSpec(shape = (None, None), dtype = 'float') = None,
     )
     
     if distance_matrix is None:
+        query = ops.cast(query, embeddings.dtype)
         distance_matrix = distance(
             query,
             embeddings,

@@ -11,11 +11,21 @@
 
 import logging
 
-from loggers import Timer
+from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
-class Callback:
+class Callback(ABC):
+    # Declarative capabilities read by the generic `apply_callbacks` / `predict`
+    # orchestration, so the core never has to know about concrete callback types :
+    #   - `saves_to_disk`  : the callback persists file(s) -> it is skipped when
+    #                        `apply_callbacks(..., save = False)`
+    #   - `provides_entry` : the callback's `apply` return value is the canonical
+    #                        stored "entry" -> captured by `apply_callbacks` and used
+    #                        by `predict` to decide the default of `return_output`
+    saves_to_disk   = False
+    provides_entry  = False
+
     def __init__(self, name = None, cond = None, initializer = None, ** _):
         self.name   = name or self.__class__.__name__
         self.cond   = cond
@@ -37,14 +47,12 @@ class Callback:
                 if k not in output: output[k] = fn(** output)
         
         if not self.built: self.build()
-            
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug('- Apply {}'.format(self))
-        
-        self.apply(infos = infos, output = output, ** kwargs)
+
+        return self.apply(infos, output, ** kwargs)
     
+    @abstractmethod
     def apply(self, infos, output, ** kwargs):
-        raise NotImplementedError()
+        """ Apply the callback """
 
     def join(self):
         pass

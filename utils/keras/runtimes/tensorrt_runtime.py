@@ -11,6 +11,7 @@
 
 import os
 import sys
+import shutil
 import logging
 import numpy as np
 
@@ -21,15 +22,22 @@ from .onnx_runtime import ONNXRuntime
 logger = logging.getLogger(__name__)
 
 class TensorRTRuntime(Runtime):
-    def __init__(self, path, *, prepare = None, context = None, device = 'cuda', ** kwargs):
+    def __init__(self, path, *, prepare = None, context = None, device = None, ** kwargs):
         import torch
         import tensorrt as trt
 
-        super().__init__(path, ** kwargs)
+        super().__init__(path, device = device, ** kwargs)
         
-        self.context    = self.engine.create_execution_context() if context is None else context
-        self.stream     = torch.cuda.Stream()
+        if device is not None:
+            import cuda.bindings.runtime as cudart
+            cudart.cudaSetDevice(device)
+            device = 'cuda:{}'.format(device)
+        else:
+            device = 'cuda'
+        
+        self.stream     = torch.cuda.Stream(device)
         self.device     = torch.device(device)
+        self.context    = self.engine.create_execution_context() if context is None else context
 
         DTYPE_MAPPING   = {
             trt.DataType.BF16   : 'bfloat16',
@@ -49,7 +57,7 @@ class TensorRTRuntime(Runtime):
             prepare = os.path.splitext(self.path)[0] + '-prepare.pth'
         
         if isinstance(prepare, str):
-            prepare = torch.jit.load(prepare, map_location = torch.device(device))
+            prepare = torch.jit.load(prepare, map_location = self.device)
 
         self.prepare = prepare
         self.num_prepare_args   = None
@@ -76,7 +84,15 @@ class TensorRTRuntime(Runtime):
     @property
     def argnames(self):
         return self._inputs
-    
+
+    @property
+    def base_dtype(self):
+        """ Precision of the engine, taken from its first floating-point input binding. """
+        dtypes = dict(zip(self.bindings, self._dtypes))
+        for name in self._inputs:
+            if 'float' in dtypes[name]: return dtypes[name]
+        return 'float32'
+
     @property
     def outputs(self):
         return self._outputs
@@ -95,7 +111,10 @@ class TensorRTRuntime(Runtime):
         )
     
     @timer(name = 'TensorRT runtime inference')
-    def __call__(self, * args, ** kwargs):
+    def __call__(self, * args, context = None, stream = None, synchronize = True, ** kwargs):
+        if stream is None: stream = self.stream
+        if context is None: context = self.context
+
         import torch
 
         kwargs.update({name : arg for name, arg in zip(self.bindings, args)})
@@ -120,7 +139,6 @@ class TensorRTRuntime(Runtime):
                         kwargs[self.argnames[0]] = processed
 
         
-        context = self.context
         tensors = [None] * len(self.bindings)
         with Timer('placeholders creation'):
             for i, name in enumerate(self.bindings):
@@ -148,10 +166,10 @@ class TensorRTRuntime(Runtime):
             ))
 
         with Timer('execution'):
-            if not context.execute_async_v3(self.stream.cuda_stream):
+            if not context.execute_async_v3(stream.cuda_stream):
                 raise RuntimeError('An exception occured while running the TensorRT context')
         
-            self.stream.synchronize()
+            if synchronize: stream.synchronize()
         
         return tensors[len(self.argnames) :] if len(self.outputs) > 1 else tensors[-1]
     
@@ -167,9 +185,13 @@ class TensorRTRuntime(Runtime):
         return tensor
     
     @staticmethod
-    def load_engine(filename, ** _):
+    def load_engine(filename, *, device = None, ** _):
         import tensorrt as trt
         
+        if device is not None:
+            import cuda.bindings.runtime as cudart
+            cudart.cudaSetDevice(device)
+
         with open(filename, "rb") as f, trt.Runtime(trt.Logger()) as runtime:
             engine = runtime.deserialize_cuda_engine(f.read())
         return engine
@@ -194,6 +216,10 @@ class TensorRTRuntime(Runtime):
         
         import tensorrt as trt
         
+        _onnx_data_path = function + '.data'
+        if os.path.exists(_onnx_data_path):
+            shutil.move(_onnx_data_path, os.path.basename(_onnx_data_path))
+
         trt_logger = trt.Logger(trt.Logger.INFO)
         if debug: trt_logger.min_severity = trt.Logger.Severity.VERBOSE
 
@@ -241,6 +267,9 @@ class TensorRTRuntime(Runtime):
         else:
             raise RuntimeError('Failed to build TensorRT engine')
         
+        if os.path.exists(os.path.basename(_onnx_data_path)):
+            shutil.move(os.path.basename(_onnx_data_path), _onnx_data_path)
+
         return cls(path)
 
 def should_permute(tensor, shape):

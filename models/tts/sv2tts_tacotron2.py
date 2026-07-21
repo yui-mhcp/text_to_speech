@@ -45,7 +45,7 @@ class SV2TTSTacotron2(Tacotron2):
         super().__init__(lang = lang, ** kwargs)
     
     def build(self, ** kwargs):
-        super().build(
+        return super().build(
             encoder_speaker_embedding_dim   = self.embedding_dim, ** kwargs
         )
     
@@ -107,7 +107,7 @@ class SV2TTSTacotron2(Tacotron2):
         return super().infer(text, embeddings = embeddings, ** kwargs)
     
     def set_default_embeddings(self, embeddings, filename = None):
-        self.add_embeddings(embeddings, 'embeddings')
+        self.add_embeddings(embeddings, filename or 'embeddings')
     
     def add_embeddings(self, embeddings, name):
         save_embeddings(
@@ -120,7 +120,12 @@ class SV2TTSTacotron2(Tacotron2):
         if not hasattr(embeddings, 'shape'):
             if mode is None: mode = embeddings
             embeddings = self.embeddings
-        
+            if embeddings is None:
+                raise ValueError(
+                    'No default embeddings for `{}` : provide the `embeddings` argument, or set'
+                    ' the default ones with `add_embeddings(...)`'.format(self.name)
+                )
+
         if mode is None: mode = {'mode' : 'mean' if self.use_label_embedding else 'random'}
         elif not isinstance(mode, dict): mode = {'mode' : mode}
         

@@ -14,30 +14,32 @@ import json
 
 from .runtime import Runtime
 from .hf_runtime import HFRuntime
+from .keras_runtime import KerasRuntime
 from .onnx_runtime import ONNXRuntime
 from .tensorrt_runtime import TensorRTRuntime
 from .saved_model_runtime import SavedModelRuntime
 from .tensorrt_llm_runtime import TensorRTLLMRuntime
 from .tensorrt_llm_bert_runtime import TensorRTLLMBertRuntime
 
-def build_runtime(runtime, path, * args, ** kwargs):
+def build_runtime(runtime, path = None, * args, ** kwargs):
     if runtime not in _runtimes:
         raise ValueError('Unsupported runtime !\n  Accepted : {}\n  Got : {}'.format(
             tuple(_runtimes.keys()), runtime
         ))
-    
-    if runtime == 'trt_llm' and os.path.exists(os.path.join(path, 'config.json')):
+
+    if runtime == 'trt_llm' and path and os.path.exists(os.path.join(path, 'config.json')):
         with open(os.path.join(path, 'config.json'), 'r') as f:
             config = json.load(f)
-        
+
         if 'bert' in config['pretrained_config']['architecture'].lower():
             return TensorRTLLMBertRuntime(path, * args, ** kwargs)
-    
+
     return _runtimes[runtime](path, * args, ** kwargs)
-    
-    
+
+
 _runtimes    = {
     'hf'    : HFRuntime,
+    'keras' : KerasRuntime,
     'onnx'  : ONNXRuntime,
     'trt'   : TensorRTRuntime,
     'trt_llm'   : TensorRTLLMRuntime,

@@ -344,7 +344,7 @@ def complete_cleaners(text,
         text = expand_tremas(text)
         text = fr_convert_to_ascii(text, ** kwargs)
     else:
-        lang = convert_to_ascii(text, ** kwargs)
+        text = convert_to_ascii(text, ** kwargs)
     
     if max_repetition > 1:  text = collapse_repetitions(text, max_repetition)
     text = collapse_whitespace(text, ** kwargs)

@@ -9,28 +9,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import keras
-import importlib
 
 from keras.metrics import MeanMetricWrapper
 
-for module in [keras.metrics] + os.listdir(__package__.replace('.', os.path.sep)):
-    if isinstance(module, str):
-        if module.startswith(('.', '_')) or '_old' in module: continue
-        module = importlib.import_module(__package__ + '.' + module[:-3])
-    
-    globals().update({
+from utils.generic_utils import import_submodules
+
+_metrics = {}
+for module in [keras.metrics] + import_submodules(__package__):
+    _metrics.update({
         k : v for k, v in vars(module).items()
         if (not k.startswith('_')) and (
             (isinstance(v, type) and issubclass(v, keras.metrics.Metric)) or (callable(v))
         )
     })
+globals().update(_metrics)
 
-_metrics = {
-    k.lower() : v for k, v in globals().items()
-    if (isinstance(v, type) and issubclass(v, keras.metrics.Metric)) or (callable(v))
-}
+_metrics = {k.lower() : v for k, v in _metrics.items()}
 
 def get_metrics(metrics, ** kwargs):
     if metrics == 'accuracy': return metrics
@@ -56,4 +51,3 @@ def get_metrics(metrics, ** kwargs):
         metrics = MeanMetricWrapper(metrics, ** kwargs)
     
     return metrics
-

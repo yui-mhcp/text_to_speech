@@ -81,7 +81,7 @@ def get_tokenizer(tokenizer = None, lang = None, ** kwargs):
             return Tokenizer.load_from_file(model_tokenizer_file)
         elif tokenizer == 'clip':
             return Tokenizer.from_clip_pretrained()
-        elif 'whisper' in tokenizer:
+        elif 'openai' in tokenizer and 'whisper' in tokenizer:
             return Tokenizer.from_whisper_pretrained(** kwargs)
         else:
             return Tokenizer.from_transformers_pretrained(tokenizer)
@@ -134,4 +134,3 @@ def get_symbols(lang,
     if maths:   symbols += list(_maths)
     
     return symbols
-

@@ -14,13 +14,33 @@ import functools
 
 def copy_methods(attr_name, * args, type = None, ** kwargs):
     kwargs.update({name : name for name in args})
-    
+
     def wrapper(cls):
         for cls_fn_name, attr_fn_name in kwargs.items():
             if hasattr(cls, cls_fn_name): continue
             setattr(cls, cls_fn_name, _forward_attribute(attr_name, attr_fn_name, type))
         return cls
-    
+
+    return wrapper
+
+def copy_properties(attr_name, * args, ** kwargs):
+    """
+        Same idea as `copy_methods` but forces the forwarded attributes to be exposed as
+        `property` (read-only delegation to `self.{attr_name}.{attr}`).
+
+        Unlike `copy_methods`, it does **not** try to introspect the target type to decide between
+        method / property : this is required when the porting attribute delegates through
+        `__getattr__` (e.g. `KerasRuntime` forwarding to its wrapped `keras.Model`), in which case
+        the attributes do not live on the class and cannot be introspected.
+    """
+    kwargs.update({name : name for name in args})
+
+    def wrapper(cls):
+        for cls_prop_name, attr_prop_name in kwargs.items():
+            if hasattr(cls, cls_prop_name): continue
+            setattr(cls, cls_prop_name, _forward_property(attr_name, attr_prop_name))
+        return cls
+
     return wrapper
 
 def partial(fn = None, * _args, _force = False, _update_doc = False, ** _kwargs):
@@ -165,6 +185,14 @@ def _forward_attribute(attr_name, fn_name, attr_type = None):
         proxy.__doc__ = proxy.__doc__.format(attr_name = attr_name, fn_name = fn_name)
     
     return proxy
+
+def _forward_property(attr_name, prop_name):
+    def proxy(self):
+        return getattr(getattr(self, attr_name), prop_name)
+
+    proxy.__name__ = prop_name
+    proxy.__doc__  = 'Return `{}` from `self.{}`'.format(prop_name, attr_name)
+    return property(proxy)
 
 def _update_signature(fn, * args, ** kwargs):
     signature = inspect.signature(fn).parameters.copy()

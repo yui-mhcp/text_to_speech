@@ -13,12 +13,12 @@ import numpy as np
 
 from ..keras import ops
 
-_clip_means = [0.48145466, 0.4578275, 0.40821073]
-_clip_std   = [0.26862954, 0.26130258, 0.27577711]
-_east_means = [0.5, 0.5, 0.5]
-_east_std   = [0.5, 0.5, 0.5]
-_vggface_vals   = [91.4953, 103.8827, 131.0912]
-_vgg_means  = np.array([103.939, 116.779, 123.68])[None, None]
+_clip_means = np.array([0.48145466, 0.4578275, 0.40821073], np.float32)
+_clip_std   = np.array([0.26862954, 0.26130258, 0.27577711], np.float32)
+_east_means = np.array([0.5, 0.5, 0.5], np.float32)
+_east_std   = np.array([0.5, 0.5, 0.5], np.float32)
+_vggface_vals   = np.array([91.4953, 103.8827, 131.0912], np.float32)
+_vgg_means  = np.array([103.939, 116.779, 123.68], np.float32)[None, None]
 
 def normalize_01(image):
     image = image - ops.reduce_min(image)
@@ -52,7 +52,7 @@ _image_normalization_styles = {
     'vgg16' : vgg_normalization,
     'vgg19' : vgg_normalization,
     'mobilenet' : lambda image: image / 127.5 - 1.,
-    'vggface'   : lambda image: image[...,::-1] - ops.reshape(_vggface_vals, [1, 1, 1, 3]) / 255.,
+    'vggface'   : lambda image: image[...,::-1] / 255. - ops.reshape(_vggface_vals, [1, 1, 1, 3]) / 255.,
     'clip'      : build_mean_normalize(_clip_means, _clip_std),
     'east'      : build_mean_normalize(_east_means, _east_std),
     'easyocr'   : build_mean_normalize(0.5, 0.5)
@@ -72,5 +72,3 @@ def get_image_normalization_fn(method):
         ))
     
     return _image_normalization_styles[method]
-
-

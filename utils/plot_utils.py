@@ -145,7 +145,7 @@ def plot(x,
          
          with_grid  = False,
          with_legend    = True,
-         with_colorbar  = True,
+         with_colorbar  = False,
          orientation    = 'vertical',
          grid_kwargs    = {},
          legend_kwargs  = {},
@@ -198,61 +198,67 @@ def plot(x,
             - plot_type : a name of plt function to call for plot (plot / scatter / imshow / bar / hist / boxplot / ...)
             - kwargs    : additional kwargs to the plot function
     """
-    def _plot(ax, datas, kwargs):
-        """ Calls the plotting function `plot_type` on `ax` with `datas` and `kwargs` """
+    def _plot(ax, datas, kwargs, pt = None):
+        """ Calls the plotting function `pt` (default `plot_type`) on `ax` with `datas` and `kwargs` """
+        if pt is None: pt = plot_type
         try:
             if 'label' in kwargs: _labels.append(kwargs['label'])
 
-            _allowed_kwargs = inspect.signature(getattr(ax, plot_type)).parameters
+            _allowed_kwargs = inspect.signature(getattr(ax, pt)).parameters
             if 'kwargs' not in _allowed_kwargs:
                 kwargs = {k : v for k, v in kwargs.items() if k in _allowed_kwargs}
 
-            return getattr(ax, plot_type)(* datas, ** kwargs)
+            return getattr(ax, pt)(* datas, ** kwargs)
         except Exception as e:
             logger.error('Error while calling `{}.{}` with data {}\n  Config : {}'.format(
-                ax.__class__.__name__, plot_type, datas, kwargs
+                ax.__class__.__name__, pt, datas, kwargs
             ))
             raise e
     
-    def _plot_data(ax, x, y, config):
+    def _plot_data(ax, x, y, config, pt = None):
+        if pt is None: pt = plot_type
         datas = _prepare_xy(x, y)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug('Data : {} - config : {}'.format(datas, config))
-        
+
         if isinstance(config.get('label', ''), _iterable_types):
             labels = np.array(config.pop('label'))
-            
+
             im = None
             for l in np.unique(labels):
                 datas_label, config_label = _select_datas(l, datas, labels, config)
-                im = _plot_data(ax, * datas_label, {'label' : l, ** config_label})
+                im = _plot_data(ax, * datas_label, {'label' : l, ** config_label}, pt)
             return im
-        
-        elif plot_type == 'scatter' and isinstance(config.get('marker', 'o'), _iterable_types):
+
+        elif pt == 'scatter' and isinstance(config.get('marker', 'o'), _iterable_types):
             markers = np.array(config.pop('marker'))
-            
+
             im = None
             for m in np.unique(markers):
                 datas_marker, config_marker = _select_datas(m, datas, markers, config)
                 config_marker['marker'] = m
-                im = _plot(ax, datas_marker, config_marker)
+                im = _plot(ax, datas_marker, config_marker, pt)
             return im
-        
+
         else:
             if config.get('color', None) is None: config.pop('color', None)
-            
-            im = _plot(ax, datas, config)
-            
+
+            im = _plot(ax, datas, config, pt)
+
             _color = config.get('color', color)
             if _color is not None:
-                if plot_type == 'boxplot':
+                if pt == 'boxplot':
                     im = _set_boxplot_colors(im, _color, facecolor, cmap = kwargs.get('cmap', None))
-                elif plot_type == 'violinplot':
+                elif pt == 'violinplot':
                     im = _set_violinplot_colors(im, _color, facecolor, cmap = kwargs.get('cmap', None))
-            
-            if plot_type in ('boxplot', 'violinplot'):
+
+            # `boxplot` / `violinplot` are not handled by the regular `ax.legend()`, so the artist
+            # of each series is kept to build the legend by hand (see `_artists` usage below)
+            if pt == 'boxplot':
                 _artists.append(im['boxes'][0])
-            
+            elif pt == 'violinplot':
+                _artists.append(im['bodies'][0])
+
             return im
 
     # Maybe create the figure and get the axis
@@ -274,7 +280,9 @@ def plot(x,
                 ax = plt.gca()
         else:
             ax = plt.gca()
-    
+
+    fig = ax.get_figure()
+
     if not hasattr(ax, plot_type):
         raise ValueError("`plot_type` must be a valid method of {} (such as plot, scatter, hist, imshow, ...)\n  Got : {}".format(ax.__class__.__name__, plot_type))
 
@@ -307,24 +315,34 @@ def plot(x,
         kwargs['linewidth'] = linewidth
         if 'c' not in kwargs: kwargs['color'] = color
 
+    y_group_indices = None
     if plot_type in ('bar', 'boxplot', 'violinplot') and isinstance(y, dict):
         xtick_pos = np.arange(len(y)) + 0.5
         xtick_labels, y = list(zip(* y.items()))
         if isinstance(y[0], dict):
-            y_dict = {}
-            for yi in y:
-                for ki, vi in yi.items(): y_dict.setdefault(ki, []).append(vi)
+            # Nested dict `{group : {series : data}}` : transpose it to `{series : [data, ...]}`, such
+            # that each series is a legend entry, while each group is a position on the x-axis.
+            # `y_group_indices[series]` are the indexes of the groups containing `series`, and are used
+            # to index `x` : a series missing from a group simply leaves a hole in it
+            y_dict, y_group_indices = {}, {}
+            for i, yi in enumerate(y):
+                for ki, vi in yi.items():
+                    y_dict.setdefault(ki, []).append(vi)
+                    y_group_indices.setdefault(ki, []).append(i)
+
+            if x is None: x = np.arange(len(y))    # `len(y)` is still the number of groups
             y = y_dict
             if plot_type == 'bar':
                 kwargs.update({'align' : 'edge', 'width' : 0.8 / len(y)})
             else:
                 kwargs.update({'widths' : 0.8 / len(y)})
-        elif plot_type == 'boxplot':
+        elif plot_type in ('boxplot', 'violinplot'):
             kwargs['positions'] = xtick_pos
-    
-    if x is None:
-        if (plot_type in ('bar', 'scatter')) or (plot_type in ('boxplot', 'violinplot') and isinstance(y, dict)):
-            x = np.arange(len(y if not isinstance(y, dict) else list(y.values())[0]))
+
+    # `boxplot` / `violinplot` are not concerned : the nested dict case has set `x` (the groups'
+    # positions) above, while the flat dict case gets its `positions` from `xtick_pos`
+    if x is None and plot_type in ('bar', 'scatter'):
+        x = np.arange(len(y if not isinstance(y, dict) else list(y.values())[0]))
     
     if plot_type == 'bar' and xtick_labels is not None and xtick_pos is None:
         if not isinstance(y, dict):
@@ -344,21 +362,38 @@ def plot(x,
     if isinstance(y, dict):
         kwargs.pop('color', None)
         
-        colors = _normalize_colors(color, cmap = cmap) if isinstance(color, _iterable_types) else None
+        # `color` was already normalized above (near `kwargs.pop('c', color)`), no need to redo it
+        colors = color if isinstance(color, _iterable_types) else None
         for i, (label, data) in enumerate(y.items()):
             kwargs_i = {k : _get_label_config(label, i, v) for k, v in kwargs.items()}
             if 'label' not in kwargs_i: kwargs_i['label'] = label
             if colors is not None:      kwargs_i['color'] = colors[i]
-            
-            xi = None
-            if plot_type == 'bar':
-                xi = x + i * kwargs_i['width'] + 0.1
-            elif plot_type in ('boxplot', 'violinplot'):
-                kwargs_i['positions'] = x + (i + 0.5) * kwargs_i['widths'] + 0.1
+
+            pt_i = plot_type
+            # A value can itself be a nested plot config `{'x' : ..., 'y' : ..., 'plot_type' : ..., ...}`
+            # (e.g. `plot_polygons` multi-shapes or `plot_multiple` links) : extract its own data /
+            # `plot_type` and let its remaining keys override the shared per-series config.
+            if isinstance(data, dict):
+                data = data.copy()
+                pt_i = data.pop('plot_type', plot_type)
+                xi   = data.pop('x', x)
+                yi   = data.pop('y', None)
+                kwargs_i.update(data)
             else:
-                xi = x
-            im = _plot_data(ax, xi, data, kwargs_i)
-        
+                xi, yi = x, data
+                # keep the groups where the series is present (see `y_group_indices` above)
+                if y_group_indices is not None: xi = np.asarray(x)[y_group_indices[label]]
+
+                if pt_i == 'bar':
+                    xi = xi + i * kwargs_i['width'] + 0.1
+                elif pt_i in ('boxplot', 'violinplot'):
+                    # unlike `bar`, these do not take any positional `x` : the x-axis information
+                    # is only passed through `positions`
+                    kwargs_i['positions'] = xi + (i + 0.5) * kwargs_i['widths'] + 0.1
+                    xi = None
+
+            im = _plot_data(ax, xi, yi, kwargs_i, pt_i)
+
     else:
         im = _plot_data(ax, x, y, kwargs)
     
@@ -409,7 +444,8 @@ def plot(x,
     plt.tight_layout()
     
     _finalize_plot(
-        filename, show = show, close = close, fontcolor = fontcolor, facecolor = facecolor, ** kwargs
+        filename, show = show, close = close, fig = fig,
+        fontcolor = fontcolor, facecolor = facecolor, ** kwargs
     )
     return (ax, im) if not close else None
 
@@ -658,7 +694,7 @@ def plot_multiple(* args,
         
         axes.append(plot_method(** config_ax)[0])
     
-    _finalize_plot(filename, show = show, close = close, ** kwargs)
+    _finalize_plot(filename, show = show, close = close, fig = fig, ** kwargs)
     return axes if not close else None
 
 def plot_audio(audio = None, rate = None, *, x = None, channels = None, n_labels = 10, ** kwargs):
@@ -789,7 +825,7 @@ def plot_matrix(matrix = None,
                     horizontalalignment = 'center'
                 )
     
-    _finalize_plot(filename, show = show, close = close, ** kwargs)
+    _finalize_plot(filename, show = show, close = close, fig = ax.get_figure(), ** kwargs)
     return (ax, im) if not close else None
 
 def plot_confusion_matrix(cm = None, true = None, pred = None, labels = None, ** kwargs):
@@ -832,9 +868,9 @@ def plot_classification(scores = None, labels = None, k = 5, x = None, ** kwargs
         This function can be used inside `plot` or `plot_multiple` with `plot_type = 'classification'`
     """
     assert scores is not None or x is not None
-    if scores is None:           scores = x
-    if hasattr(scores, 'numpy'): scores = scores.numpy()
-    if labels is None:           labels = np.arange(len(scores))
+    if scores is None:         scores = x
+    if is_tensor(scores):      scores = convert_to_numpy(scores)
+    if labels is None:         labels = np.arange(len(scores))
     
     indexes = np.flip(np.argsort(scores))[:k]
     
@@ -954,10 +990,29 @@ def plot_polygons(poly, * args, labels = None, ** kwargs):
     
     return plot(** format_poly(poly), ** kwargs)
 
-def plot_boxes(boxes, source = 'xywh', ** kwargs):
+def plot_boxes(boxes, source = 'xywh', drop_empty = False, ** kwargs):
+    """
+        Plot the (closed) contour of the given bounding box(es)
+
+        Arguments :
+            - boxes  : 1-D `[4]` or 2-D `[n_boxes, 4]` array of boxes (any format supported by `convert_box_format`)
+            - source : the input box format (e.g. `xywh`, `xyxy`)
+            - drop_empty : whether to skip "empty" boxes (rows whose coordinates are all `<= 0`),
+                           useful to remove padding boxes. Disabled by default as it also drops
+                           valid boxes located at the origin.
+            - kwargs : forwarded to `plot_polygons` / `plot`
+
+        Note : the polygon corners are built by hand (top-left -> bottom-left -> bottom-right ->
+               top-right) to form a *closed* rectangle. This differs from the ordering of
+               `convert_box_format(..., target = 'poly')`, hence the manual stacking.
+    """
     from utils.image.bounding_box import convert_box_format
     if is_tensor(boxes): boxes = convert_to_numpy(boxes)
-    boxes = boxes[np.any(boxes > 0, axis = -1)]
+    else:                boxes = np.asarray(boxes)
+
+    if boxes.ndim == 1:  boxes = boxes[None]
+    if drop_empty:       boxes = boxes[np.any(boxes > 0, axis = -1)]
+
     boxes = convert_box_format(boxes, source = source, target = 'xyxy')
     boxes_poly = np.stack([
         boxes[:, [0, 1]],
@@ -1008,7 +1063,7 @@ def plot_volume(volume = None,
 
 
 def _get_label_config(label, idx, config):
-    if isinstance(config, dict): return config[label]
+    if isinstance(config, dict): return config.get(label)
     elif isinstance(config, _iterable_types): return config[idx]
     else: return config
 
@@ -1038,29 +1093,31 @@ def _plot_lines(ax, lines, config, default_color, vertical, cmap = None):
     _drawing_method = getattr(ax, 'axvline' if vertical else 'axhline')
     
     config = config.copy()
-    if 'colors' in config: config['color'] = config.pop('colors')
-    elif not isinstance(default_color, _iterable_types): 
+    if 'colors' in config:
+        config['color'] = config.pop('colors')
+    elif isinstance(lines, dict):
+        config['color'] = list(range(len(lines)))
+    elif not isinstance(default_color, _iterable_types):
         config.setdefault('color', default_color)
     
     if not isinstance(lines, dict): lines = {None : lines}
 
+    if isinstance(config.get('color', None), _iterable_types):
+        config['color'] = _normalize_colors(config['color'])
+
     _labels = []
-    for label, positions in lines.items():
+    for i, (label, positions) in enumerate(lines.items()):
         if not isinstance(positions, _iterable_types): positions = [positions]
-        lines_config = config if not label else {
-            k : v[label] if isinstance(v, dict) else v for k, v in config.items()
+        lines_config = config.copy() if not label else {
+            k : _get_label_config(label, i, v) for k, v in config.items()
         }
-        if 'color' in lines_config:
-            lines_config['color'] = _normalize_colors(lines_config['color'], cmap)
         
         if label:
             lines_config['label'] = label
             _labels.append(label)
         
         for i, line in enumerate(positions):
-            _drawing_method(
-                line, ** {k : _get_label_config(label, i, v) for k, v in lines_config.items()}
-            )
+            _drawing_method(line, ** lines_config)
             lines_config['label'] = None
     
     return _labels
@@ -1122,7 +1179,7 @@ def _set_violinplot_colors(im, colors, facecolor, cmap = None):
     
     for k in ('cmins', 'cmaxes'):
         im[k].set_color(colors)
-    for k in ('chars', 'cmedians', 'cmeans'):
+    for k in ('cbars', 'cmedians', 'cmeans'):
         if k in im: im[k].set_color(facecolor)
     
     for i in range(len(im['bodies'])):
@@ -1131,14 +1188,16 @@ def _set_violinplot_colors(im, colors, facecolor, cmap = None):
         im['bodies'][i].set_alpha(1.)
     return im
 
-def _finalize_plot(filename, show, close, fontcolor = None, facecolor = None, ** kwargs):
+def _finalize_plot(filename, show, close, fig = None, fontcolor = None, facecolor = None, ** kwargs):
     import matplotlib.pyplot as plt
-    
+
+    if fig is None: fig = plt.gcf()
+
     if filename:
-        kwargs = {k : v for k, v in kwargs.items() if k in inspect.signature(plt.savefig).parameters}
-        plt.savefig(filename, edgecolor = fontcolor, facecolor = facecolor, ** kwargs)
+        kwargs = {k : v for k, v in kwargs.items() if k in inspect.signature(fig.savefig).parameters}
+        fig.savefig(filename, edgecolor = fontcolor, facecolor = facecolor, ** kwargs)
     if show:        plt.show()
-    if close:       plt.close()
+    if close:       plt.close(fig)
 
 plot_cm = plot_confusion_matrix
 

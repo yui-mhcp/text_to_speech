@@ -13,7 +13,7 @@ import re
 import logging
 
 from loggers import Timer, timer
-from .parser import Parser
+from .parser import register_parser
 
 logger = logging.getLogger(__name__)
 
@@ -23,31 +23,24 @@ _link_re    = r'<a [^>]*?href\=([^>\s]+)[^>]*?>(.*?)</a>'
 _title_re   = r'\<title\>(.*?)\<\/title\>'
 _whitespace_re = re.compile(r'\s+')
 
-class HTMLParser(Parser):
-    __extension__ = 'html'
+@register_parser('html')
+def parse_html(filename = None, *, html = None, ** kwargs):
+    """
+        Extract a list of paragraphs from an HTML document
 
-    def __init__(self, filename = None, html = None, ** _):
-        """
-        Initialize HTML parser
-        
-        Args:
-            html_content: HTML string to parse
-            url: Optional URL for context (used as filename)
-        """
-        assert filename or html
-        
-        super().__init__(filename or "html_content")
-        
-        if not html:
-            with open(filename, 'r', encoding = 'utf-8') as f:
-                html = f.read()
-        
-        self.html = html
+        Arguments :
+            - filename  : the `.html` file to read (mutually exclusive with `html`)
+            - html      : a raw HTML string to parse directly (e.g. a fetched web page)
+    """
+    assert filename or html, 'You must provide either `filename` or `html`'
 
-    def get_paragraphs(self, html = None, ** kwargs):
-        title, html = prepare_html(self.html, ** kwargs)
+    if not html:
+        with open(filename, 'r', encoding = 'utf-8') as f:
+            html = f.read()
 
-        return extract_paragraphs(html, title = title or 'html', ** kwargs)
+    title, html = prepare_html(html, ** kwargs)
+
+    return extract_paragraphs(html, title = title or 'html', ** kwargs)
 
 def extract_title(html):
     match = re.search(_title_re, html, flags = re.DOTALL)
